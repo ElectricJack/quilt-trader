@@ -213,26 +213,28 @@ Data scraper packages installed from GitHub.
 
 ### 3.6 Trade Log
 
-Every trade executed by the system.
+Every individual fill executed by the system. For multi-leg orders (options spreads, pairs trades), each leg is a separate row linked by `group_id`. P/L for multi-leg strategies is tracked at the position level (see 3.14 Positions), not here.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | id | TEXT (UUID) | Primary key |
+| group_id | TEXT (UUID) | Groups legs of a multi-leg order. Single-leg trades get their own unique group_id. |
 | instance_id | TEXT (FK) | References algorithm_instances.id, null for manual trades |
 | account_id | TEXT (FK) | References accounts.id |
+| position_id | TEXT (FK) | References positions.id (links this fill to a tracked position) |
 | source | TEXT | "algorithm" or "manual" |
 | timestamp | DATETIME | When the trade was executed |
 | symbol | TEXT | Ticker symbol |
 | asset_type | TEXT | equities, options, crypto, futures |
 | side | TEXT | "buy", "sell", "sell_short", "buy_to_cover" |
-| quantity | REAL | Number of shares/contracts |
+| quantity | REAL | Number of shares/contracts (supports fractional for crypto) |
 | order_type | TEXT | "market", "limit", "stop", "stop_limit" |
 | requested_price | REAL | Price at time of signal (null for market orders) |
 | filled_price | REAL | Actual fill price |
-| fees | REAL | Commissions and fees |
+| fees | REAL | Total fees (commissions + exchange + network) |
+| fee_breakdown | JSON | Detailed fee components: {commission, exchange_fee, network_fee, maker_taker}. Optional — null for simple equity trades. |
 | slippage | REAL | filled_price - requested_price (signed) |
-| pnl | REAL | Realized P/L for this trade (null for opening trades) |
-| is_day_trade | BOOLEAN | Whether this constituted a day trade |
+| is_day_trade | BOOLEAN | Whether this constituted a day trade (always false for crypto) |
 | metadata | JSON | Additional broker-specific fill details |
 
 ### 3.7 Decision Log
@@ -349,6 +351,38 @@ Tracks archived data batches.
 | file_path | TEXT | Path to Parquet file |
 | file_size_bytes | INTEGER | |
 | archived_at | DATETIME | |
+
+### 3.14 Positions
+
+Tracks open and closed composite positions. This is the source of truth for P/L calculations, especially for multi-leg strategies like options spreads and pairs trades. Single-leg equity/crypto trades also get a position entry for uniform P/L tracking.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | TEXT (UUID) | Primary key |
+| instance_id | TEXT (FK) | References algorithm_instances.id, null for manual positions |
+| account_id | TEXT (FK) | References accounts.id |
+| strategy_type | TEXT | "single", "bull_call_spread", "bear_put_spread", "iron_condor", "straddle", "strangle", "pairs_trade", "custom" |
+| legs | JSON | Array of leg details: [{symbol, side, quantity, avg_cost, asset_type}] |
+| status | TEXT | "open", "closed", "expired", "partially_closed" |
+| opened_at | DATETIME | When the position was first opened |
+| closed_at | DATETIME | When fully closed/expired, null while open |
+| open_group_id | TEXT (FK) | References trade_log.group_id for opening fills |
+| close_group_id | TEXT (FK) | References trade_log.group_id for closing fills, null while open |
+| net_cost | REAL | Net cost to open the position (debit = positive, credit = negative) |
+| net_proceeds | REAL | Net proceeds on close (null while open) |
+| net_pnl | REAL | Realized P/L for the entire position (all legs combined). Null while open. |
+| unrealized_pnl | REAL | Current unrealized P/L (updated on each tick, null when closed) |
+| total_fees | REAL | Sum of all fees across all legs (open + close) |
+| adjustments | JSON | Funding rate payments, dividends, assignment/exercise events. Array of {timestamp, type, amount, description}. |
+| metadata | JSON | Additional position-level data |
+
+**Key behaviors:**
+- When an algorithm returns a multi-leg Signal, the framework creates a single Position with all legs
+- When a single-leg Signal is returned, a Position is still created (strategy_type: "single") for uniform tracking
+- P/L is calculated at the position level: `net_pnl = net_proceeds - net_cost - total_fees + sum(adjustments)`
+- The dashboard displays positions, not individual trade log rows, for P/L analysis
+- The `adjustments` column handles crypto funding rates, dividend payments, and options assignment/exercise events that affect P/L but aren't trades
+- Algorithm instance lifetime P/L is the sum of all position net_pnl values
 
 ---
 
@@ -575,6 +609,8 @@ class TickContext:
 
 ### 4.5 Signal
 
+Signals support both single-leg trades (equities, crypto spot) and multi-leg strategies (options spreads, pairs trades).
+
 ```python
 class SignalType(Enum):
     BUY = "buy"
@@ -589,16 +625,71 @@ class OrderType(Enum):
     STOP_LIMIT = "stop_limit"
 
 @dataclass
-class Signal:
-    """A trade signal produced by an algorithm."""
+class SignalLeg:
+    """A single leg of a trade signal."""
     symbol: str
     signal_type: SignalType
     quantity: float
+    asset_type: str = "equities"       # equities, options, crypto, futures
     order_type: OrderType = OrderType.MARKET
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None
-    reasoning: Optional[str] = None     # Human-readable explanation of why
-    metadata: Optional[dict] = None     # Additional data for logging
+
+@dataclass
+class Signal:
+    """A trade signal produced by an algorithm. Supports single-leg and multi-leg orders."""
+    legs: list[SignalLeg]
+    strategy_type: str = "single"      # "single", "bull_call_spread", "iron_condor",
+                                       # "pairs_trade", "straddle", etc.
+    net_debit_limit: Optional[float] = None   # Max net debit for multi-leg orders
+    net_credit_limit: Optional[float] = None  # Min net credit for multi-leg orders
+    reasoning: Optional[str] = None    # Human-readable explanation of why
+    metadata: Optional[dict] = None    # Additional data for logging
+
+    @staticmethod
+    def simple(symbol: str, signal_type: SignalType, quantity: float,
+               asset_type: str = "equities",
+               order_type: OrderType = OrderType.MARKET,
+               limit_price: Optional[float] = None,
+               reasoning: Optional[str] = None) -> "Signal":
+        """Convenience constructor for single-leg signals."""
+        return Signal(
+            legs=[SignalLeg(symbol=symbol, signal_type=signal_type,
+                           quantity=quantity, asset_type=asset_type,
+                           order_type=order_type, limit_price=limit_price)],
+            strategy_type="single",
+            reasoning=reasoning,
+        )
+```
+
+**Usage examples:**
+```python
+# Simple equity buy
+Signal.simple("AAPL", SignalType.BUY, 100, reasoning="Momentum breakout")
+
+# Crypto spot buy (fractional)
+Signal.simple("BTC/USD", SignalType.BUY, 0.05, asset_type="crypto")
+
+# Bull call spread (multi-leg)
+Signal(
+    legs=[
+        SignalLeg("AAPL250620C00200000", SignalType.BUY, 1, asset_type="options"),
+        SignalLeg("AAPL250620C00210000", SignalType.SELL, 1, asset_type="options"),
+    ],
+    strategy_type="bull_call_spread",
+    net_debit_limit=3.50,
+    reasoning="Bullish into earnings, capping risk",
+)
+
+# Crypto pairs trade
+Signal(
+    legs=[
+        SignalLeg("BTC/USD", SignalType.BUY, 0.1, asset_type="crypto"),
+        SignalLeg("ETH/USD", SignalType.SELL, 2.0, asset_type="crypto"),
+    ],
+    strategy_type="pairs_trade",
+    reasoning="BTC/ETH ratio reverting to mean",
+)
 ```
 
 ### 4.6 Scraper Package Contract
@@ -811,6 +902,8 @@ Tracks and enforces Pattern Day Trading rules per account.
 - A day trade = opening and closing the same position on the same trading day
 - Tracks on a rolling 5-business-day window
 - Maintains count in pdt_tracking table
+- **Crypto trades are automatically excluded** — PDT rules only apply to equities and options. Trades with `asset_type == "crypto"` are never counted as day trades.
+- For multi-leg signals: each leg that could independently constitute a day trade is evaluated. A spread that closes one leg same-day counts as a day trade.
 
 **Enforcement (per account pdt_mode setting):**
 
@@ -822,11 +915,12 @@ Tracks and enforces Pattern Day Trading rules per account.
 
 **Signal approval flow:**
 1. Worker sends `signal_request` to coordinator
-2. Coordinator checks if executing this signal would constitute a day trade
-3. If yes and it would be the 4th in 5 days and account is in "block" mode: reject
-4. If yes and it would be the 3rd: approve but fire warning
-5. Otherwise: approve
-6. Coordinator sends `signal_approved` or `signal_rejected` to worker
+2. Coordinator filters out crypto legs (exempt from PDT)
+3. Coordinator checks if executing any remaining leg would constitute a day trade
+4. If yes and it would be the 4th in 5 days and account is in "block" mode: reject the entire signal (all legs)
+5. If yes and it would be the 3rd: approve but fire warning
+6. Otherwise: approve
+7. Coordinator sends `signal_approved` or `signal_rejected` to worker
 
 ### 5.7 GitHub Integration
 
@@ -885,14 +979,21 @@ Each algorithm instance runs in isolation.
    - Account info (cash, buying power) from broker
 3. Call `algorithm.on_tick(ctx)`
 4. Capture returned signals
-5. For each signal:
-   - Send `signal_request` to coordinator (via worker agent)
+5. For each signal (single-leg or multi-leg):
+   - Send `signal_request` to coordinator (via worker agent), includes all legs
    - Wait for `signal_approved` or `signal_rejected`
-   - If approved: execute via Lumibot broker adapter
-   - Report `trade_executed` with fill details
+   - If approved: execute via Lumibot broker adapter (multi-leg orders submitted as a single composite order where the broker supports it)
+   - Report `trade_executed` with fill details for each leg, linked by group_id
+   - Coordinator creates/updates Position record
    - If rejected: call `algorithm.on_signal_rejected(signal, reason)`
 6. Send `decision_log` entry to coordinator (tick data, signals, reasoning)
 7. If algorithm called `save_state()` during the tick: send checkpoint to coordinator
+
+**Crypto / 24/7 market handling:**
+- The tick loop does not assume market hours — it runs continuously for crypto assets
+- Tick frequency is determined by the broker's data stream (e.g., Alpaca streams crypto 24/7)
+- Nightly backtest comparisons for crypto algorithms use a rolling 24-hour window, not "trading day"
+- Algorithms can check `ctx.market_data()` to determine if a market is open for equity/options assets
 
 **Data caching:**
 - Custom data from coordinator is cached locally with a short TTL (configurable, default 60 seconds)
@@ -991,9 +1092,11 @@ Brokerage account management and manual trading.
 - Lock status (which algorithm is running, if any)
 - **Portfolio summary:** Total value, cash, buying power, day's P/L
 - **Positions table:**
-  - Columns: symbol, quantity, avg cost, current price, market value, unrealized P/L, % change
+  - For single-leg positions: columns: symbol, quantity, avg cost, current price, market value, unrealized P/L, % change
+  - For multi-leg positions (spreads, pairs): expandable row showing strategy type, all legs with individual details, and net position P/L
   - Per-position actions: Close (market/limit, full/partial), set stop-loss
-  - "Close All Positions" button
+  - For multi-leg: "Close Position" closes all legs simultaneously
+  - "Close All Positions" button — flattens everything, all legs of all strategies
 - **Manual order entry panel:**
   - Symbol input with autocomplete
   - Side selector: buy, sell, sell short, buy to cover
@@ -1313,7 +1416,7 @@ quilt-trader/
 │   ├── algorithm.py               # QuiltAlgorithm base class
 │   ├── scraper.py                 # QuiltScraper base class
 │   ├── context.py                 # TickContext
-│   ├── signals.py                 # Signal, SignalType, OrderType
+│   ├── signals.py                 # Signal, SignalLeg, SignalType, OrderType
 │   └── models.py                  # Position, TradeFill, OptionChain
 ├── dashboard/
 │   ├── package.json
