@@ -154,7 +154,7 @@ An algorithm package installed from GitHub.
 
 ### 3.3 Algorithm Instances
 
-A specific algorithm assigned to a specific account on a specific worker.
+A specific algorithm assigned to a specific account on a specific worker. This represents the *assignment* — individual start/stop cycles are tracked in Algorithm Runs (3.15).
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -163,15 +163,11 @@ A specific algorithm assigned to a specific account on a specific worker.
 | account_id | TEXT (FK) | References accounts.id |
 | worker_id | TEXT (FK) | References workers.id |
 | status | TEXT | "running", "stopped", "error", "disconnected" |
+| active_run_id | TEXT (FK) | References algorithm_runs.id for the current/latest run, null if never started |
 | config_values | JSON | User-configured parameter values |
 | persisted_state | JSON | Last save_state() output |
 | state_stale | BOOLEAN | True if manual trading occurred after last state save |
-| started_at | DATETIME | Current run start time |
-| stopped_at | DATETIME | Current run stop time |
-| total_pnl_current_run | REAL | P/L since current run started |
-| total_pnl_lifetime | REAL | P/L across all runs of this instance |
-| total_fees_current_run | REAL | Fees since current run started |
-| total_fees_lifetime | REAL | Fees across all runs |
+| lifetime_metrics | JSON | Aggregate performance metrics across all runs (same schema as run metrics, recomputed on run completion) |
 | created_at | DATETIME | When instance was first created |
 | updated_at | DATETIME | |
 
@@ -382,7 +378,135 @@ Tracks open and closed composite positions. This is the source of truth for P/L 
 - P/L is calculated at the position level: `net_pnl = net_proceeds - net_cost - total_fees + sum(adjustments)`
 - The dashboard displays positions, not individual trade log rows, for P/L analysis
 - The `adjustments` column handles crypto funding rates, dividend payments, and options assignment/exercise events that affect P/L but aren't trades
-- Algorithm instance lifetime P/L is the sum of all position net_pnl values
+- Algorithm run P/L is the sum of all position net_pnl values opened during that run
+- Algorithm instance lifetime P/L is aggregated across all runs (see 3.15)
+
+### 3.15 Algorithm Runs
+
+Each start/stop cycle of an algorithm instance is a separate run. This is the core unit for performance reporting.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | TEXT (UUID) | Primary key |
+| instance_id | TEXT (FK) | References algorithm_instances.id |
+| run_number | INTEGER | Sequential run number within this instance (1, 2, 3...) |
+| status | TEXT | "running", "completed", "error" |
+| started_at | DATETIME | When the run started |
+| stopped_at | DATETIME | When the run stopped, null while running |
+| starting_equity | REAL | Account total value at run start |
+| ending_equity | REAL | Account total value at run stop, null while running |
+| net_pnl | REAL | Sum of all position P/L closed during this run |
+| unrealized_pnl | REAL | Current unrealized P/L of positions opened during this run (null when completed) |
+| total_fees | REAL | Total fees paid during this run |
+| total_slippage | REAL | Total slippage during this run |
+| trade_count | INTEGER | Number of trades (signals executed) during this run |
+| metrics | JSON | Full computed performance metrics (see 3.18 Performance Metrics Schema) |
+| equity_curve | JSON | Array of {timestamp, equity} snapshots taken periodically during the run |
+| created_at | DATETIME | |
+
+**Key behaviors:**
+- When an algorithm instance is started, a new run is created with the next run_number
+- While running, `metrics` and `equity_curve` are updated periodically (every 5 minutes by default)
+- On run completion, final metrics are computed and stored
+- Instance `lifetime_metrics` is recomputed by aggregating across all completed runs
+- Equity curve snapshots capture account value at regular intervals, enabling drawdown and return calculations
+
+### 3.16 Account Cash Flows
+
+Tracks deposits, withdrawals, and other non-trading cash movements. Required to distinguish account growth from trading P/L vs. capital inflows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | TEXT (UUID) | Primary key |
+| account_id | TEXT (FK) | References accounts.id |
+| type | TEXT | "deposit", "withdrawal", "transfer_in", "transfer_out", "interest", "dividend", "other" |
+| amount | REAL | Dollar amount (positive for inflows, negative for outflows) |
+| timestamp | DATETIME | When the cash flow occurred |
+| notes | TEXT | Optional description |
+| created_at | DATETIME | |
+
+### 3.17 Account Snapshots
+
+Periodic snapshots of account state for equity curve and time-weighted return (TWR) calculations. Taken on a schedule (default every 15 minutes during market hours, hourly otherwise) and on every cash flow event.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | TEXT (UUID) | Primary key |
+| account_id | TEXT (FK) | References accounts.id |
+| timestamp | DATETIME | Snapshot time |
+| total_value | REAL | Total account value (cash + positions) |
+| cash | REAL | Cash balance |
+| positions_value | REAL | Total market value of all positions |
+| net_deposits_cumulative | REAL | Cumulative net deposits/withdrawals to date |
+| source | TEXT | "scheduled", "cash_flow", "run_start", "run_stop" — what triggered this snapshot |
+
+**Key behaviors:**
+- Snapshots are always taken on cash flow events (deposit/withdrawal) to enable accurate TWR calculation
+- Snapshots are taken when algorithm runs start and stop
+- Account-level TWR is computed by chaining sub-period returns between cash flow events: `TWR = Π((V_end - CF) / V_start) - 1`
+- This isolates trading performance from the impact of deposits/withdrawals
+
+### 3.18 Performance Metrics Schema
+
+Standardized metrics computed at three levels: per-run, per-instance (lifetime), and per-algorithm (across all accounts). Stored as JSON.
+
+```json
+{
+  "total_return_pct": 12.5,
+  "total_return_dollars": 6250.00,
+  "annualized_return_pct": 45.2,
+  "time_weighted_return_pct": 11.8,
+  "sharpe_ratio": 1.85,
+  "sortino_ratio": 2.10,
+  "max_drawdown_pct": 8.3,
+  "max_drawdown_dollars": 4150.00,
+  "max_drawdown_duration_days": 12,
+  "calmar_ratio": 5.45,
+  "win_rate_pct": 62.0,
+  "loss_rate_pct": 38.0,
+  "profit_factor": 1.95,
+  "avg_win_dollars": 340.00,
+  "avg_loss_dollars": -175.00,
+  "largest_win_dollars": 1200.00,
+  "largest_loss_dollars": -520.00,
+  "avg_win_pct": 2.1,
+  "avg_loss_pct": -1.1,
+  "total_trades": 87,
+  "winning_trades": 54,
+  "losing_trades": 33,
+  "avg_trade_duration_hours": 4.2,
+  "avg_bars_in_trade": 16,
+  "total_fees_dollars": 43.50,
+  "total_slippage_dollars": -12.30,
+  "net_profit_after_fees": 6206.50,
+  "exposure_pct": 78.5,
+  "volatility_annualized_pct": 24.3,
+  "risk_reward_ratio": 1.94,
+  "expectancy_dollars": 71.84,
+  "expectancy_pct": 0.48,
+  "consecutive_wins_max": 8,
+  "consecutive_losses_max": 4,
+  "run_duration_days": 45.3,
+  "positions_opened": 87,
+  "positions_closed": 85,
+  "positions_open": 2
+}
+```
+
+**Computation levels:**
+
+| Level | Scope | When computed | Stored in |
+|-------|-------|---------------|-----------|
+| Run | One start/stop cycle of an instance | Periodically while running (every 5 min), final on completion | algorithm_runs.metrics |
+| Instance lifetime | All runs of algo X on account Y | Recomputed on each run completion | algorithm_instances.lifetime_metrics |
+| Algorithm aggregate | All runs of algo X across all accounts | On demand / cached in coordinator | In-memory or cached in algorithms table |
+| Account | All activity in an account (algo + manual) | Periodically, on demand from dashboard | Computed from account_snapshots + trade data |
+
+**Algorithm aggregate metrics** enable answering:
+- "How does algo X perform overall across all accounts?"
+- "Does algo X perform differently on Alpaca vs Tradier?"
+- "Is algo X degrading over time?" (metrics per run plotted chronologically)
+- "Which of my algorithms has the best Sharpe ratio?"
 
 ---
 
@@ -762,27 +886,34 @@ Handles the full lifecycle of algorithm packages and instances.
    - Account compatibility check (asset types, options level, features, broker)
    - Account not locked by another algorithm
    - Required scrapers identified
-3. **Start:**
+3. **Start (creates a new Run):**
    - Lock the account
+   - Create a new Algorithm Run record (run_number incremented, starting_equity captured via account snapshot)
+   - Take an account snapshot (source: "run_start")
    - Start required scrapers (if not already running)
    - Send `start_algorithm` to worker with config, restored state, and broker credentials
    - Worker spawns algorithm subprocess
-   - Status → "running"
+   - Instance status → "running", active_run_id → new run
 4. **Running:**
    - Worker streams events, decision logs, and state checkpoints to coordinator
    - Coordinator logs everything, routes events to Discord/dashboard
-5. **Stop (graceful):**
+   - Coordinator periodically updates run metrics and equity curve (every 5 minutes)
+5. **Stop (graceful, completes the Run):**
    - Send `stop_algorithm` to worker
    - Worker sends SIGTERM to subprocess, algorithm calls `on_stop()` and `save_state()`
    - Worker sends final state to coordinator
+   - Take an account snapshot (source: "run_stop")
+   - Compute final run metrics, store ending_equity
+   - Recompute instance lifetime_metrics by aggregating all completed runs
    - Coordinator persists state, unlocks account
    - Stop scrapers if no other algorithms depend on them
-   - Status → "stopped"
-6. **Error:**
+   - Run status → "completed", instance status → "stopped"
+6. **Error (abnormal Run termination):**
    - Worker detects subprocess crash, sends `algo_error`
    - Coordinator logs error, fires Discord alert
+   - Run status → "error" with metrics computed up to failure point
    - Account remains locked (user must manually stop/restart)
-   - Status → "error"
+   - Instance status → "error"
 7. **Disconnected:**
    - Worker misses heartbeats
    - Coordinator marks all algorithms on that worker as "disconnected"
@@ -1109,10 +1240,18 @@ Brokerage account management and manual trading.
   - If algorithm is running: manual trading controls are disabled
   - "Stop Algorithm & Enable Manual Trading" button → stops algo, marks state as stale, enables controls
   - All manual trades logged with source: "manual"
+- **Cash flows:**
+  - Record deposits, withdrawals, transfers
+  - History table of all cash flow events
+- **Account-level performance:**
+  - TWR (time-weighted return) — isolates trading performance from deposit/withdrawal timing
+  - Full metrics dashboard (Sharpe, max drawdown, etc.) for the account as a whole
+  - Breakdown: algorithm P/L vs. manual trading P/L vs. interest/dividends
 - **Charts:**
-  - Account value over time
+  - Account value over time (equity curve with deposit/withdrawal markers)
   - Fees paid over time (cumulative)
   - Asset allocation pie chart
+  - Drawdown chart
 
 #### 7.2.3 Algorithms
 
@@ -1134,17 +1273,32 @@ Algorithm package and instance management.
   - Status indicator (running/stopped/error/disconnected)
   - Start/Stop buttons
   - Configuration editor
-  - **Performance metrics:**
-    - P/L since current run started
-    - P/L lifetime (across all runs)
-    - Fees current run / lifetime
-    - Win rate, average win, average loss
-    - Max drawdown
-    - Sharpe ratio (if sufficient data)
+  - **Run history** — Table of all runs (start/stop cycles) with run number, dates, P/L, trade count, status
+  - **Current run metrics** (if running):
+    - Live P/L, fees, trade count, current positions
+    - Real-time equity curve
+    - Key metrics updating periodically (Sharpe, drawdown, win rate)
+  - **Lifetime metrics** (across all runs):
+    - Full performance metrics dashboard (same schema as backtest reports)
+    - Sharpe, Sortino, Calmar, max drawdown, profit factor, win rate, expectancy, etc.
+    - Equity curve stitched across all runs
+    - Run-over-run comparison: are metrics improving or degrading?
+  - **Run detail view** (click into any historical run):
+    - Full Lumibot-style performance report for that run
+    - Equity curve, drawdown chart, trade distribution
+    - All metrics from the performance metrics schema
+    - Trade history for that run
+    - Decision log viewer for that run
+    - Downloadable report (PDF/CSV)
   - **Current positions** — Live view of what the algorithm is holding
-  - **Trade history** — Paginated table of all trades with filters
-  - **Equity curve chart** — Account value over time while this algorithm was running
+  - **Trade history** — Paginated table of all trades across all runs, filterable by run
   - **Decision log viewer** — Searchable log of tick-level decisions (paginated, loads from Parquet for historical)
+
+**Algorithm-level reporting** (on the algorithm detail page):
+- Aggregate metrics across all instances and accounts
+- Side-by-side comparison: same algorithm on different accounts/brokers
+- Performance trend: metrics per run plotted chronologically (is this algo getting better or worse?)
+- Answers: "What's my best algorithm?", "Does this algo work better on Alpaca or Tradier?"
 
 #### 7.2.4 Workers
 
@@ -1384,6 +1538,8 @@ quilt-trader/
 │   │   │   ├── workers.py         # Worker registration and status
 │   │   │   ├── data.py            # Market data + scraper data API
 │   │   │   ├── backtests.py       # Backtest comparison results
+│   │   │   ├── runs.py            # Algorithm run history + metrics
+│   │   │   ├── cash_flows.py      # Account deposit/withdrawal tracking
 │   │   │   ├── events.py          # Event history
 │   │   │   └── settings.py        # System settings
 │   │   └── websocket.py           # WebSocket handlers (dashboard + workers)
@@ -1396,10 +1552,12 @@ quilt-trader/
 │   │   ├── pdt_monitor.py         # PDT tracking and enforcement
 │   │   ├── github_service.py      # GitHub API integration
 │   │   ├── backtest_engine.py     # Nightly backtest comparison
+│   │   ├── metrics_engine.py      # Performance metrics computation at all levels
+│   │   ├── snapshot_service.py    # Account snapshot management
 │   │   ├── archival.py            # Data archival to Parquet
 │   │   └── discord_bot.py         # Discord bot
 │   └── data/
-│       ├── market/                # Cached Polygon data (Parquet files)
+│       ├── market/                # Cached Polygon/Theta Data (Parquet files)
 │       ├── custom/                # Scraper output files
 │       ├── packages/              # Cloned algorithm/scraper repos
 │       └── archive/               # Archived decision/trade logs (Parquet)
@@ -1417,7 +1575,13 @@ quilt-trader/
 │   ├── scraper.py                 # QuiltScraper base class
 │   ├── context.py                 # TickContext
 │   ├── signals.py                 # Signal, SignalLeg, SignalType, OrderType
-│   └── models.py                  # Position, TradeFill, OptionChain
+│   ├── models.py                  # Position, TradeFill, OptionChain
+│   └── cli/
+│       ├── __init__.py
+│       ├── main.py                # CLI entry point (quilt command)
+│       ├── validate.py            # quilt dev validate
+│       ├── backtest.py            # quilt dev backtest
+│       └── run.py                 # quilt dev run
 ├── dashboard/
 │   ├── package.json
 │   ├── vite.config.ts
@@ -1435,6 +1599,7 @@ quilt-trader/
 │   │   │   ├── Algorithms.tsx
 │   │   │   ├── AlgorithmDetail.tsx
 │   │   │   ├── InstanceDetail.tsx
+│   │   │   ├── RunDetail.tsx
 │   │   │   ├── Workers.tsx
 │   │   │   ├── Data.tsx
 │   │   │   ├── Backtests.tsx
