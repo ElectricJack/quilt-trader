@@ -276,7 +276,7 @@ Registry of available data.
 |--------|------|-------------|
 | id | TEXT (UUID) | Primary key |
 | type | TEXT | "market" or "custom" |
-| source | TEXT | "polygon" or scraper name |
+| source | TEXT | "polygon", "theta_data", or scraper name |
 | name | TEXT | Identifier used in data API (e.g., "alpha-picks", "AAPL") |
 | description | TEXT | |
 | file_path | TEXT | Path to data file on coordinator filesystem |
@@ -317,7 +317,7 @@ Rolling day trade tracker per account.
 
 ### 3.12 Market Data Downloads
 
-Tracks Polygon download jobs.
+Tracks market data download jobs (Polygon, Theta Data).
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -325,6 +325,7 @@ Tracks Polygon download jobs.
 | symbols | JSON | Array of symbols being downloaded |
 | date_range_start | DATE | |
 | date_range_end | DATE | |
+| provider | TEXT | "polygon" or "theta_data" |
 | data_type | TEXT | "bars", "trades", "quotes" |
 | timeframe | TEXT | "1min", "5min", "1hour", "1day" |
 | status | TEXT | "queued", "downloading", "completed", "error" |
@@ -756,12 +757,14 @@ Tracks and communicates with worker Pis.
 
 Unified API for all data access.
 
-**Market data (Polygon integration):**
-- User kicks off download jobs from the dashboard: select symbols, date range, timeframe
+**Market data (Polygon + Theta Data):**
+- Supports multiple data providers: Polygon and Theta Data (both supported by Lumibot)
+- User kicks off download jobs from the dashboard: select provider, symbols, date range, timeframe
 - Downloads run as background tasks with progress tracking
-- Data stored as Parquet files on the coordinator filesystem, organized by symbol and timeframe
+- Data stored as Parquet files on the coordinator filesystem, organized by provider, symbol, and timeframe
 - Registry entry created in data_sources table
-- API endpoint: `GET /api/data/market/{symbol}?timeframe={tf}&start={date}&end={date}`
+- API endpoint: `GET /api/data/market/{symbol}?timeframe={tf}&start={date}&end={date}&provider={provider}`
+- Provider is optional in the API — defaults to whichever provider has data for the requested symbol/range
 
 **Custom data (scrapers):**
 - Scraper output stored on coordinator filesystem
@@ -1054,7 +1057,7 @@ Worker Pi management.
 Data management hub.
 
 **Market data tab:**
-- Download manager: select symbols, date range, timeframe, data type → kick off download
+- Download manager: select provider (Polygon/Theta Data), symbols, date range, timeframe, data type → kick off download
 - Active downloads with progress bars (percentage, estimated time remaining)
 - Browse cached data: table of available symbol/timeframe combinations with date ranges and sizes
 - Delete cached data to free space
@@ -1104,7 +1107,7 @@ System configuration.
 - **GitHub:** PAT management (set/update/revoke), connection status
 - **Coordinator:** Tailscale IP, data retention days, archival schedule
 - **Discord:** Bot token configuration, server/guild selection
-- **Data:** Polygon API key, default download settings
+- **Data:** Polygon API key, Theta Data credentials, default download settings, preferred provider
 - **Backtest:** Nightly comparison time, divergence alert threshold
 - **Workers:** Default max algorithms per worker
 
@@ -1174,7 +1177,7 @@ Every trade (algorithm or manual) is logged with:
 1. For each running algorithm instance, retrieve decision logs from the past 24 hours
 2. Instantiate the same algorithm class with the same config
 3. Replay the same time period using backtest-sourced data:
-   - Market data from the Polygon cache (not live broker data)
+   - Market data from the Polygon/Theta Data cache (not live broker data)
    - Custom data from scraper output snapshots
 4. Run each tick through `on_tick()` and capture signals
 5. Compare live signals vs. backtest signals tick-by-tick:
@@ -1186,7 +1189,7 @@ Every trade (algorithm or manual) is logged with:
 
 **What divergence can indicate:**
 - Lookahead bias in backtest data (backtest "knows" future data that live didn't have)
-- Data source differences (live broker data vs. Polygon historical data)
+- Data source differences (live broker data vs. Polygon/Theta Data historical data)
 - Timing differences (tick timestamps don't align perfectly)
 - Bug in algorithm state management (live state drifts from backtest's clean-room state)
 
@@ -1396,7 +1399,7 @@ quilt-trader/
    - Initializes SQLite database with Alembic migrations
    - Prompts for master encryption password
    - Creates systemd service for auto-start
-4. Configure via dashboard: GitHub PAT, Discord bot token, Polygon API key
+4. Configure via dashboard: GitHub PAT, Discord bot token, Polygon API key, Theta Data credentials
 
 ### 13.2 Worker Setup
 
@@ -1427,15 +1430,75 @@ Coordinator and worker run on the same Pi. The worker connects to `localhost`. S
 
 ### 14.2 Algorithm Development
 
-Algorithm authors develop against the SDK:
+The SDK ships with a `quilt` CLI for local algorithm development on your desktop (faster than developing on a Pi).
 
-1. `pip install quilt-trader-sdk` (or install from main repo)
-2. Create repo with `quilt.yaml` and algorithm implementation
-3. Test locally with the mock broker adapter
-4. Push to GitHub
-5. Install from dashboard
+**Setup:**
+1. `pip install quilt-trader-sdk` (or install from the main repo)
+2. Create a new repo with `quilt.yaml` and your `QuiltAlgorithm` implementation
 
-### 14.3 Testing Strategy
+**CLI commands:**
+- `quilt dev validate` — Validates `quilt.yaml` schema, checks the entry point and class are importable, verifies the class implements all required methods
+- `quilt dev backtest` — Runs your algorithm against historical data and generates a performance report (equity curve, Sharpe, drawdown, trade log). Uses Lumibot's backtesting engine under the hood.
+- `quilt dev run` — Runs a live paper-trading session locally, useful for debugging tick-by-tick behavior
+
+**Data modes (configured via `quilt.config.yaml` in the algo repo, git-ignored):**
+
+- **Standalone mode** — Uses local data files or connects directly to Polygon/Theta Data with your own API key. No coordinator needed. Good for getting started or working offline.
+- **Connected mode** — Points at your coordinator's data API over Tailscale (configured with coordinator IP). Pulls market data from the coordinator's cache and scraper outputs. This ensures you develop and backtest against the same data your live system uses, which is critical for the live/backtest comparison story.
+
+```yaml
+# quilt.config.yaml (git-ignored)
+data_mode: connected           # "standalone" or "connected"
+coordinator_url: http://100.x.x.x:8000  # Tailscale IP of coordinator
+# OR for standalone:
+# data_mode: standalone
+# polygon_api_key: pk_xxxxx
+# theta_data_username: xxxxx
+# theta_data_password: xxxxx
+```
+
+**Typical development workflow:**
+1. Write/modify algorithm code
+2. `quilt dev validate` — quick sanity check
+3. `quilt dev backtest --start 2025-01-01 --end 2025-06-01` — run backtest, review report
+4. Iterate on algorithm logic
+5. `quilt dev run` — paper trade for a session to verify live behavior
+6. Push to GitHub
+7. Install or update from the dashboard
+
+### 14.3 Algorithm Installation & Updates
+
+**Installation (from dashboard):**
+1. User clicks "Install Algorithm" in the dashboard
+2. Dashboard queries GitHub API for user's repos (filtered by `quilt.yaml` presence)
+3. User selects a repo from the dropdown
+4. Coordinator clones the repo to `coordinator/data/packages/{algo-name}/`
+5. Coordinator creates an isolated virtualenv for the algorithm: `coordinator/data/packages/{algo-name}/.venv/`
+6. Installs algorithm's `requirements.txt` into the virtualenv
+7. Validates `quilt.yaml` and checks the entry point is importable
+8. Records the algorithm in the database with commit hash
+
+**Updates:**
+1. User clicks "Update" on an algorithm in the dashboard (or coordinator can check for new commits on a configurable schedule)
+2. Coordinator runs `git pull` on the local clone
+3. If `requirements.txt` changed: reinstalls dependencies in the virtualenv
+4. Re-validates `quilt.yaml` and entry point
+5. Updates commit hash and version in the database
+6. If the algorithm has running instances: coordinator does NOT auto-restart — it notifies the user via dashboard and Discord that an update is available and a restart is needed to pick it up
+7. User decides when to stop and restart instances to pick up the new code
+
+**Deployment to workers:**
+1. When an algorithm instance is started, the coordinator sends the algorithm code to the worker
+2. Worker creates an isolated virtualenv for the algorithm (if not already present)
+3. Worker installs dependencies and starts the subprocess
+4. On algorithm update + restart: worker pulls fresh code from coordinator, rebuilds virtualenv if deps changed
+
+**Virtualenv isolation:**
+- Each algorithm gets its own virtualenv on both the coordinator (for validation) and workers (for execution)
+- This prevents dependency conflicts between algorithms (e.g., one algo needs pandas 1.x, another needs 2.x)
+- The SDK itself (`quilt-trader-sdk`) is installed in each virtualenv as a shared dependency
+
+### 14.4 Testing Strategy
 
 - **Unit tests:** SDK classes, coordinator services, worker components
 - **Integration tests:** Coordinator ↔ worker communication, algorithm lifecycle, order flow
