@@ -52,4 +52,7 @@ def create_app(
     from coordinator.api.websocket import router as ws_router
     app.include_router(ws_router)
 
+    from coordinator.api.routes.github import router as github_router
+    app.include_router(github_router)
+
     return app
