@@ -35,6 +35,25 @@ def create_app(
         from coordinator.api.routes.data import set_data_service
         set_data_service(data_svc)
 
+        # Scraper registry — auto-discover packages/, register cron jobs
+        import os
+        from coordinator.services.scraper_engine import ScraperEngine
+        from coordinator.services.scraper_registry import ScraperRegistry
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        scraper_engine = ScraperEngine(
+            packages_dir=os.path.join(repo_root, "packages"),
+            output_dir=os.path.join(repo_root, "data", "custom"),
+        )
+        scraper_registry = ScraperRegistry(
+            engine=scraper_engine,
+            scheduler=scheduler,
+            packages_dir=os.path.join(repo_root, "packages"),
+            configs_dir=os.path.join(repo_root, "data", "scraper_configs"),
+        )
+        scraper_registry.discover_and_register()
+        from coordinator.api.routes.scrapers import set_registry
+        set_registry(scraper_registry)
+
         container = ServiceContainer(session_factory, event_bus, encryption, scheduler)
         set_container(container)
         yield
@@ -80,6 +99,9 @@ def create_app(
 
     from coordinator.api.routes.backtests import router as backtests_router
     app.include_router(backtests_router)
+
+    from coordinator.api.routes.scrapers import router as scrapers_router
+    app.include_router(scrapers_router)
 
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
