@@ -26,6 +26,7 @@ coordinator = [
     "PyGithub>=2.0.0",
     "pyarrow>=18.0.0",
     "APScheduler>=3.10.0",
+    "discord.py>=2.4.0",
 ]
 dev = [
     "pytest>=8.0.0",
