@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db, get_container
-from coordinator.database.models import Account
+from coordinator.database.models import Account, AccountSnapshot
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -83,6 +84,58 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Account))
     accounts = result.scalars().all()
     return [_to_response(a) for a in accounts]
+
+
+def _snap_to_dict(snap: "AccountSnapshot") -> dict:
+    return {
+        "timestamp": snap.timestamp.isoformat(),
+        "total_value": snap.total_value,
+        "cash": snap.cash,
+        "positions_value": snap.positions_value,
+    }
+
+
+@router.get("/snapshots/latest")
+async def accounts_snapshots_latest(db: AsyncSession = Depends(get_db)):
+    accounts = (await db.execute(select(Account))).scalars().all()
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    items = []
+    for acct in accounts:
+        latest_q = (
+            select(AccountSnapshot)
+            .where(AccountSnapshot.account_id == acct.id)
+            .order_by(AccountSnapshot.timestamp.desc())
+            .limit(1)
+        )
+        latest = (await db.execute(latest_q)).scalar_one_or_none()
+        if not latest:
+            continue
+
+        prior_q = (
+            select(AccountSnapshot)
+            .where(AccountSnapshot.account_id == acct.id)
+            .where(AccountSnapshot.timestamp <= cutoff_24h)
+            .order_by(AccountSnapshot.timestamp.desc())
+            .limit(1)
+        )
+        prior = (await db.execute(prior_q)).scalar_one_or_none()
+
+        day_pct = None
+        if prior and prior.total_value:
+            day_pct = (latest.total_value - prior.total_value) / prior.total_value * 100.0
+
+        items.append({
+            "account_id": acct.id,
+            "account_name": acct.name,
+            "broker_type": acct.broker_type,
+            "latest": _snap_to_dict(latest),
+            "prior": _snap_to_dict(prior) if prior else None,
+            "day_pct": day_pct,
+        })
+
+    return {"items": items}
 
 
 @router.get("/{account_id}")

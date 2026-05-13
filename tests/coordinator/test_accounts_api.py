@@ -100,3 +100,39 @@ async def test_delete_account(client):
 
     get_resp = await client.get(f"/api/accounts/{account_id}")
     assert get_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_accounts_snapshots_latest(client, db_session):
+    from datetime import datetime, timedelta, timezone
+    from coordinator.database.models import Account, AccountSnapshot
+
+    acct = Account(
+        name="Alpaca Main", broker_type="alpaca",
+        supported_asset_types=["equities"], pdt_mode="off",
+        credentials="{}",
+    )
+    db_session.add(acct)
+    await db_session.flush()
+    now = datetime.now(timezone.utc)
+    db_session.add(AccountSnapshot(
+        account_id=acct.id, timestamp=now - timedelta(hours=25),
+        total_value=10000.0, cash=4000.0, positions_value=6000.0,
+        source="seed",
+    ))
+    db_session.add(AccountSnapshot(
+        account_id=acct.id, timestamp=now,
+        total_value=10500.0, cash=4000.0, positions_value=6500.0,
+        source="seed",
+    ))
+    await db_session.commit()
+
+    response = await client.get("/api/accounts/snapshots/latest")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["account_name"] == "Alpaca Main"
+    assert item["latest"]["total_value"] == 10500.0
+    assert item["prior"]["total_value"] == 10000.0
+    assert item["day_pct"] == pytest.approx(5.0)
