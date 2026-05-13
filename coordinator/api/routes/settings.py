@@ -92,3 +92,20 @@ async def set_theta_data(body: ThetaDataBody, db: AsyncSession = Depends(get_db)
     await _set_setting(db, "theta_data_username", container.encryption.encrypt(body.username))
     await _set_setting(db, "theta_data_password", container.encryption.encrypt(body.password))
     return await _settings_status(db)
+
+
+@router.delete("/discord-token")
+async def delete_discord_token(db: AsyncSession = Depends(get_db)):
+    await _delete_setting(db, "discord_bot_token")
+    return await _settings_status(db)
+
+@router.delete("/polygon-key")
+async def delete_polygon_key(db: AsyncSession = Depends(get_db)):
+    await _delete_setting(db, "polygon_api_key")
+    return await _settings_status(db)
+
+@router.delete("/theta-data")
+async def delete_theta_data(db: AsyncSession = Depends(get_db)):
+    await _delete_setting(db, "theta_data_username")
+    await _delete_setting(db, "theta_data_password")
+    return await _settings_status(db)

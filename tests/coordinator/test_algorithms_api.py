@@ -131,3 +131,62 @@ async def test_get_instance(client, seed_entities):
     response = await client.get(f"/api/instances/{inst_id}")
     assert response.status_code == 200
     assert response.json()["id"] == inst_id
+
+
+class TestInstancePatchDelete:
+    @pytest.mark.asyncio
+    async def test_update_instance_config(self, client):
+        # Create algo, then instance, then patch config
+        algo = await client.post("/api/algorithms", json={
+            "repo_url": "https://github.com/test/algo", "name": "Test"
+        })
+        algo_id = algo.json()["id"]
+        # Need account + worker IDs - create them first
+        acct = await client.post("/api/accounts", json={
+            "name": "Test", "broker_type": "mock", "credentials": {},
+            "supported_asset_types": ["equities"]
+        })
+        worker = await client.post("/api/workers", json={
+            "name": "w1", "tailscale_ip": "10.0.0.1"
+        })
+        inst = await client.post(f"/api/algorithms/{algo_id}/instances", json={
+            "account_id": acct.json()["id"], "worker_id": worker.json()["id"],
+            "config_values": {"old": "value"}
+        })
+        inst_id = inst.json()["id"]
+
+        resp = await client.patch(f"/api/instances/{inst_id}", json={
+            "config_values": {"new": "config"}
+        })
+        assert resp.status_code == 200
+        assert resp.json()["config_values"] == {"new": "config"}
+
+    @pytest.mark.asyncio
+    async def test_update_instance_not_found(self, client):
+        resp = await client.patch("/api/instances/nonexistent", json={"status": "running"})
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_instance(self, client):
+        algo = await client.post("/api/algorithms", json={
+            "repo_url": "https://github.com/test/algo", "name": "Test"
+        })
+        acct = await client.post("/api/accounts", json={
+            "name": "Test", "broker_type": "mock", "credentials": {},
+            "supported_asset_types": ["equities"]
+        })
+        worker = await client.post("/api/workers", json={
+            "name": "w1", "tailscale_ip": "10.0.0.1"
+        })
+        inst = await client.post(f"/api/algorithms/{algo.json()['id']}/instances", json={
+            "account_id": acct.json()["id"], "worker_id": worker.json()["id"]
+        })
+        resp = await client.delete(f"/api/instances/{inst.json()['id']}")
+        assert resp.status_code == 204
+        get_resp = await client.get(f"/api/instances/{inst.json()['id']}")
+        assert get_resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_instance_not_found(self, client):
+        resp = await client.delete("/api/instances/nonexistent")
+        assert resp.status_code == 404

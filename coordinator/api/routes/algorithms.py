@@ -161,3 +161,29 @@ async def get_instance(instance_id: str, db: AsyncSession = Depends(get_db)):
     if inst is None:
         raise HTTPException(status_code=404, detail="Instance not found")
     return _instance_to_response(inst)
+
+
+class InstanceUpdate(BaseModel):
+    config_values: Optional[dict] = None
+    status: Optional[str] = None
+
+@router.patch("/api/instances/{instance_id}")
+async def update_instance(instance_id: str, body: InstanceUpdate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(AlgorithmInstance).where(AlgorithmInstance.id == instance_id))
+    inst = result.scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    if body.config_values is not None:
+        inst.config_values = body.config_values
+    if body.status is not None:
+        inst.status = body.status
+    return _instance_to_response(inst)
+
+
+@router.delete("/api/instances/{instance_id}", status_code=204)
+async def delete_instance(instance_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(AlgorithmInstance).where(AlgorithmInstance.id == instance_id))
+    inst = result.scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    await db.delete(inst)
