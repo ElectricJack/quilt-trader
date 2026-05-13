@@ -64,6 +64,9 @@ def create_app(
     from coordinator.api.routes.cash_flows import router as cash_flows_router
     app.include_router(cash_flows_router)
 
+    from coordinator.api.routes.backtests import router as backtests_router
+    app.include_router(backtests_router)
+
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
     if os.path.isdir(dashboard_dir):
