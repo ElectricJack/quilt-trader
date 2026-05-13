@@ -49,4 +49,7 @@ def create_app(
     from coordinator.api.routes.events import router as events_router
     app.include_router(events_router)
 
+    from coordinator.api.websocket import router as ws_router
+    app.include_router(ws_router)
+
     return app
