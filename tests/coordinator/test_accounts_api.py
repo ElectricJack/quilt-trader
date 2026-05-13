@@ -103,6 +103,118 @@ async def test_delete_account(client):
 
 
 @pytest.mark.asyncio
+async def test_delete_account_with_dependents(client, db_session):
+    """DELETE /api/accounts/:id should cascade-delete all dependent rows."""
+    from coordinator.database.models import (
+        Account,
+        AccountCashFlow,
+        AccountSnapshot,
+        Algorithm,
+        AlgorithmInstance,
+        AlgorithmRun,
+        Position,
+        TradeLog,
+        Worker,
+    )
+    from sqlalchemy import select
+
+    # Seed supporting rows.
+    algo = Algorithm(
+        repo_url="https://github.com/example/algo",
+        name="TestAlgo",
+        install_status="installed",
+    )
+    worker = Worker(name="w1", tailscale_ip="100.64.0.1", status="online")
+    db_session.add_all([algo, worker])
+    await db_session.flush()
+
+    acct = Account(
+        name="Cascade Test",
+        broker_type="alpaca",
+        supported_asset_types=["equities"],
+        pdt_mode="off",
+        credentials="{}",
+    )
+    db_session.add(acct)
+    await db_session.flush()
+
+    instance = AlgorithmInstance(
+        algorithm_id=algo.id,
+        account_id=acct.id,
+        worker_id=worker.id,
+        status="stopped",
+    )
+    db_session.add(instance)
+    await db_session.flush()
+
+    run = AlgorithmRun(instance_id=instance.id, run_number=1, status="completed")
+    db_session.add(run)
+    await db_session.flush()
+
+    snap = AccountSnapshot(
+        account_id=acct.id,
+        total_value=50000.0,
+        cash=20000.0,
+        positions_value=30000.0,
+        source="seed",
+    )
+    trade = TradeLog(
+        account_id=acct.id,
+        instance_id=instance.id,
+        source="algo",
+        symbol="AAPL",
+        side="buy",
+        quantity=10.0,
+        filled_price=150.0,
+    )
+    position = Position(
+        account_id=acct.id,
+        instance_id=instance.id,
+        legs=[],
+        status="open",
+        net_cost=1500.0,
+    )
+    cash_flow = AccountCashFlow(account_id=acct.id, type="deposit", amount=5000.0)
+    db_session.add_all([snap, trade, position, cash_flow])
+    await db_session.commit()
+
+    account_id = acct.id
+    instance_id = instance.id
+
+    response = await client.delete(f"/api/accounts/{account_id}")
+    assert response.status_code == 204
+
+    # Verify the account is gone.
+    get_resp = await client.get(f"/api/accounts/{account_id}")
+    assert get_resp.status_code == 404
+
+    # Verify all dependent rows were cleaned up.
+    assert (await db_session.execute(
+        select(AlgorithmInstance).where(AlgorithmInstance.account_id == account_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(AlgorithmRun).where(AlgorithmRun.instance_id == instance_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(AccountSnapshot).where(AccountSnapshot.account_id == account_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(TradeLog).where(TradeLog.account_id == account_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(Position).where(Position.account_id == account_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(AccountCashFlow).where(AccountCashFlow.account_id == account_id)
+    )).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
 async def test_accounts_snapshots_latest(client, db_session):
     from datetime import datetime, timedelta, timezone
     from coordinator.database.models import Account, AccountSnapshot

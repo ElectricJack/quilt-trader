@@ -3,11 +3,22 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db, get_container
-from coordinator.database.models import Account, AccountSnapshot
+from coordinator.database.models import (
+    Account,
+    AccountCashFlow,
+    AccountSnapshot,
+    AlgorithmInstance,
+    AlgorithmRun,
+    BacktestComparison,
+    DecisionLog,
+    PDTTracking,
+    Position,
+    TradeLog,
+)
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -180,4 +191,55 @@ async def delete_account(account_id: str, db: AsyncSession = Depends(get_db)):
     account = result.scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    # Collect instance IDs so we can cascade through runs/decisions/comparisons.
+    instance_rows = await db.execute(
+        select(AlgorithmInstance.id).where(AlgorithmInstance.account_id == account_id)
+    )
+    instance_ids = [row[0] for row in instance_rows.all()]
+
+    if instance_ids:
+        # Null out active_run_id on instances to break the circular FK before deleting runs.
+        await db.execute(
+            update(AlgorithmInstance)
+            .where(AlgorithmInstance.id.in_(instance_ids))
+            .values(active_run_id=None)
+        )
+        await db.execute(
+            delete(AlgorithmRun).where(AlgorithmRun.instance_id.in_(instance_ids))
+        )
+        await db.execute(
+            delete(DecisionLog).where(DecisionLog.instance_id.in_(instance_ids))
+        )
+        await db.execute(
+            delete(BacktestComparison).where(BacktestComparison.instance_id.in_(instance_ids))
+        )
+
+    # Clear the self-referential locked_by FK before deleting instances.
+    account.locked_by = None
+    await db.flush()
+
+    if instance_ids:
+        await db.execute(
+            delete(AlgorithmInstance).where(AlgorithmInstance.account_id == account_id)
+        )
+
+    # Delete all other dependent rows.
+    await db.execute(
+        delete(Position).where(Position.account_id == account_id)
+    )
+    # pdt_tracking references trade_log.id, so delete it before trade_log.
+    await db.execute(
+        delete(PDTTracking).where(PDTTracking.account_id == account_id)
+    )
+    await db.execute(
+        delete(TradeLog).where(TradeLog.account_id == account_id)
+    )
+    await db.execute(
+        delete(AccountCashFlow).where(AccountCashFlow.account_id == account_id)
+    )
+    await db.execute(
+        delete(AccountSnapshot).where(AccountSnapshot.account_id == account_id)
+    )
+
     await db.delete(account)

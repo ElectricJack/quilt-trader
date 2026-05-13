@@ -33,9 +33,10 @@ export function FormModal<T extends FieldValues>({
 
   useEffect(() => {
     if (open) {
-      form.reset();
+      form.reset(defaultValues);
     }
-  }, [open, form]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   if (!open) return null;
 
