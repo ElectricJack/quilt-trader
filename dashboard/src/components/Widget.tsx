@@ -10,6 +10,7 @@ interface WidgetProps {
   onDragOver?: (e: React.DragEvent) => void;
   onDrop?: (e: React.DragEvent) => void;
   className?: string;
+  bodyClass?: string;
 }
 
 function SkeletonBars() {
@@ -32,6 +33,7 @@ export function Widget({
   onDragOver,
   onDrop,
   className = "",
+  bodyClass,
 }: WidgetProps) {
   return (
     <div
@@ -46,7 +48,7 @@ export function Widget({
         <GripVertical className="text-gray-600 cursor-grab w-4 h-4 shrink-0" />
         <span className="text-sm font-medium text-gray-200">{title}</span>
       </div>
-      <div className="p-4">
+      <div className={bodyClass ?? "p-4"}>
         {isLoading ? <SkeletonBars /> : children}
       </div>
     </div>
