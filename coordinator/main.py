@@ -46,4 +46,7 @@ def create_app(
     from coordinator.api.routes.settings import router as settings_router
     app.include_router(settings_router)
 
+    from coordinator.api.routes.events import router as events_router
+    app.include_router(events_router)
+
     return app
