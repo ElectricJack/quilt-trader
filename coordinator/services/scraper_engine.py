@@ -26,7 +26,7 @@ class ScraperEngine:
     def output_path(self, name: str, fmt: str) -> str:
         return os.path.join(self._output_dir, f"{name}.{fmt}")
 
-    def run_scraper(self, name: str, output_format: str, output_filename: str) -> ScraperResult:
+    def run_scraper(self, name: str, output_format: str) -> ScraperResult:
         pkg_dir = os.path.join(self._packages_dir, name)
         venv_python = os.path.join(pkg_dir, ".venv", "bin", "python")
         python = venv_python if os.path.exists(venv_python) else "python"

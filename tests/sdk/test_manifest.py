@@ -20,8 +20,6 @@ class TestManifestLoading:
         assert manifest.name == "alpha-picks-scraper"
         assert manifest.type == "scraper"
         assert manifest.schedule == "*/30 * * * *"
-        assert manifest.output_format == "csv"
-        assert manifest.output_filename == "alpha-picks.csv"
 
     def test_load_minimal_algorithm(self):
         manifest = QuiltManifest.from_file(FIXTURES / "minimal_algorithm.yaml")
@@ -136,9 +134,6 @@ class_name: Test
 name: test
 type: scraper
 version: 1.0.0
-output:
-  format: csv
-  filename: test.csv
 """
         with pytest.raises(ManifestError, match="schedule"):
             QuiltManifest.from_string(yaml_str)

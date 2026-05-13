@@ -32,8 +32,6 @@ class QuiltManifest:
     config_parameters: list[dict] = field(default_factory=list)
     custom_events: list[dict] = field(default_factory=list)
     schedule: str = ""
-    output_format: str = ""
-    output_filename: str = ""
 
     @staticmethod
     def from_file(path: Path) -> QuiltManifest:
@@ -85,8 +83,6 @@ class QuiltManifest:
         notifications_data = data.get("notifications", {})
         custom_events = notifications_data.get("custom_events", [])
 
-        output_data = data.get("output", {})
-
         return QuiltManifest(
             name=data["name"],
             type=data["type"],
@@ -98,6 +94,4 @@ class QuiltManifest:
             config_parameters=config_parameters,
             custom_events=custom_events,
             schedule=data.get("schedule", ""),
-            output_format=output_data.get("format", ""),
-            output_filename=output_data.get("filename", ""),
         )

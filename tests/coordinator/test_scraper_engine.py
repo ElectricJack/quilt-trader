@@ -45,7 +45,7 @@ def test_output_path(packages_dir, output_dir):
 def test_run_scraper(mock_subprocess, packages_dir, output_dir):
     mock_subprocess.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
     engine = ScraperEngine(packages_dir=packages_dir, output_dir=output_dir)
-    result = engine.run_scraper("alpha-picks-scraper", "csv", "alpha-picks-scraper.csv")
+    result = engine.run_scraper("alpha-picks-scraper", "csv")
     assert isinstance(result, ScraperResult)
     assert result.success is True
 
@@ -55,6 +55,6 @@ def test_run_scraper_failure(mock_subprocess, packages_dir, output_dir):
         returncode=1, stdout="", stderr="ImportError: No module named 'selenium'",
     )
     engine = ScraperEngine(packages_dir=packages_dir, output_dir=output_dir)
-    result = engine.run_scraper("alpha-picks-scraper", "csv", "alpha-picks-scraper.csv")
+    result = engine.run_scraper("alpha-picks-scraper", "csv")
     assert result.success is False
     assert "selenium" in result.error
