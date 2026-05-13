@@ -55,6 +55,15 @@ def create_app(
     from coordinator.api.routes.github import router as github_router
     app.include_router(github_router)
 
+    from coordinator.api.routes.data import router as data_router
+    app.include_router(data_router)
+
+    from coordinator.api.routes.runs import router as runs_router
+    app.include_router(runs_router)
+
+    from coordinator.api.routes.cash_flows import router as cash_flows_router
+    app.include_router(cash_flows_router)
+
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
     if os.path.isdir(dashboard_dir):
