@@ -32,6 +32,7 @@ class QuiltManifest:
     config_parameters: list[dict] = field(default_factory=list)
     custom_events: list[dict] = field(default_factory=list)
     schedule: str = ""
+    jitter_seconds: Optional[int] = None
 
     @staticmethod
     def from_file(path: Path) -> QuiltManifest:
@@ -83,6 +84,20 @@ class QuiltManifest:
         notifications_data = data.get("notifications", {})
         custom_events = notifications_data.get("custom_events", [])
 
+        jitter_raw = data.get("jitter_seconds")
+        jitter_seconds: Optional[int] = None
+        if jitter_raw is not None:
+            try:
+                jitter_seconds = int(jitter_raw)
+            except (TypeError, ValueError):
+                raise ManifestError(
+                    f"jitter_seconds must be an integer, got {jitter_raw!r}"
+                )
+            if jitter_seconds < 0:
+                raise ManifestError(
+                    f"jitter_seconds must be non-negative, got {jitter_seconds}"
+                )
+
         return QuiltManifest(
             name=data["name"],
             type=data["type"],
@@ -94,4 +109,5 @@ class QuiltManifest:
             config_parameters=config_parameters,
             custom_events=custom_events,
             schedule=data.get("schedule", ""),
+            jitter_seconds=jitter_seconds,
         )

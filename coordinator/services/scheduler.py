@@ -1,5 +1,5 @@
 import logging
-from typing import Callable
+from typing import Callable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -17,7 +17,13 @@ class SchedulerService:
     def shutdown(self) -> None:
         self._scheduler.shutdown(wait=False)
 
-    def add_cron_job(self, job_id: str, func: Callable, cron_expr: str) -> None:
+    def add_cron_job(
+        self,
+        job_id: str,
+        func: Callable,
+        cron_expr: str,
+        jitter: Optional[int] = None,
+    ) -> None:
         parts = cron_expr.split()
         trigger = CronTrigger(
             minute=parts[0],
@@ -25,6 +31,7 @@ class SchedulerService:
             day=parts[2],
             month=parts[3],
             day_of_week=parts[4],
+            jitter=jitter,
         )
         self._scheduler.add_job(func, trigger=trigger, id=job_id, replace_existing=True)
 

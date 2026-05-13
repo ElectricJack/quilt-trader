@@ -33,6 +33,7 @@ class ScraperRecord:
     schedule: str
     manifest: dict
     config: dict = field(default_factory=dict)
+    jitter_seconds: Optional[int] = None
     last_status: Optional[str] = None
     last_run_at: Optional[str] = None
     last_output_path: Optional[str] = None
@@ -82,8 +83,25 @@ class ScraperRegistry:
                 logger.warning("scraper %s has no schedule; skipping", name)
                 continue
 
+            jitter_seconds = manifest.get("jitter_seconds")
+            if jitter_seconds is not None:
+                try:
+                    jitter_seconds = int(jitter_seconds)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "scraper %s has non-integer jitter_seconds %r; ignoring",
+                        name, jitter_seconds,
+                    )
+                    jitter_seconds = None
+
             config = self._load_overrides(name)
-            record = ScraperRecord(name=name, schedule=schedule, manifest=manifest, config=config)
+            record = ScraperRecord(
+                name=name,
+                schedule=schedule,
+                manifest=manifest,
+                config=config,
+                jitter_seconds=jitter_seconds,
+            )
             self._scrapers[name] = record
 
             job_id = f"scraper:{name}"
@@ -91,8 +109,12 @@ class ScraperRegistry:
                 job_id=job_id,
                 func=lambda n=name: asyncio.create_task(self.run(n)),
                 cron_expr=schedule,
+                jitter=jitter_seconds,
             )
-            logger.info("registered scraper %s with schedule %r", name, schedule)
+            logger.info(
+                "registered scraper %s with schedule %r jitter=%s",
+                name, schedule, jitter_seconds,
+            )
 
         return list(self._scrapers.values())
 
