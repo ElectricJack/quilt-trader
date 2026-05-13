@@ -1,41 +1,58 @@
+import { useNavigate } from "react-router-dom";
 import { Widget } from "../Widget";
-import { useAllInstances } from "../../api/hooks";
+import { useOpenPositions } from "../../api/hooks";
 
-function summarizeState(state: Record<string, unknown>): string {
-  const keys = Object.keys(state);
-  if (keys.length === 0) return "No state keys";
-  return keys.slice(0, 3).join(", ") + (keys.length > 3 ? `, +${keys.length - 3} more` : "");
+function formatMoney(v: number | null | undefined): string {
+  if (v == null) return "—";
+  const sign = v >= 0 ? "+" : "";
+  return `${sign}$${Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+}
+
+function formatPct(unrealized: number | null, cost: number): string {
+  if (unrealized == null || !cost) return "";
+  const pct = (unrealized / Math.abs(cost)) * 100;
+  const sign = pct >= 0 ? "+" : "";
+  return `(${sign}${pct.toFixed(1)}%)`;
 }
 
 export function OpenPositionsWidget() {
-  const { data: instances, isLoading } = useAllInstances();
-
-  const withState = (instances ?? []).filter(
-    (inst) => inst.persisted_state && Object.keys(inst.persisted_state).length > 0
-  );
+  const navigate = useNavigate();
+  const { data, isLoading } = useOpenPositions(10);
+  const items = data?.items ?? [];
 
   return (
-    <Widget title="Open Positions" isLoading={isLoading}>
-      {withState.length === 0 ? (
-        <p className="text-gray-500 text-sm">No position data available</p>
+    <Widget title="Open Positions" isLoading={isLoading} bodyClass="">
+      {items.length === 0 ? (
+        <p className="text-gray-500 text-sm p-3.5">No open positions</p>
       ) : (
-        <ul className="space-y-2">
-          {withState.map((inst) => (
-            <li
-              key={inst.id}
-              className="py-1.5 border-b border-gray-800 last:border-b-0"
+        items.map((p) => {
+          const sideLabel = (p.side ?? "").toLowerCase() === "long" ? "Long" : "Short";
+          const pos = (p.unrealized_pnl ?? 0) >= 0;
+          return (
+            <div
+              key={p.id}
+              onClick={() => p.instance_id && navigate(`/instances/${p.instance_id}`)}
+              className="px-3.5 py-2.5 border-b border-gray-800 last:border-b-0 cursor-pointer hover:bg-gray-800"
             >
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className="text-xs text-gray-400 font-mono truncate max-w-[160px]">
-                  {inst.id}
+              <div className="flex items-center justify-between">
+                <span className="text-sm">
+                  <strong>{p.symbol ?? "—"}</strong>
+                  {p.extra_legs > 0 && <span className="text-gray-500 ml-1">+{p.extra_legs} legs</span>}
+                  <span className="text-gray-400 ml-2">· {sideLabel} {p.quantity}</span>
+                </span>
+                <span className={`text-xs ${pos ? "text-emerald-400" : "text-red-400"}`}>
+                  {formatMoney(p.unrealized_pnl)} {formatPct(p.unrealized_pnl, p.net_cost)}
                 </span>
               </div>
-              <span className="text-xs text-gray-500">
-                {summarizeState(inst.persisted_state!)}
-              </span>
-            </li>
-          ))}
-        </ul>
+              <div className="flex items-center justify-between mt-1 text-[10px] text-gray-500">
+                <span>
+                  @ {p.avg_price ?? "—"} → {p.current_price ?? "—"}
+                </span>
+                <span className="text-gray-500">{p.algorithm_name ?? "—"}</span>
+              </div>
+            </div>
+          );
+        })
       )}
     </Widget>
   );
