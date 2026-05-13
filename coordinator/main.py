@@ -37,4 +37,7 @@ def create_app(
     from coordinator.api.routes.accounts import router as accounts_router
     app.include_router(accounts_router)
 
+    from coordinator.api.routes.workers import router as workers_router
+    app.include_router(workers_router)
+
     return app
