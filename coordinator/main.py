@@ -106,6 +106,9 @@ def create_app(
     from coordinator.api.routes.portfolio import router as portfolio_router
     app.include_router(portfolio_router)
 
+    from coordinator.api.routes.positions import router as positions_router
+    app.include_router(positions_router)
+
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
     if os.path.isdir(dashboard_dir):
