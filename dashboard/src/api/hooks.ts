@@ -432,3 +432,74 @@ export function useDeleteThetaData() {
     },
   });
 }
+
+// ─── Portfolio ────────────────────────────────────────────────────────────────
+
+export function usePortfolioEquity(range: "1d" | "1w" | "1m" | "all" = "1m") {
+  return useQuery({
+    queryKey: ["portfolio", "equity", range] as const,
+    queryFn: () => api.portfolioEquity(range),
+    staleTime: 30_000,
+  });
+}
+
+export function usePortfolioKpis() {
+  return useQuery({
+    queryKey: ["portfolio", "kpis"] as const,
+    queryFn: api.portfolioKpis,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function usePortfolioAllocation() {
+  return useQuery({
+    queryKey: ["portfolio", "allocation"] as const,
+    queryFn: api.portfolioAllocation,
+    staleTime: 60_000,
+  });
+}
+
+// ─── Positions ────────────────────────────────────────────────────────────────
+
+export function useOpenPositions(limit = 10) {
+  return useQuery({
+    queryKey: ["positions", "open", limit] as const,
+    queryFn: () => api.listOpenPositions(limit),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+}
+
+// ─── Trades ───────────────────────────────────────────────────────────────────
+
+export function useRecentTrades(limit = 10) {
+  return useQuery({
+    queryKey: ["trades", "recent", limit] as const,
+    queryFn: () => api.listRecentTrades(limit),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+}
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+
+export function useAlerts(limit = 10) {
+  return useQuery({
+    queryKey: ["alerts", limit] as const,
+    queryFn: () => api.listAlerts(limit),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+// ─── Account snapshots ────────────────────────────────────────────────────────
+
+export function useAccountSnapshotsLatest() {
+  return useQuery({
+    queryKey: ["accounts", "snapshots", "latest"] as const,
+    queryFn: api.accountSnapshotsLatest,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}

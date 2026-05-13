@@ -56,6 +56,11 @@ export interface AlgorithmInstance {
   lifetime_metrics: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+  // Enriched fields from /api/instances response:
+  algorithm_name?: string | null;
+  account_name?: string | null;
+  today_pnl?: number | null;
+  pnl_sparkline?: number[] | null;
 }
 
 export interface EquityPoint {
@@ -222,4 +227,117 @@ export interface AccountSnapshot {
   positions_value: number;
   net_deposits_cumulative: number;
   source: string;
+}
+
+export interface PortfolioEquityPoint {
+  timestamp: string;
+  value: number;
+}
+
+export interface PortfolioEquityAccount {
+  account_id: string;
+  account_name: string;
+  points: PortfolioEquityPoint[];
+}
+
+export interface PortfolioEquityResponse {
+  accounts: PortfolioEquityAccount[];
+}
+
+export interface PortfolioKpis {
+  total_equity: number;
+  today_pnl: number;
+  today_pnl_pct: number;
+  trades_today: number;
+  trades_today_wins: number;
+  trades_today_losses: number;
+  win_rate: number;
+  win_rate_7d_avg: number;
+  open_positions: number;
+  open_positions_long: number;
+  open_positions_short: number;
+  open_risk: number;
+  open_risk_pct_equity: number;
+  deployed_pct: number;
+  deployed_usd: number;
+  buying_power: number;
+  buying_power_pct: number;
+}
+
+export interface AllocSegment {
+  key: string;
+  label: string;
+  value_usd: number;
+  percent: number;
+  color: string;
+}
+
+export interface AllocationResponse {
+  by_class: AllocSegment[];
+  by_symbol: AllocSegment[];
+}
+
+export interface OpenPositionRow {
+  id: string;
+  instance_id: string | null;
+  account_id: string;
+  algorithm_name: string | null;
+  status: string;
+  symbol: string | null;
+  side: string | null;
+  quantity: number | null;
+  avg_price: number | null;
+  current_price: number | null;
+  asset_type: string | null;
+  unrealized_pnl: number | null;
+  net_pnl: number | null;
+  net_cost: number;
+  extra_legs: number;
+  opened_at: string | null;
+}
+
+export interface TradeRow {
+  id: string;
+  instance_id: string | null;
+  account_id: string;
+  algorithm_name: string | null;
+  timestamp: string | null;
+  symbol: string;
+  asset_type: string;
+  side: string;
+  quantity: number;
+  filled_price: number;
+  notional: number;
+  fees: number;
+}
+
+export interface AlertItem {
+  kind: "event" | "backtest";
+  id: string;
+  severity: string;
+  label: string;
+  source_name: string;
+  timestamp: string | null;
+  link_path: string | null;
+  pill: string;
+  pill_color: "warn" | "err" | "backtest";
+}
+
+export interface AccountSnapshotLatestItem {
+  account_id: string;
+  account_name: string;
+  broker_type: string;
+  latest: {
+    timestamp: string;
+    total_value: number;
+    cash: number;
+    positions_value: number;
+  };
+  prior: {
+    timestamp: string;
+    total_value: number;
+    cash: number;
+    positions_value: number;
+  } | null;
+  day_pct: number | null;
 }

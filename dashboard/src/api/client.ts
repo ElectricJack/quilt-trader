@@ -13,6 +13,13 @@ import type {
   CashFlow,
   BacktestComparison,
   MarketDataDownload,
+  PortfolioEquityResponse,
+  PortfolioKpis,
+  AllocationResponse,
+  OpenPositionRow,
+  TradeRow,
+  AlertItem,
+  AccountSnapshotLatestItem,
 } from "../types";
 
 // ─── Request body types ────────────────────────────────────────────────────────
@@ -344,5 +351,36 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ full_name }),
     });
+  },
+
+  // Portfolio
+  portfolioEquity(range: "1d" | "1w" | "1m" | "all" = "1m"): Promise<PortfolioEquityResponse> {
+    return request<PortfolioEquityResponse>(`/api/portfolio/equity?range=${range}`);
+  },
+  portfolioKpis(): Promise<PortfolioKpis> {
+    return request<PortfolioKpis>("/api/portfolio/kpis");
+  },
+  portfolioAllocation(): Promise<AllocationResponse> {
+    return request<AllocationResponse>("/api/portfolio/allocation");
+  },
+
+  // Positions
+  listOpenPositions(limit = 10): Promise<{ items: OpenPositionRow[] }> {
+    return request<{ items: OpenPositionRow[] }>(`/api/positions?status=open&limit=${limit}`);
+  },
+
+  // Trades
+  listRecentTrades(limit = 10): Promise<{ items: TradeRow[] }> {
+    return request<{ items: TradeRow[] }>(`/api/trades?limit=${limit}`);
+  },
+
+  // Alerts
+  listAlerts(limit = 10): Promise<{ items: AlertItem[] }> {
+    return request<{ items: AlertItem[] }>(`/api/alerts?limit=${limit}`);
+  },
+
+  // Account snapshots
+  accountSnapshotsLatest(): Promise<{ items: AccountSnapshotLatestItem[] }> {
+    return request<{ items: AccountSnapshotLatestItem[] }>("/api/accounts/snapshots/latest");
   },
 };
