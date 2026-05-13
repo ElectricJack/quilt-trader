@@ -28,7 +28,8 @@ async def db_session(db_engine):
 @pytest_asyncio.fixture
 async def test_app():
     app = create_app(database_url="sqlite+aiosqlite:///:memory:")
-    yield app
+    async with app.router.lifespan_context(app):
+        yield app
 
 
 @pytest_asyncio.fixture

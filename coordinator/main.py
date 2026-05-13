@@ -34,4 +34,7 @@ def create_app(
     async def health():
         return JSONResponse({"status": "ok", "version": "0.1.0"})
 
+    from coordinator.api.routes.accounts import router as accounts_router
+    app.include_router(accounts_router)
+
     return app

@@ -1,0 +1,130 @@
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from coordinator.api.dependencies import get_db, get_container
+from coordinator.database.models import Account
+
+router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+
+
+class AccountCreate(BaseModel):
+    name: str
+    broker_type: str
+    credentials: dict
+    supported_asset_types: list[str]
+    options_level: Optional[int] = None
+    account_features: Optional[list[str]] = None
+    pdt_mode: str = "off"
+
+
+class AccountUpdate(BaseModel):
+    name: Optional[str] = None
+    credentials: Optional[dict] = None
+    supported_asset_types: Optional[list[str]] = None
+    options_level: Optional[int] = None
+    account_features: Optional[list[str]] = None
+    pdt_mode: Optional[str] = None
+
+
+class AccountResponse(BaseModel):
+    id: str
+    name: str
+    broker_type: str
+    supported_asset_types: list[str]
+    options_level: Optional[int]
+    account_features: Optional[list[str]]
+    pdt_mode: str
+    locked_by: Optional[str]
+    created_at: str
+    updated_at: str
+
+    model_config = {"from_attributes": True}
+
+
+def _to_response(account: Account) -> dict:
+    return {
+        "id": account.id,
+        "name": account.name,
+        "broker_type": account.broker_type,
+        "supported_asset_types": account.supported_asset_types,
+        "options_level": account.options_level,
+        "account_features": account.account_features,
+        "pdt_mode": account.pdt_mode,
+        "locked_by": account.locked_by,
+        "created_at": account.created_at.isoformat() if account.created_at else None,
+        "updated_at": account.updated_at.isoformat() if account.updated_at else None,
+    }
+
+
+@router.post("", status_code=201)
+async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)):
+    container = get_container()
+    encrypted_creds = container.encryption.encrypt_json(body.credentials)
+    account = Account(
+        name=body.name,
+        broker_type=body.broker_type,
+        credentials=encrypted_creds,
+        supported_asset_types=body.supported_asset_types,
+        options_level=body.options_level,
+        account_features=body.account_features,
+        pdt_mode=body.pdt_mode,
+    )
+    db.add(account)
+    await db.flush()
+    return _to_response(account)
+
+
+@router.get("")
+async def list_accounts(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Account))
+    accounts = result.scalars().all()
+    return [_to_response(a) for a in accounts]
+
+
+@router.get("/{account_id}")
+async def get_account(account_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Account).where(Account.id == account_id))
+    account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return _to_response(account)
+
+
+@router.patch("/{account_id}")
+async def update_account(
+    account_id: str, body: AccountUpdate, db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Account).where(Account.id == account_id))
+    account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if body.name is not None:
+        account.name = body.name
+    if body.credentials is not None:
+        container = get_container()
+        account.credentials = container.encryption.encrypt_json(body.credentials)
+    if body.supported_asset_types is not None:
+        account.supported_asset_types = body.supported_asset_types
+    if body.options_level is not None:
+        account.options_level = body.options_level
+    if body.account_features is not None:
+        account.account_features = body.account_features
+    if body.pdt_mode is not None:
+        account.pdt_mode = body.pdt_mode
+
+    await db.flush()
+    return _to_response(account)
+
+
+@router.delete("/{account_id}", status_code=204)
+async def delete_account(account_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Account).where(Account.id == account_id))
+    account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    await db.delete(account)
