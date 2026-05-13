@@ -112,6 +112,9 @@ def create_app(
     from coordinator.api.routes.trades import router as trades_router
     app.include_router(trades_router)
 
+    from coordinator.api.routes.alerts import router as alerts_router
+    app.include_router(alerts_router)
+
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
     if os.path.isdir(dashboard_dir):
