@@ -115,7 +115,7 @@ export class WebSocketManager {
 
 const wsUrl =
   typeof window !== "undefined"
-    ? `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`
-    : "ws://localhost:8000/ws";
+    ? `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws/dashboard`
+    : "ws://localhost:8000/ws/dashboard";
 
 export const wsManager = new WebSocketManager(wsUrl);

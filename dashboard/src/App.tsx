@@ -1,6 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { AlertToast } from "./components/AlertToast";
 import { Layout } from "./components/Layout";
+import { useWebSocketSync } from "./hooks/useWebSocketSync";
 import { Overview } from "./pages/Overview";
 import { Accounts } from "./pages/Accounts";
 import { AccountDetail } from "./pages/AccountDetail";
@@ -9,6 +11,7 @@ import { AlgorithmDetail } from "./pages/AlgorithmDetail";
 import { InstanceDetail } from "./pages/InstanceDetail";
 import { RunDetail } from "./pages/RunDetail";
 import { Workers } from "./pages/Workers";
+import { WorkerDetail } from "./pages/WorkerDetail";
 import { Data } from "./pages/Data";
 import { Backtests } from "./pages/Backtests";
 import { BacktestDetail } from "./pages/BacktestDetail";
@@ -24,9 +27,16 @@ const queryClient = new QueryClient({
   },
 });
 
+function WebSocketSync(): null {
+  useWebSocketSync();
+  return null;
+}
+
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <WebSocketSync />
+      <AlertToast />
       <BrowserRouter>
         <Layout>
           <Routes>
@@ -38,6 +48,7 @@ export function App() {
             <Route path="/instances/:id" element={<InstanceDetail />} />
             <Route path="/runs/:id" element={<RunDetail />} />
             <Route path="/workers" element={<Workers />} />
+            <Route path="/workers/:id" element={<WorkerDetail />} />
             <Route path="/data" element={<Data />} />
             <Route path="/backtests" element={<Backtests />} />
             <Route path="/backtests/:id" element={<BacktestDetail />} />

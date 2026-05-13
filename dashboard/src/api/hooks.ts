@@ -10,6 +10,9 @@ import type {
   WorkerCreate,
   WorkerUpdate,
   InstanceCreate,
+  InstanceUpdate,
+  CashFlowCreate,
+  DownloadCreate,
   EventParams,
 } from "./client";
 
@@ -31,6 +34,8 @@ export const keys = {
   backtests: () => ["backtests"] as const,
   backtest: (id: string) => ["backtests", id] as const,
   availableData: () => ["data", "available"] as const,
+  downloads: () => ["data", "downloads"] as const,
+  download: (id: string) => ["data", "downloads", id] as const,
   events: (params: EventParams) => ["events", params] as const,
   settings: () => ["settings"] as const,
   repos: () => ["repos"] as const,
@@ -184,6 +189,28 @@ export function useCreateInstance(algorithmId: string) {
   });
 }
 
+export function useUpdateInstance() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: InstanceUpdate }) =>
+      api.updateInstance(id, body),
+    onSuccess: (_data, { id }) => {
+      void qc.invalidateQueries({ queryKey: keys.instance(id) });
+      void qc.invalidateQueries({ queryKey: keys.allInstances() });
+    },
+  });
+}
+
+export function useDeleteInstance() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteInstance(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.allInstances() });
+    },
+  });
+}
+
 // ─── Install Algorithm ────────────────────────────────────────────────────────
 
 export function useInstallAlgorithm() {
@@ -249,6 +276,45 @@ export function useCashFlows(accountId: string) {
   });
 }
 
+export function useCreateCashFlow(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CashFlowCreate) => api.createCashFlow(accountId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.cashFlows(accountId) });
+    },
+  });
+}
+
+// ─── Downloads ───────────────────────────────────────────────────────────────
+
+export function useDownloads() {
+  return useQuery({
+    queryKey: keys.downloads(),
+    queryFn: api.listDownloads,
+  });
+}
+
+export function useCreateDownload() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: DownloadCreate) => api.createDownload(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.downloads() });
+    },
+  });
+}
+
+export function useCancelDownload() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.cancelDownload(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.downloads() });
+    },
+  });
+}
+
 // ─── Backtests ────────────────────────────────────────────────────────────────
 
 export function useBacktests() {
@@ -281,5 +347,88 @@ export function useAvailableData() {
   return useQuery({
     queryKey: keys.availableData(),
     queryFn: api.listAvailableData,
+  });
+}
+
+// ─── Settings Mutations ──────────────────────────────────────────────────────
+
+export function useSetGithubPat() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (value: string) => api.setGithubPat(value),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useSetDiscordToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (value: string) => api.setDiscordToken(value),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useSetPolygonKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (value: string) => api.setPolygonKey(value),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useSetThetaData() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ username, password }: { username: string; password: string }) =>
+      api.setThetaData(username, password),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useDeleteGithubPat() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteGithubPat(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useDeleteDiscordToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteDiscordToken(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useDeletePolygonKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deletePolygonKey(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useDeleteThetaData() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteThetaData(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
   });
 }

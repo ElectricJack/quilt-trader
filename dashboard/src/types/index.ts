@@ -58,13 +58,27 @@ export interface AlgorithmInstance {
   updated_at: string;
 }
 
+export interface EquityPoint {
+  date: string;
+  equity: number;
+}
+
 export interface AlgorithmRun {
   id: string;
   instance_id: string;
+  run_number: number;
   status: string;
   started_at: string | null;
-  ended_at: string | null;
-  error: string | null;
+  stopped_at: string | null;
+  starting_equity: number | null;
+  ending_equity: number | null;
+  net_pnl: number | null;
+  unrealized_pnl: number | null;
+  total_fees: number;
+  total_slippage: number;
+  trade_count: number;
+  metrics: Record<string, unknown> | null;
+  equity_curve: EquityPoint[] | null;
 }
 
 export interface PerformanceMetrics {
@@ -181,4 +195,31 @@ export interface DataAvailability {
   provider: string;
   symbols: string[];
   timeframes: string[];
+}
+
+export interface MarketDataDownload {
+  id: string;
+  symbols: string[];
+  date_range_start: string;
+  date_range_end: string;
+  provider: string;
+  data_type: string;
+  timeframe: string;
+  status: string;
+  progress_current: number;
+  progress_total: number;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface AccountSnapshot {
+  id: string;
+  account_id: string;
+  timestamp: string;
+  total_value: number;
+  cash: number;
+  positions_value: number;
+  net_deposits_cumulative: number;
+  source: string;
 }

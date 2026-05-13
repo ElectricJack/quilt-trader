@@ -12,6 +12,7 @@ import type {
   HealthResponse,
   CashFlow,
   BacktestComparison,
+  MarketDataDownload,
 } from "../types";
 
 // ─── Request body types ────────────────────────────────────────────────────────
@@ -51,6 +52,26 @@ export interface InstanceCreate {
   account_id: string;
   worker_id: string;
   config_values?: Record<string, unknown>;
+}
+
+export interface InstanceUpdate {
+  config_values?: Record<string, unknown>;
+  status?: string;
+}
+
+export interface CashFlowCreate {
+  type: string;
+  amount: number;
+  notes?: string;
+}
+
+export interface DownloadCreate {
+  symbols: string[];
+  date_range_start: string;
+  date_range_end: string;
+  provider: string;
+  data_type: string;
+  timeframe: string;
 }
 
 export interface EventParams {
@@ -187,6 +208,15 @@ export const api = {
   listAllInstances(): Promise<AlgorithmInstance[]> {
     return request<AlgorithmInstance[]>("/api/instances");
   },
+  updateInstance(id: string, body: InstanceUpdate): Promise<AlgorithmInstance> {
+    return request<AlgorithmInstance>(`/api/instances/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
+  deleteInstance(id: string): Promise<void> {
+    return request<void>(`/api/instances/${id}`, { method: "DELETE" });
+  },
 
   // Runs
   listRuns(instanceId: string): Promise<AlgorithmRun[]> {
@@ -200,6 +230,12 @@ export const api = {
   listCashFlows(accountId: string): Promise<CashFlow[]> {
     return request<CashFlow[]>(`/api/accounts/${accountId}/cash-flows`);
   },
+  createCashFlow(accountId: string, body: CashFlowCreate): Promise<CashFlow> {
+    return request<CashFlow>(`/api/accounts/${accountId}/cash-flows`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
 
   // Backtests
   listBacktests(): Promise<BacktestComparison[]> {
@@ -212,6 +248,23 @@ export const api = {
   // Data
   listAvailableData(): Promise<Record<string, string[]>> {
     return request<Record<string, string[]>>("/api/data/available");
+  },
+  listDownloads(): Promise<MarketDataDownload[]> {
+    return request<MarketDataDownload[]>("/api/data/downloads");
+  },
+  getDownload(id: string): Promise<MarketDataDownload> {
+    return request<MarketDataDownload>(`/api/data/downloads/${id}`);
+  },
+  createDownload(body: DownloadCreate): Promise<MarketDataDownload> {
+    return request<MarketDataDownload>("/api/data/downloads", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  cancelDownload(id: string): Promise<MarketDataDownload> {
+    return request<MarketDataDownload>(`/api/data/downloads/${id}/cancel`, {
+      method: "POST",
+    });
   },
 
   // Events
@@ -257,6 +310,26 @@ export const api = {
     return request<SettingsStatus>("/api/settings/theta-data", {
       method: "PUT",
       body: JSON.stringify({ username, password }),
+    });
+  },
+  deleteGithubPat(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/github-pat", {
+      method: "DELETE",
+    });
+  },
+  deleteDiscordToken(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/discord-token", {
+      method: "DELETE",
+    });
+  },
+  deletePolygonKey(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/polygon-key", {
+      method: "DELETE",
+    });
+  },
+  deleteThetaData(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/theta-data", {
+      method: "DELETE",
     });
   },
 
