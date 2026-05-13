@@ -14,6 +14,7 @@ from coordinator.database.models import (
 async def seed():
     engine = create_engine("sqlite+aiosqlite:///data/quilt_trader.db")
     async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     session_factory = create_session_factory(engine)
@@ -171,26 +172,42 @@ async def seed():
             total_slippage=8.90, trade_count=174,
             metrics={"sharpe": 1.48, "win_rate": 0.59},
             equity_curve=[
-                {"date": (now - timedelta(days=14-i)).strftime("%Y-%m-%d"),
-                 "equity": 52150 + i * 152}
-                for i in range(15)
+                {
+                    "timestamp": (now - timedelta(days=14) + timedelta(hours=i * 17)).isoformat(),
+                    "equity": round(52150 + i * 161 + ((-1) ** i) * 85, 2),
+                }
+                for i in range(20)
             ],
         )
         run3 = AlgorithmRun(
             instance_id=inst2.id, run_number=1, status="running",
-            started_at=now - timedelta(days=21),
+            started_at=now - timedelta(days=7),
             starting_equity=25000.0,
             net_pnl=1250.00, unrealized_pnl=180.00, total_fees=45.00,
             total_slippage=22.50, trade_count=89,
             metrics={"sharpe": 0.95, "win_rate": 0.52},
+            equity_curve=[
+                {
+                    "timestamp": (now - timedelta(days=7) + timedelta(hours=i * 8)).isoformat(),
+                    "equity": round(25000 + i * 66 + ((-1) ** i) * 120, 2),
+                }
+                for i in range(20)
+            ],
         )
         run4 = AlgorithmRun(
             instance_id=inst3.id, run_number=1, status="running",
-            started_at=now - timedelta(days=45),
+            started_at=now - timedelta(days=7),
             starting_equity=100000.0,
             net_pnl=6120.00, unrealized_pnl=-450.00, total_fees=312.00,
             total_slippage=0.0, trade_count=52,
             metrics={"sharpe": 1.85, "win_rate": 0.73},
+            equity_curve=[
+                {
+                    "timestamp": (now - timedelta(days=7) + timedelta(hours=i * 8)).isoformat(),
+                    "equity": round(100000 + i * 328 + ((-1) ** i) * 250, 2),
+                }
+                for i in range(20)
+            ],
         )
         inst1.active_run_id = None  # will set after flush
         session.add_all([run1, run2, run3, run4])
@@ -307,24 +324,34 @@ async def seed():
             instance_id=inst1.id, account_id=acct1.id,
             strategy_type="single",
             legs=[{"symbol": "SPY", "quantity": 50, "side": "long",
-                   "avg_price": 587.42, "current_price": 589.80}],
+                   "avg_price": 587.42, "current_price": 589.80,
+                   "asset_type": "equities", "value": 29490.0}],
             status="open", net_cost=29371.0, unrealized_pnl=119.0, total_fees=1.20,
         ))
         session.add(Position(
             instance_id=inst2.id, account_id=acct1.id,
             strategy_type="single",
             legs=[{"symbol": "ETH/USD", "quantity": 2.5, "side": "long",
-                   "avg_price": 3820.15, "current_price": 3892.40}],
+                   "avg_price": 3820.15, "current_price": 3892.40,
+                   "asset_type": "crypto", "value": 9731.0}],
             status="open", net_cost=9550.38, unrealized_pnl=180.63, total_fees=0.0,
         ))
         session.add(Position(
             instance_id=inst3.id, account_id=acct2.id,
             strategy_type="iron_condor",
             legs=[
-                {"symbol": "SPX 5950C 06/15", "quantity": -1, "side": "short", "avg_price": 4.20, "current_price": 3.10},
-                {"symbol": "SPX 5960C 06/15", "quantity": 1, "side": "long", "avg_price": 2.80, "current_price": 2.00},
-                {"symbol": "SPX 5800P 06/15", "quantity": -1, "side": "short", "avg_price": 3.50, "current_price": 2.90},
-                {"symbol": "SPX 5790P 06/15", "quantity": 1, "side": "long", "avg_price": 2.10, "current_price": 1.80},
+                {"symbol": "SPX 5950C 06/15", "quantity": -1, "side": "short",
+                 "avg_price": 4.20, "current_price": 3.10,
+                 "asset_type": "options", "value": 310.0},
+                {"symbol": "SPX 5960C 06/15", "quantity": 1, "side": "long",
+                 "avg_price": 2.80, "current_price": 2.00,
+                 "asset_type": "options", "value": 200.0},
+                {"symbol": "SPX 5800P 06/15", "quantity": -1, "side": "short",
+                 "avg_price": 3.50, "current_price": 2.90,
+                 "asset_type": "options", "value": 290.0},
+                {"symbol": "SPX 5790P 06/15", "quantity": 1, "side": "long",
+                 "avg_price": 2.10, "current_price": 1.80,
+                 "asset_type": "options", "value": 180.0},
             ],
             status="open", net_cost=-280.0, unrealized_pnl=150.0, total_fees=5.20,
         ))
@@ -332,13 +359,14 @@ async def seed():
             instance_id=inst1.id, account_id=acct1.id,
             strategy_type="single",
             legs=[{"symbol": "SPY", "quantity": 100, "side": "long",
-                   "avg_price": 582.10, "current_price": 585.40}],
+                   "avg_price": 582.10, "current_price": 585.40,
+                   "asset_type": "equities", "value": 58540.0}],
             status="closed", net_cost=58210.0, net_proceeds=58540.0,
             net_pnl=330.0, total_fees=2.40,
             closed_at=now - timedelta(days=3),
         ))
 
-        # --- Trade Log entries ---
+        # --- Trade Log entries (historical, last 24 h) ---
         for i, (sym, side, qty, price, fees) in enumerate([
             ("SPY", "buy", 50, 587.42, 0.60),
             ("SPY", "sell", 100, 585.40, 1.20),
@@ -359,9 +387,71 @@ async def seed():
                 timestamp=now - timedelta(hours=24-i*3),
             ))
 
+        # --- Today's trades (for KPI trades_today count and instance today_pnl) ---
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_trades = [
+            # inst1 / acct1 — equities
+            (inst1.id, acct1.id, "SPY", "buy",  25, 590.10, 0.30, "equities",  0.5),
+            (inst1.id, acct1.id, "SPY", "sell", 25, 592.75, 0.30, "equities",  1.5),
+            # inst2 / acct1 — crypto
+            (inst2.id, acct1.id, "BTC/USD", "buy", 0.05, 67250.00, 0.0, "crypto",  2.0),
+            # inst3 / acct2 — options
+            (inst3.id, acct2.id, "SPX 5850P 06/22", "sell", 1, 6.80, 1.30, "options", 0.5),
+            (inst3.id, acct2.id, "SPX 5840P 06/22", "buy",  1, 4.50, 1.30, "options", 0.75),
+        ]
+        for j, (iid, aid, sym, side, qty, price, fees, atype, h_offset) in enumerate(today_trades):
+            session.add(TradeLog(
+                instance_id=iid,
+                account_id=aid,
+                source="algorithm",
+                symbol=sym, side=side, quantity=qty,
+                filled_price=price, fees=fees,
+                asset_type=atype,
+                timestamp=today_start + timedelta(hours=h_offset + j * 0.5),
+            ))
+
+        # --- Extra recent warning/error events (within last 24 h, for alerts widget) ---
+        recent_alert_events = [
+            ("instance", inst1.id, "risk_limit_approached", "warning",
+             {"symbol": "SPY", "current_exposure_pct": 78.4, "limit_pct": 80.0}, 45),
+            ("instance", inst3.id, "order_rejected", "error",
+             {"symbol": "SPX 5900C 06/22", "reason": "Margin insufficient", "required": 3500}, 90),
+            ("worker", w2.id, "high_cpu_usage", "warning",
+             {"worker": "pi-beta", "cpu_pct": 91.2, "threshold_pct": 85.0}, 130),
+            ("instance", inst2.id, "slippage_exceeded", "warning",
+             {"symbol": "BTC/USD", "expected_price": 67100.00, "filled_price": 67250.00,
+              "slippage_pct": 0.22}, 200),
+            ("system", None, "db_connection_retry", "warning",
+             {"attempt": 2, "max_attempts": 5, "delay_s": 5}, 320),
+        ]
+        for src_type, src_id, evt_type, severity, payload, mins_ago in recent_alert_events:
+            session.add(Event(
+                source_type=src_type, source_id=src_id, event_type=evt_type,
+                severity=severity, payload=payload,
+                timestamp=now - timedelta(minutes=mins_ago),
+                routed_to_discord=True,
+                discord_channel="alerts" if severity == "error" else None,
+            ))
+
+        # --- Extra BacktestComparison with low match (shows up in alerts) ---
+        session.add(BacktestComparison(
+            instance_id=inst3.id, algorithm_id=algo3.id,
+            time_range_start=now - timedelta(hours=12),
+            time_range_end=now,
+            total_ticks=200, matching_ticks=148,
+            match_percentage=74.0,
+            divergences=[
+                {"timestamp": (now - timedelta(hours=i)).isoformat(),
+                 "reason": "Delta mismatch"} for i in range(1, 4)
+            ],
+            summary="ALERT: Match rate: 74.0% — below 90% threshold",
+        ))
+
         await session.commit()
         print(f"Seeded: 3 accounts, 3 workers, 4 algorithms, 4 instances, 4 runs")
-        print(f"  + cash flows, snapshots, events, backtest comparisons, positions, trades")
+        print(f"  + cash flows, 30d account snapshots, events + 5 recent alerts")
+        print(f"  + backtest comparisons (2 with <90% match), positions with value+asset_type legs")
+        print(f"  + 8 historical trades + 5 today's trades for KPI/sparkline population")
 
     await engine.dispose()
 
