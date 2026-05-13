@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,7 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
-from coordinator.database.models import Algorithm, AlgorithmInstance
+from coordinator.database.models import (
+    Account,
+    Algorithm,
+    AlgorithmInstance,
+    AlgorithmRun,
+    TradeLog,
+)
 
 router = APIRouter(tags=["algorithms"])
 
@@ -54,11 +61,52 @@ def _algo_to_response(algo: Algorithm) -> dict:
     }
 
 
-def _instance_to_response(inst: AlgorithmInstance) -> dict:
+def _downsample(curve: list[dict], target: int = 20) -> list[float]:
+    if not curve:
+        return []
+    points = [float(p.get("equity", 0.0)) for p in curve]
+    if len(points) <= target:
+        return points
+    step = len(points) / target
+    return [points[int(i * step)] for i in range(target)]
+
+
+async def _enrich_instance(inst: AlgorithmInstance, db: AsyncSession) -> dict:
+    # Resolve names
+    algo = (await db.execute(
+        select(Algorithm).where(Algorithm.id == inst.algorithm_id)
+    )).scalar_one_or_none()
+    acct = (await db.execute(
+        select(Account).where(Account.id == inst.account_id)
+    )).scalar_one_or_none()
+
+    # Latest run's equity curve, downsampled
+    run = (await db.execute(
+        select(AlgorithmRun)
+        .where(AlgorithmRun.instance_id == inst.id)
+        .order_by(AlgorithmRun.run_number.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    sparkline = _downsample(run.equity_curve or []) if run else None
+
+    # Today's P&L from trade_log (realized only — unrealized delta is hard without per-tick snapshots)
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    trades_today = (await db.execute(
+        select(TradeLog)
+        .where(TradeLog.instance_id == inst.id)
+        .where(TradeLog.timestamp >= today_start)
+    )).scalars().all()
+    today_pnl = sum(
+        (t.filled_price or 0.0) * (t.quantity or 0.0) * (-1 if (t.side or "").lower() == "buy" else 1)
+        for t in trades_today
+    )
+
     return {
         "id": inst.id,
         "algorithm_id": inst.algorithm_id,
+        "algorithm_name": algo.name if algo else None,
         "account_id": inst.account_id,
+        "account_name": acct.name if acct else None,
         "worker_id": inst.worker_id,
         "status": inst.status,
         "active_run_id": inst.active_run_id,
@@ -66,6 +114,8 @@ def _instance_to_response(inst: AlgorithmInstance) -> dict:
         "persisted_state": inst.persisted_state,
         "state_stale": inst.state_stale,
         "lifetime_metrics": inst.lifetime_metrics,
+        "today_pnl": today_pnl,
+        "pnl_sparkline": sparkline,
         "created_at": inst.created_at.isoformat() if inst.created_at else None,
         "updated_at": inst.updated_at.isoformat() if inst.updated_at else None,
     }
@@ -135,7 +185,7 @@ async def create_instance(
     )
     db.add(instance)
     await db.flush()
-    return _instance_to_response(instance)
+    return await _enrich_instance(instance, db)
 
 
 @router.get("/api/algorithms/{algorithm_id}/instances")
@@ -143,13 +193,13 @@ async def list_instances(algorithm_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(AlgorithmInstance).where(AlgorithmInstance.algorithm_id == algorithm_id)
     )
-    return [_instance_to_response(i) for i in result.scalars().all()]
+    return [await _enrich_instance(i, db) for i in result.scalars().all()]
 
 
 @router.get("/api/instances")
 async def list_all_instances(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(AlgorithmInstance))
-    return [_instance_to_response(i) for i in result.scalars().all()]
+    return [await _enrich_instance(i, db) for i in result.scalars().all()]
 
 
 @router.get("/api/instances/{instance_id}")
@@ -160,7 +210,7 @@ async def get_instance(instance_id: str, db: AsyncSession = Depends(get_db)):
     inst = result.scalar_one_or_none()
     if inst is None:
         raise HTTPException(status_code=404, detail="Instance not found")
-    return _instance_to_response(inst)
+    return await _enrich_instance(inst, db)
 
 
 class InstanceUpdate(BaseModel):
@@ -177,7 +227,7 @@ async def update_instance(instance_id: str, body: InstanceUpdate, db: AsyncSessi
         inst.config_values = body.config_values
     if body.status is not None:
         inst.status = body.status
-    return _instance_to_response(inst)
+    return await _enrich_instance(inst, db)
 
 
 @router.delete("/api/instances/{instance_id}", status_code=204)

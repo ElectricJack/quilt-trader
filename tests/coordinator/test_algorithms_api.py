@@ -190,3 +190,50 @@ class TestInstancePatchDelete:
     async def test_delete_instance_not_found(self, client):
         resp = await client.delete("/api/instances/nonexistent")
         assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_instances_enriched_fields(client, db_session):
+    from datetime import datetime, timezone
+    from coordinator.database.models import (
+        Account, Worker, Algorithm, AlgorithmInstance, AlgorithmRun, TradeLog,
+    )
+
+    acct = Account(name="Alpaca Main", broker_type="alpaca", supported_asset_types=["equities"], pdt_mode="off", credentials="{}")
+    db_session.add(acct)
+    worker = Worker(name="pi-alpha", tailscale_ip="1.1.1.1", status="active", max_algorithms=2)
+    db_session.add(worker)
+    algo = Algorithm(repo_url="x", name="momentum-btc", install_status="installed")
+    db_session.add(algo)
+    await db_session.flush()
+    inst = AlgorithmInstance(
+        algorithm_id=algo.id, account_id=acct.id, worker_id=worker.id,
+        status="running", state_stale=False,
+    )
+    db_session.add(inst)
+    await db_session.flush()
+    db_session.add(AlgorithmRun(
+        instance_id=inst.id, run_number=1, status="running",
+        equity_curve=[
+            {"timestamp": "2026-01-01T00:00:00Z", "equity": 10000.0},
+            {"timestamp": "2026-01-02T00:00:00Z", "equity": 10100.0},
+            {"timestamp": "2026-01-03T00:00:00Z", "equity": 10250.0},
+        ],
+    ))
+    now = datetime.now(timezone.utc)
+    db_session.add(TradeLog(
+        account_id=acct.id, instance_id=inst.id, source="alpaca",
+        symbol="BTC", side="buy", quantity=0.01, filled_price=70000.0,
+        timestamp=now,
+    ))
+    await db_session.commit()
+
+    response = await client.get("/api/instances")
+    body = response.json()
+    assert len(body) >= 1
+    row = next(r for r in body if r["id"] == inst.id)
+    assert row["algorithm_name"] == "momentum-btc"
+    assert row["account_name"] == "Alpaca Main"
+    assert row["pnl_sparkline"] is not None
+    assert len(row["pnl_sparkline"]) <= 20
+    assert row["today_pnl"] is not None
