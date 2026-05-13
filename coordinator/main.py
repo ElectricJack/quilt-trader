@@ -55,4 +55,10 @@ def create_app(
     from coordinator.api.routes.github import router as github_router
     app.include_router(github_router)
 
+    import os
+    dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
+    if os.path.isdir(dashboard_dir):
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/", StaticFiles(directory=dashboard_dir, html=True), name="dashboard")
+
     return app
