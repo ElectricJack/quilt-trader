@@ -10,7 +10,6 @@ def packages_dir(tmp_path):
     pkg.mkdir(parents=True)
     (pkg / "quilt.yaml").write_text(
         "name: alpha-picks-scraper\ntype: scraper\nschedule: '*/30 * * * *'\n"
-        "output:\n  format: csv\n  filename: alpha-picks.csv\n"
     )
     (pkg / "scraper.py").write_text(
         "from sdk.scraper import QuiltScraper\nimport pandas as pd\n"

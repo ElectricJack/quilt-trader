@@ -14,7 +14,7 @@ def valid_algo_dir(tmp_path):
 @pytest.fixture
 def valid_scraper_dir(tmp_path):
     manifest = tmp_path / "quilt.yaml"
-    manifest.write_text("name: test-scraper\ntype: scraper\nversion: 1.0.0\nschedule: '*/30 * * * *'\noutput:\n  format: csv\n  filename: output.csv\n")
+    manifest.write_text("name: test-scraper\ntype: scraper\nversion: 1.0.0\nschedule: '*/30 * * * *'\n")
     return tmp_path
 
 class TestValidateCommand:
