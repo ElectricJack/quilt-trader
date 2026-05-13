@@ -1,4 +1,4 @@
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coordinator.services.event_bus import EventBus
@@ -11,10 +11,12 @@ class ServiceContainer:
         session_factory: async_sessionmaker[AsyncSession],
         event_bus: EventBus,
         encryption: EncryptionService,
+        scheduler: Optional[object] = None,
     ) -> None:
         self.session_factory = session_factory
         self.event_bus = event_bus
         self.encryption = encryption
+        self.scheduler = scheduler
 
 
 _container: ServiceContainer | None = None

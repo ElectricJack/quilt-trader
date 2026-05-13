@@ -23,9 +23,23 @@ def create_app(
         session_factory = create_session_factory(engine)
         event_bus = EventBus()
         encryption = EncryptionService(encryption_key)
-        container = ServiceContainer(session_factory, event_bus, encryption)
+
+        # Scheduler
+        from coordinator.services.scheduler import SchedulerService
+        scheduler = SchedulerService()
+        scheduler.start()
+
+        # Data service
+        from coordinator.services.data_service import DataService
+        data_svc = DataService(market_data_dir="data/market", custom_data_dir="data/custom")
+        from coordinator.api.routes.data import set_data_service
+        set_data_service(data_svc)
+
+        container = ServiceContainer(session_factory, event_bus, encryption, scheduler)
         set_container(container)
         yield
+
+        scheduler.shutdown()
         await engine.dispose()
 
     app = FastAPI(title="QuiltTrader", version="0.1.0", lifespan=lifespan)

@@ -1,5 +1,9 @@
 import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from coordinator.api.dependencies import get_container
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,16 +58,143 @@ async def dashboard_websocket(websocket: WebSocket):
         await manager.disconnect_dashboard(websocket)
 
 
+async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
+    """Handle a single worker WebSocket message. Separated for testability."""
+    from sqlalchemy import select
+    from coordinator.database.models import AlgorithmInstance, DecisionLog, Worker, Event
+
+    msg_type = data.get("type")
+
+    if msg_type == "ping":
+        await websocket.send_json({"type": "pong"})
+
+    elif msg_type == "heartbeat":
+        worker_id = data.get("worker_id")
+        await websocket.send_json({"type": "heartbeat_ack"})
+        if worker_id:
+            try:
+                container = get_container()
+                async with container.session_factory() as session:
+                    result = await session.execute(select(Worker).where(Worker.id == worker_id))
+                    worker = result.scalar_one_or_none()
+                    if worker:
+                        worker.last_heartbeat = datetime.now(timezone.utc)
+                        worker.status = "online"
+                        await session.commit()
+            except Exception:
+                logger.exception("Failed to update heartbeat for worker %s", worker_id)
+
+    elif msg_type == "state_checkpoint":
+        instance_id = data.get("instance_id")
+        state = data.get("state")
+        if instance_id is not None:
+            try:
+                container = get_container()
+                async with container.session_factory() as session:
+                    result = await session.execute(
+                        select(AlgorithmInstance).where(AlgorithmInstance.id == instance_id)
+                    )
+                    instance = result.scalar_one_or_none()
+                    if instance:
+                        instance.persisted_state = state
+                        await session.commit()
+            except Exception:
+                logger.exception("Failed to save state_checkpoint for instance %s", instance_id)
+
+    elif msg_type == "decision_log":
+        instance_id = data.get("instance_id")
+        if instance_id is not None:
+            try:
+                container = get_container()
+                async with container.session_factory() as session:
+                    raw_ts = data.get("timestamp")
+                    if isinstance(raw_ts, str):
+                        ts = datetime.fromisoformat(raw_ts)
+                    elif isinstance(raw_ts, (int, float)):
+                        ts = datetime.fromtimestamp(raw_ts, tz=timezone.utc)
+                    else:
+                        ts = datetime.now(timezone.utc)
+
+                    log_entry = DecisionLog(
+                        instance_id=instance_id,
+                        timestamp=ts,
+                        mode=data.get("mode", "live"),
+                        tick_data=data.get("tick_data"),
+                        signals_produced=data.get("signals_produced"),
+                        reasoning=data.get("reasoning"),
+                        data_sources_used=data.get("data_sources_used"),
+                    )
+                    session.add(log_entry)
+                    await session.commit()
+            except Exception:
+                logger.exception("Failed to store decision_log for instance %s", instance_id)
+
+    elif msg_type == "signal_request":
+        instance_id = data.get("instance_id")
+        signal = data.get("signal")
+        # Auto-approve for now
+        await websocket.send_json({
+            "type": "signal_response",
+            "approved": True,
+            "instance_id": instance_id,
+            "signal": signal,
+        })
+
+    elif msg_type == "instance_started":
+        instance_id = data.get("instance_id")
+        if instance_id is not None:
+            try:
+                container = get_container()
+                async with container.session_factory() as session:
+                    result = await session.execute(
+                        select(AlgorithmInstance).where(AlgorithmInstance.id == instance_id)
+                    )
+                    instance = result.scalar_one_or_none()
+                    if instance:
+                        instance.status = "running"
+                        await session.commit()
+            except Exception:
+                logger.exception("Failed to update instance_started for instance %s", instance_id)
+
+    elif msg_type == "instance_stopped":
+        instance_id = data.get("instance_id")
+        if instance_id is not None:
+            try:
+                container = get_container()
+                async with container.session_factory() as session:
+                    result = await session.execute(
+                        select(AlgorithmInstance).where(AlgorithmInstance.id == instance_id)
+                    )
+                    instance = result.scalar_one_or_none()
+                    if instance:
+                        instance.status = "stopped"
+                        await session.commit()
+            except Exception:
+                logger.exception("Failed to update instance_stopped for instance %s", instance_id)
+
+    elif msg_type == "instance_error":
+        instance_id = data.get("instance_id")
+        if instance_id is not None:
+            try:
+                container = get_container()
+                async with container.session_factory() as session:
+                    result = await session.execute(
+                        select(AlgorithmInstance).where(AlgorithmInstance.id == instance_id)
+                    )
+                    instance = result.scalar_one_or_none()
+                    if instance:
+                        instance.status = "error"
+                        await session.commit()
+            except Exception:
+                logger.exception("Failed to update instance_error for instance %s", instance_id)
+
+
 @router.websocket("/ws/worker")
 async def worker_websocket(websocket: WebSocket):
     await manager.connect_worker(websocket)
     try:
         while True:
             data = await websocket.receive_json()
-            msg_type = data.get("type")
-            if msg_type == "ping":
-                await websocket.send_json({"type": "pong"})
-            elif msg_type == "heartbeat":
-                await websocket.send_json({"type": "heartbeat_ack"})
+            await handle_worker_message(websocket, data)
     except WebSocketDisconnect:
         logger.info("Worker disconnected")

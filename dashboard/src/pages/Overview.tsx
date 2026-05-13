@@ -1,11 +1,11 @@
-import { useAccounts } from "../api/hooks";
-import { useWorkers } from "../api/hooks";
+import { useAccounts, useWorkers, useAlgorithms } from "../api/hooks";
 import { MetricsCard } from "../components/MetricsCard";
 import { StatusBadge } from "../components/StatusBadge";
 
 export function Overview() {
   const { data: accounts, isLoading: loadingAccounts } = useAccounts();
   const { data: workers, isLoading: loadingWorkers } = useWorkers();
+  const { data: algorithms, isLoading: loadingAlgorithms } = useAlgorithms();
 
   return (
     <div className="space-y-6">
@@ -21,7 +21,10 @@ export function Overview() {
           label="Workers"
           value={loadingWorkers ? "–" : (workers?.length ?? 0)}
         />
-        <MetricsCard label="Active Algorithms" value="–" />
+        <MetricsCard
+          label="Algorithms"
+          value={loadingAlgorithms ? "–" : (algorithms?.length ?? 0)}
+        />
         <MetricsCard label="Open Positions" value="–" />
       </div>
 

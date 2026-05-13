@@ -24,6 +24,13 @@ export const keys = {
   algorithm: (id: string) => ["algorithms", id] as const,
   instances: (algoId: string) => ["algorithms", algoId, "instances"] as const,
   instance: (id: string) => ["instances", id] as const,
+  allInstances: () => ["instances"] as const,
+  runs: (instanceId: string) => ["instances", instanceId, "runs"] as const,
+  run: (id: string) => ["runs", id] as const,
+  cashFlows: (accountId: string) => ["accounts", accountId, "cash-flows"] as const,
+  backtests: () => ["backtests"] as const,
+  backtest: (id: string) => ["backtests", id] as const,
+  availableData: () => ["data", "available"] as const,
   events: (params: EventParams) => ["events", params] as const,
   settings: () => ["settings"] as const,
   repos: () => ["repos"] as const,
@@ -211,5 +218,68 @@ export function useGithubRepos(enabled = false) {
     queryKey: keys.repos(),
     queryFn: api.listRepos,
     enabled,
+  });
+}
+
+// ─── Runs ─────────────────────────────────────────────────────────────────────
+
+export function useRuns(instanceId: string) {
+  return useQuery({
+    queryKey: keys.runs(instanceId),
+    queryFn: () => api.listRuns(instanceId),
+    enabled: !!instanceId,
+  });
+}
+
+export function useRun(id: string) {
+  return useQuery({
+    queryKey: keys.run(id),
+    queryFn: () => api.getRun(id),
+    enabled: !!id,
+  });
+}
+
+// ─── Cash Flows ───────────────────────────────────────────────────────────────
+
+export function useCashFlows(accountId: string) {
+  return useQuery({
+    queryKey: keys.cashFlows(accountId),
+    queryFn: () => api.listCashFlows(accountId),
+    enabled: !!accountId,
+  });
+}
+
+// ─── Backtests ────────────────────────────────────────────────────────────────
+
+export function useBacktests() {
+  return useQuery({
+    queryKey: keys.backtests(),
+    queryFn: api.listBacktests,
+  });
+}
+
+export function useBacktest(id: string) {
+  return useQuery({
+    queryKey: keys.backtest(id),
+    queryFn: () => api.getBacktest(id),
+    enabled: !!id,
+  });
+}
+
+// ─── All Instances ────────────────────────────────────────────────────────────
+
+export function useAllInstances() {
+  return useQuery({
+    queryKey: keys.allInstances(),
+    queryFn: api.listAllInstances,
+  });
+}
+
+// ─── Available Data ───────────────────────────────────────────────────────────
+
+export function useAvailableData() {
+  return useQuery({
+    queryKey: keys.availableData(),
+    queryFn: api.listAvailableData,
   });
 }

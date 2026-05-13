@@ -2,6 +2,7 @@ import type {
   Account,
   Algorithm,
   AlgorithmInstance,
+  AlgorithmRun,
   InstalledAlgorithmResponse,
   Worker,
   SystemEvent,
@@ -9,6 +10,8 @@ import type {
   RepoInfo,
   SettingsStatus,
   HealthResponse,
+  CashFlow,
+  BacktestComparison,
 } from "../types";
 
 // ─── Request body types ────────────────────────────────────────────────────────
@@ -180,6 +183,35 @@ export const api = {
   },
   getInstance(instanceId: string): Promise<AlgorithmInstance> {
     return request<AlgorithmInstance>(`/api/instances/${instanceId}`);
+  },
+  listAllInstances(): Promise<AlgorithmInstance[]> {
+    return request<AlgorithmInstance[]>("/api/instances");
+  },
+
+  // Runs
+  listRuns(instanceId: string): Promise<AlgorithmRun[]> {
+    return request<AlgorithmRun[]>(`/api/instances/${instanceId}/runs`);
+  },
+  getRun(runId: string): Promise<AlgorithmRun> {
+    return request<AlgorithmRun>(`/api/runs/${runId}`);
+  },
+
+  // Cash Flows
+  listCashFlows(accountId: string): Promise<CashFlow[]> {
+    return request<CashFlow[]>(`/api/accounts/${accountId}/cash-flows`);
+  },
+
+  // Backtests
+  listBacktests(): Promise<BacktestComparison[]> {
+    return request<BacktestComparison[]>("/api/backtests");
+  },
+  getBacktest(id: string): Promise<BacktestComparison> {
+    return request<BacktestComparison>(`/api/backtests/${id}`);
+  },
+
+  // Data
+  listAvailableData(): Promise<Record<string, string[]>> {
+    return request<Record<string, string[]>>("/api/data/available");
   },
 
   // Events

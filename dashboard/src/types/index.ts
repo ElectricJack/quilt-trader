@@ -153,3 +153,32 @@ export interface InstalledAlgorithmResponse {
   install_status: string;
   repo_url: string;
 }
+
+export interface CashFlow {
+  id: string;
+  account_id: string;
+  type: string;
+  amount: number;
+  timestamp: string | null;
+  notes: string | null;
+}
+
+export interface BacktestComparison {
+  id: string;
+  instance_id: string;
+  algorithm_id: string;
+  time_range_start: string | null;
+  time_range_end: string | null;
+  total_ticks: number;
+  matching_ticks: number;
+  match_percentage: number;
+  divergences: Record<string, unknown>[] | null;
+  summary: string | null;
+  created_at: string | null;
+}
+
+export interface DataAvailability {
+  provider: string;
+  symbols: string[];
+  timeframes: string[];
+}

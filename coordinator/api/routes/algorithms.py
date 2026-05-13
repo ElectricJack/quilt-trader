@@ -146,6 +146,12 @@ async def list_instances(algorithm_id: str, db: AsyncSession = Depends(get_db)):
     return [_instance_to_response(i) for i in result.scalars().all()]
 
 
+@router.get("/api/instances")
+async def list_all_instances(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(AlgorithmInstance))
+    return [_instance_to_response(i) for i in result.scalars().all()]
+
+
 @router.get("/api/instances/{instance_id}")
 async def get_instance(instance_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
