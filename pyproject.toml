@@ -11,7 +11,12 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "pandas>=2.0",
+    "click>=8.0",
+    "httpx>=0.27",
 ]
+
+[project.scripts]
+quilt = "sdk.cli.main:quilt"
 
 [project.optional-dependencies]
 coordinator = [
@@ -38,6 +43,9 @@ worker = [
     "httpx>=0.27.0",
     "pandas>=2.0.0",
     "pydantic-settings>=2.6.0",
+]
+backtest = [
+    "lumibot>=3.0",
 ]
 
 [tool.hatch.build.targets.wheel]
