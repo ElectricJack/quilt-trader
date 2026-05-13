@@ -57,3 +57,14 @@ def test_run_scraper_failure(mock_subprocess, packages_dir, output_dir):
     result = engine.run_scraper("alpha-picks-scraper", "csv")
     assert result.success is False
     assert "selenium" in result.error
+
+@patch("coordinator.services.scraper_engine.subprocess")
+def test_run_scraper_passes_config_to_subprocess(mock_subprocess, packages_dir, output_dir):
+    mock_subprocess.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    engine = ScraperEngine(packages_dir=packages_dir, output_dir=output_dir)
+    engine.run_scraper("alpha-picks-scraper", "csv", config={"cookies_file": "/tmp/c.json", "headless": True})
+    args, kwargs = mock_subprocess.run.call_args
+    runner_script = args[0][2]
+    assert '"cookies_file": "/tmp/c.json"' in runner_script
+    assert '"headless": true' in runner_script
+    assert "json.loads(" in runner_script

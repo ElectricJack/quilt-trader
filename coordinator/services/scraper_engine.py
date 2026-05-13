@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import subprocess
@@ -26,14 +27,15 @@ class ScraperEngine:
     def output_path(self, name: str, fmt: str) -> str:
         return os.path.join(self._output_dir, f"{name}.{fmt}")
 
-    def run_scraper(self, name: str, output_format: str) -> ScraperResult:
+    def run_scraper(self, name: str, output_format: str, config: Optional[dict] = None) -> ScraperResult:
         pkg_dir = os.path.join(self._packages_dir, name)
         venv_python = os.path.join(pkg_dir, ".venv", "bin", "python")
         python = venv_python if os.path.exists(venv_python) else "python"
         out_path = self.output_path(name, output_format)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        config_json = json.dumps(config or {})
         runner_script = (
-            f"import sys; sys.path.insert(0, '{pkg_dir}'); "
+            f"import sys, json; sys.path.insert(0, '{pkg_dir}'); "
             f"import yaml; "
             f"manifest = yaml.safe_load(open('{pkg_dir}/quilt.yaml')); "
             f"entry = manifest.get('entry_point', 'scraper.py'); "
@@ -42,7 +44,7 @@ class ScraperEngine:
             f"spec = importlib.util.spec_from_file_location('mod', '{pkg_dir}/' + entry); "
             f"mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); "
             f"scraper = getattr(mod, class_name)(); "
-            f"scraper.on_start({{}}); "
+            f"scraper.on_start(json.loads({config_json!r})); "
             f"df = scraper.on_run(); "
             f"df.to_csv('{out_path}', index=False); "
             f"scraper.on_stop(); "
