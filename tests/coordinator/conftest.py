@@ -1,11 +1,10 @@
-import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from coordinator.database.connection import create_engine, create_session_factory
+from coordinator.database.connection import create_engine
 from coordinator.database.models import Base
 from httpx import ASGITransport, AsyncClient
 from coordinator.main import create_app
+from coordinator.api.dependencies import get_container
 
 
 @pytest_asyncio.fixture
@@ -18,18 +17,21 @@ async def db_engine():
 
 
 @pytest_asyncio.fixture
-async def db_session(db_engine):
-    session_factory = create_session_factory(db_engine)
-    async with session_factory() as session:
-        yield session
-        await session.rollback()
-
-
-@pytest_asyncio.fixture
 async def test_app():
     app = create_app(database_url="sqlite+aiosqlite:///:memory:")
     async with app.router.lifespan_context(app):
         yield app
+
+
+@pytest_asyncio.fixture
+async def db_session(test_app):
+    # Use the app's session_factory so writes via `db_session` are
+    # visible to API requests made via `client` (both fixtures share
+    # the same in-memory DB through the running app's container).
+    container = get_container()
+    async with container.session_factory() as session:
+        yield session
+        await session.rollback()
 
 
 @pytest_asyncio.fixture
