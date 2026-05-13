@@ -101,3 +101,15 @@ def test_run_scraper_real_subprocess_can_import_sdk(tmp_path):
     assert (out_dir / "stub-scraper.csv").exists()
     csv = (out_dir / "stub-scraper.csv").read_text()
     assert "1\n2" in csv
+
+
+def test_scraper_engine_quilt_root_explicit_override(packages_dir, output_dir):
+    engine = ScraperEngine(packages_dir=packages_dir, output_dir=output_dir, quilt_root="/custom/root")
+    assert engine._quilt_root == "/custom/root"
+
+
+def test_scraper_engine_quilt_root_autodetect(packages_dir, output_dir):
+    import coordinator.services.scraper_engine as eng_module
+    engine = ScraperEngine(packages_dir=packages_dir, output_dir=output_dir)
+    expected = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(eng_module.__file__))))
+    assert engine._quilt_root == expected

@@ -54,3 +54,6 @@ packages = ["sdk", "coordinator", "worker"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
+markers = [
+    "slow: marks tests that create real venvs or use the network (deselect with '-m not slow')",
+]
