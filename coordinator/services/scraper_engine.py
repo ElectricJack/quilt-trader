@@ -15,9 +15,12 @@ class ScraperResult:
     error: Optional[str] = None
 
 class ScraperEngine:
-    def __init__(self, packages_dir: str, output_dir: str) -> None:
+    def __init__(self, packages_dir: str, output_dir: str, quilt_root: Optional[str] = None) -> None:
         self._packages_dir = packages_dir
         self._output_dir = output_dir
+        if quilt_root is None:
+            quilt_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self._quilt_root = quilt_root
 
     def parse_manifest(self, name: str) -> dict:
         manifest_path = os.path.join(self._packages_dir, name, "quilt.yaml")
@@ -35,7 +38,7 @@ class ScraperEngine:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         config_json = json.dumps(config or {})
         runner_script = (
-            f"import sys, json; sys.path.insert(0, '{pkg_dir}'); "
+            f"import sys, json; sys.path.insert(0, '{pkg_dir}'); sys.path.append('{self._quilt_root}'); "
             f"import yaml; "
             f"manifest = yaml.safe_load(open('{pkg_dir}/quilt.yaml')); "
             f"entry = manifest.get('entry_point', 'scraper.py'); "
