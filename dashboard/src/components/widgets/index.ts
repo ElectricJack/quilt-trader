@@ -1,34 +1,31 @@
 import React from "react";
-import { PortfolioValueWidget } from "./PortfolioValueWidget";
-import { ActiveAlgorithmsWidget } from "./ActiveAlgorithmsWidget";
-import { TodaysPnLWidget } from "./TodaysPnLWidget";
-import { RecentTradesWidget } from "./RecentTradesWidget";
+import { PortfolioEquityWidget } from "./PortfolioEquityWidget";
+import { KpiStripWidget } from "./KpiStripWidget";
+import { AlgorithmsWidget } from "./AlgorithmsWidget";
 import { OpenPositionsWidget } from "./OpenPositionsWidget";
-import { WorkerHealthWidget } from "./WorkerHealthWidget";
-import { BacktestAlertsWidget } from "./BacktestAlertsWidget";
-import { SystemEventsWidget } from "./SystemEventsWidget";
+import { RecentTradesWidget } from "./RecentTradesWidget";
 import { AccountBalancesWidget } from "./AccountBalancesWidget";
+import { AssetAllocationWidget } from "./AssetAllocationWidget";
+import { AlertsWidget } from "./AlertsWidget";
 
 export const WIDGET_REGISTRY: Record<string, React.ComponentType> = {
-  "portfolio-value": PortfolioValueWidget,
-  "active-algorithms": ActiveAlgorithmsWidget,
-  "todays-pnl": TodaysPnLWidget,
-  "recent-trades": RecentTradesWidget,
+  "portfolio-equity": PortfolioEquityWidget,
+  "kpi-strip": KpiStripWidget,
+  "algorithms": AlgorithmsWidget,
   "open-positions": OpenPositionsWidget,
-  "worker-health": WorkerHealthWidget,
-  "backtest-alerts": BacktestAlertsWidget,
-  "system-events": SystemEventsWidget,
+  "recent-trades": RecentTradesWidget,
   "account-balances": AccountBalancesWidget,
+  "asset-allocation": AssetAllocationWidget,
+  "alerts": AlertsWidget,
 };
 
 export const WIDGET_TITLES: Record<string, string> = {
-  "portfolio-value": "Portfolio Overview",
-  "active-algorithms": "Active Algorithms",
-  "todays-pnl": "Lifetime P&L",
-  "recent-trades": "Recent Trades",
+  "portfolio-equity": "Portfolio Equity",
+  "kpi-strip": "Today's KPIs",
+  "algorithms": "Algorithms",
   "open-positions": "Open Positions",
-  "worker-health": "Worker Health",
-  "backtest-alerts": "Backtest Alerts",
-  "system-events": "System Events",
+  "recent-trades": "Recent Trades",
   "account-balances": "Account Balances",
+  "asset-allocation": "Asset Allocation",
+  "alerts": "Alerts",
 };
