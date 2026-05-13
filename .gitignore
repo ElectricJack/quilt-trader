@@ -8,3 +8,5 @@ build/
 data/
 *.db
 .pytest_cache/
+dashboard/node_modules/
+dashboard/dist/
