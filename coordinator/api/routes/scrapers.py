@@ -33,7 +33,7 @@ def _record_to_dict(record) -> dict:
         },
         "last_status": record.last_status,
         "last_run_at": record.last_run_at,
-        "last_output_path": record.last_output_path,
+        "data_url": f"/api/data/custom/{record.name}",
         "last_error": record.last_error,
     }
 
@@ -62,7 +62,6 @@ async def run_scraper_now(name: str):
     result = await reg.run(name)
     return {
         "success": result.success,
-        "output_path": result.output_path,
         "error": result.error,
         "record": _record_to_dict(record),
     }
