@@ -12,5 +12,7 @@ def dev():
 
 from sdk.cli.validate import validate_cmd
 from sdk.cli.backtest import backtest_cmd
+from sdk.cli.run import run_cmd
 dev.add_command(validate_cmd)
 dev.add_command(backtest_cmd)
+dev.add_command(run_cmd)
