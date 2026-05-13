@@ -26,11 +26,9 @@ def _record_to_dict(record) -> dict:
     return {
         "name": record.name,
         "schedule": record.schedule,
-        "config": record.config,
-        "manifest": {
-            "version": record.manifest.get("version"),
-            "description": record.manifest.get("description"),
-        },
+        "version": record.manifest.get("version"),
+        "description": record.manifest.get("description"),
+        "config_overrides": sorted(record.config.keys()),
         "last_status": record.last_status,
         "last_run_at": record.last_run_at,
         "data_url": f"/api/data/custom/{record.name}",
