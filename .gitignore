@@ -10,3 +10,4 @@ data/
 .pytest_cache/
 dashboard/node_modules/
 dashboard/dist/
+packages/
