@@ -16,6 +16,12 @@ import type { MarketDataDownload, AvailableMarketData } from "../types";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
+const DATA_TYPE_OPTIONS: { value: "bars" | "quotes" | "trades"; label: string; available: boolean }[] = [
+  { value: "bars", label: "Bars (OHLCV)", available: true },
+  { value: "quotes", label: "Quotes", available: false },
+  { value: "trades", label: "Trades", available: false },
+];
+
 const DATA_TYPES = ["bars", "quotes", "trades"] as const;
 type DataType = (typeof DATA_TYPES)[number];
 
@@ -62,6 +68,11 @@ const historyColumns: ColumnDef<MarketDataDownload, unknown>[] = [
     accessorKey: "provider",
   },
   {
+    id: "data_type",
+    header: "Type",
+    accessorKey: "data_type",
+  },
+  {
     id: "timeframe",
     header: "Timeframe",
     accessorKey: "timeframe",
@@ -77,7 +88,19 @@ const historyColumns: ColumnDef<MarketDataDownload, unknown>[] = [
     id: "status",
     header: "Status",
     accessorKey: "status",
-    cell: ({ row }) => <StatusBadge status={row.original.status} />,
+    cell: ({ row }) => (
+      <div className="flex flex-col gap-0.5">
+        <StatusBadge status={row.original.status} />
+        {row.original.error_message && (
+          <span
+            className="text-[10px] text-red-400 truncate max-w-[260px]"
+            title={row.original.error_message}
+          >
+            {row.original.error_message}
+          </span>
+        )}
+      </div>
+    ),
   },
   {
     id: "completed_at",
@@ -406,23 +429,26 @@ export function Data() {
               </select>
             </FormField>
 
-            <FormField
-              label="Data Types"
-              error={form.formState.errors.data_types?.message as string | undefined}
-            >
-              <div className="flex gap-4 text-sm">
-                {DATA_TYPES.map((t) => (
+            <FormField label="Data Types" error={form.formState.errors.data_types?.message as string | undefined}>
+              <div className="flex flex-col gap-2 text-sm">
+                {DATA_TYPE_OPTIONS.map((t) => (
                   <label
-                    key={t}
-                    className="inline-flex items-center gap-2 cursor-pointer text-gray-200"
+                    key={t.value}
+                    className={`inline-flex items-center gap-2 ${
+                      t.available ? "cursor-pointer" : "cursor-not-allowed opacity-50"
+                    }`}
                   >
                     <input
                       type="checkbox"
-                      value={t}
+                      value={t.value}
+                      disabled={!t.available}
                       {...form.register("data_types")}
                       className="accent-indigo-500"
                     />
-                    <span className="capitalize">{t}</span>
+                    <span>{t.label}</span>
+                    {!t.available && (
+                      <span className="text-[10px] text-gray-500">(not yet supported)</span>
+                    )}
                   </label>
                 ))}
               </div>
