@@ -12,7 +12,7 @@ from starlette.responses import JSONResponse, Response
 logger = logging.getLogger(__name__)
 
 EXEMPT_PATHS = {"/api/health", "/ws/dashboard", "/ws/worker"}
-EXEMPT_PREFIXES = ("/docs", "/openapi.json", "/redoc")
+EXEMPT_PREFIXES = ("/docs", "/openapi.json", "/redoc", "/api/workers/install/")
 
 
 def generate_api_token() -> str:

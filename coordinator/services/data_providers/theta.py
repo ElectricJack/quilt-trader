@@ -37,7 +37,17 @@ class ThetaDataProvider:
             return {"Authorization": f"Bearer {self._token}"}
         return {}
 
-    async def fetch_bars(self, symbol: str, timeframe: str, start: date, end: date) -> list[dict]:
+    async def fetch_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start: date,
+        end: date,
+        **_kwargs: Any,
+    ) -> list[dict]:
+        # Accepts on_page/on_status/on_bars kwargs for signature compatibility with
+        # PolygonProvider, but Theta returns a single non-paginated response so they
+        # are not invoked.
         await self._ensure_auth()
 
         if timeframe == "1day":

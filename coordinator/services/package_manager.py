@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 import yaml
 
@@ -31,8 +32,10 @@ class PackageManager:
 
     def create_venv(self, name: str) -> None:
         venv = self.venv_path(name)
+        # Use sys.executable so we don't depend on a `python` symlink existing in PATH
+        # (Ubuntu ships `python3` but not `python` by default).
         result = subprocess.run(
-            ["python", "-m", "venv", venv], capture_output=True, text=True
+            [sys.executable, "-m", "venv", venv], capture_output=True, text=True
         )
         if result.returncode != 0:
             raise PackageError(f"Venv creation failed: {result.stderr}")

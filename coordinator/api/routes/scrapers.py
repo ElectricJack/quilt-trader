@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
+from coordinator.services.package_manager import PackageError
 from coordinator.services.scraper_registry import ScraperRegistry
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scrapers", tags=["scrapers"])
+
+
+class ScraperInstall(BaseModel):
+    repo_url: str
+    name: Optional[str] = None
 
 _registry: Optional[ScraperRegistry] = None
 
@@ -72,3 +81,30 @@ async def run_scraper_now(name: str):
         "error": result.error,
         "record": _record_to_dict(record, reg),
     }
+
+
+@router.post("", status_code=201)
+async def install_scraper(body: ScraperInstall):
+    """Clone a scraper repo, install its deps, validate manifest, register on the scheduler."""
+    reg = _require_registry()
+    # Run synchronously in a thread — clone + pip install can take ~30s.
+    import asyncio
+    try:
+        record = await asyncio.to_thread(reg.install_scraper, body.repo_url, body.name)
+    except PackageError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("scraper install failed for %s", body.repo_url)
+        raise HTTPException(status_code=500, detail=f"Install failed: {e}")
+    return _record_to_dict(record, reg)
+
+
+@router.delete("/{name}", status_code=204)
+async def delete_scraper(name: str):
+    reg = _require_registry()
+    if reg.get(name) is None:
+        raise HTTPException(status_code=404, detail=f"scraper {name!r} not found")
+    import asyncio
+    await asyncio.to_thread(reg.uninstall_scraper, name)

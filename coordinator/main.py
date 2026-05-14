@@ -67,6 +67,7 @@ def create_app(
             scheduler=scheduler,
             packages_dir=os.path.join(repo_root, "packages"),
             configs_dir=os.path.join(repo_root, "data", "scraper_configs"),
+            session_factory=session_factory,
         )
         scraper_registry.discover_and_register()
         from coordinator.api.routes.scrapers import set_registry

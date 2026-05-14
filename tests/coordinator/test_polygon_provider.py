@@ -251,6 +251,67 @@ async def test_pacing_emits_status_each_second():
 
 
 @pytest.mark.asyncio
+async def test_on_bars_called_per_page_before_next_request():
+    """on_bars is invoked with each page's transformed bars BEFORE the next HTTP
+    request, so a cancel/error on the next page leaves earlier pages persisted."""
+    http = AsyncMock()
+    page1 = _make_response(200, {
+        "results": [PAGE_1_BAR],
+        "next_url": "https://api.polygon.io/next?cursor=abc",
+    })
+    page2 = _make_response(200, {"results": [PAGE_2_BAR]})
+    http.get.side_effect = [page1, page2]
+
+    saved_pages: list[list[dict]] = []
+    call_order: list[str] = []
+
+    async def on_bars(page_bars: list[dict]) -> None:
+        saved_pages.append(page_bars)
+        call_order.append(f"save({len(page_bars)})")
+
+    original_get = http.get
+
+    async def tracking_get(*args, **kwargs):
+        call_order.append("http.get")
+        return await original_get(*args, **kwargs)
+
+    http.get = tracking_get
+
+    provider = PolygonProvider(api_key="k", http_client=http)
+    bars = await provider.fetch_bars(
+        "AAPL", "1min", date(2025, 1, 1), date(2025, 1, 2), on_bars=on_bars
+    )
+
+    assert len(bars) == 2
+    assert len(saved_pages) == 2
+    # Page 1 bars are transformed (have "timestamp" key, not "t")
+    assert "timestamp" in saved_pages[0][0]
+    assert "t" not in saved_pages[0][0]
+    # The first page's save must happen before the second HTTP request, so a
+    # cancellation between pages preserves page 1.
+    assert call_order == ["http.get", "save(1)", "http.get", "save(1)"]
+
+
+@pytest.mark.asyncio
+async def test_on_bars_skipped_for_empty_page():
+    """If a page returns no results, on_bars must not be called for that page."""
+    http = AsyncMock()
+    http.get.return_value = _make_response(200, {"results": []})
+
+    calls: list[list[dict]] = []
+
+    async def on_bars(page_bars: list[dict]) -> None:
+        calls.append(page_bars)
+
+    provider = PolygonProvider(api_key="k", http_client=http)
+    bars = await provider.fetch_bars(
+        "AAPL", "1day", date(2025, 1, 1), date(2025, 1, 2), on_bars=on_bars
+    )
+    assert bars == []
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_429_retry_emits_status_each_second():
     """429 with Retry-After: 2 emits at least 2 'Rate limited' countdown messages."""
     http = AsyncMock()

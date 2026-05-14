@@ -29,3 +29,10 @@ class CoordinatorConfig(BaseSettings):
     polygon_api_key: Optional[str] = None
     theta_data_username: Optional[str] = None
     theta_data_password: Optional[str] = None
+
+    # Worker install bootstrap script. Hosted publicly so a fresh Pi (not yet on Tailscale)
+    # can fetch it; the script then installs Tailscale and pulls the worker package from
+    # the coordinator over the private network.
+    worker_install_script_url: str = (
+        "https://raw.githubusercontent.com/ElectricJack/quilt-trader/main/scripts/install-worker.sh"
+    )

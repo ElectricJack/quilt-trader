@@ -33,13 +33,12 @@ def _to_response(trade: TradeLog, algo_name: Optional[str]) -> dict:
 @router.get("")
 async def list_trades(
     limit: int = Query(50, ge=1, le=200),
+    account_id: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    query = (
-        select(TradeLog)
-        .order_by(desc(TradeLog.timestamp))
-        .limit(limit)
-    )
+    query = select(TradeLog).order_by(desc(TradeLog.timestamp)).limit(limit)
+    if account_id:
+        query = query.where(TradeLog.account_id == account_id)
     trades = (await db.execute(query)).scalars().all()
 
     instance_ids = {t.instance_id for t in trades if t.instance_id}

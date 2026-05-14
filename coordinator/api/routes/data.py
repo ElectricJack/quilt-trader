@@ -1,9 +1,13 @@
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from coordinator.api.dependencies import get_db
+from coordinator.database.models import DataSource
 from coordinator.services.data_service import DataService
 from coordinator.services.download_manager import DownloadManager
 
@@ -66,6 +70,28 @@ async def get_custom_data(source_name: str, fmt: str = Query("csv")):
 async def list_available():
     svc = get_data_service()
     return svc.list_available_market_data()
+
+
+@router.get("/sources")
+async def list_data_sources(
+    type: Optional[str] = Query(None, description="Filter by source type, e.g. 'scraper'"),
+    db: AsyncSession = Depends(get_db),
+):
+    """List DataSource rows (scraper outputs, custom datasets registered via the API)."""
+    q = select(DataSource).order_by(DataSource.last_updated.desc().nullslast())
+    if type:
+        q = q.where(DataSource.type == type)
+    rows = (await db.execute(q)).scalars().all()
+    return [{
+        "id": r.id,
+        "type": r.type,
+        "source": r.source,
+        "name": r.name,
+        "description": r.description,
+        "file_path": r.file_path,
+        "last_updated": r.last_updated.isoformat() if r.last_updated else None,
+        "metadata": r.metadata_,
+    } for r in rows]
 
 
 @router.post("/downloads", status_code=201)

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Optional
 import yaml
@@ -33,7 +34,9 @@ class ScraperEngine:
     def run_scraper(self, name: str, output_format: str, config: Optional[dict] = None) -> ScraperResult:
         pkg_dir = os.path.join(self._packages_dir, name)
         venv_python = os.path.join(pkg_dir, ".venv", "bin", "python")
-        python = venv_python if os.path.exists(venv_python) else "python"
+        # Fall back to the interpreter running the coordinator if no venv exists
+        # (e.g. when running tests without a real venv per-package).
+        python = venv_python if os.path.exists(venv_python) else sys.executable
         out_path = self.output_path(name, output_format)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         config_json = json.dumps(config or {})

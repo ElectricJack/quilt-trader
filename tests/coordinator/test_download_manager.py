@@ -45,11 +45,13 @@ def mock_provider():
 
 @pytest_asyncio.fixture
 async def download_manager(session_factory, mock_data_service, mock_provider):
-    return DownloadManager(
+    mgr = DownloadManager(
         session_factory=session_factory,
         data_service=mock_data_service,
         providers={"polygon": mock_provider},
     )
+    yield mgr
+    await mgr.shutdown()
 
 
 class TestDownloadManager:
@@ -225,6 +227,117 @@ class TestDownloadManager:
             # Crucially, if it failed it must NOT be a "not yet supported" error.
             if dl["error_message"]:
                 assert "not yet supported" not in dl["error_message"]
+
+    @pytest.mark.asyncio
+    async def test_downloads_run_sequentially(self, session_factory, mock_data_service):
+        """Two queued downloads must not fetch in parallel — the second waits for
+        the first to release the semaphore. While the first is mid-fetch, the
+        second's status remains 'queued' and its fetch_bars has not been called."""
+        import asyncio
+
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_called = asyncio.Event()
+
+        async def first_fetch(*args, **kwargs):
+            first_started.set()
+            await release_first.wait()
+            return []
+
+        async def second_fetch(*args, **kwargs):
+            second_called.set()
+            return []
+
+        # Route different symbols to different provider implementations
+        class RoutingProvider:
+            async def fetch_bars(self, symbol, timeframe, start, end, **kwargs):
+                if symbol == "FIRST":
+                    return await first_fetch()
+                return await second_fetch()
+
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": RoutingProvider()},
+        )
+        try:
+            first = await mgr.create_download(
+                symbols=["FIRST"],
+                date_range_start=date(2024, 1, 1),
+                date_range_end=date(2024, 6, 30),
+            )
+            second = await mgr.create_download(
+                symbols=["SECOND"],
+                date_range_start=date(2024, 1, 1),
+                date_range_end=date(2024, 6, 30),
+            )
+
+            await asyncio.wait_for(first_started.wait(), timeout=2.0)
+            # While first is mid-fetch, the second must not have been called yet
+            # and its DB row must still be 'queued'.
+            assert not second_called.is_set()
+            dl_second = await mgr.get_download(second["id"])
+            assert dl_second["status"] == "queued"
+            dl_first = await mgr.get_download(first["id"])
+            assert dl_first["status"] == "running"
+
+            # Release first; second should now run.
+            release_first.set()
+            await asyncio.wait_for(second_called.wait(), timeout=2.0)
+        finally:
+            release_first.set()
+            await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_download_before_run(self, session_factory, mock_data_service):
+        """A queued download waiting on the serialization semaphore can still be
+        cancelled, and its fetch_bars is never invoked."""
+        import asyncio
+
+        block_first = asyncio.Event()
+        second_called = asyncio.Event()
+
+        class BlockingProvider:
+            async def fetch_bars(self, symbol, timeframe, start, end, **kwargs):
+                if symbol == "FIRST":
+                    await block_first.wait()
+                    return []
+                second_called.set()
+                return []
+
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": BlockingProvider()},
+        )
+        try:
+            await mgr.create_download(
+                symbols=["FIRST"],
+                date_range_start=date(2024, 1, 1),
+                date_range_end=date(2024, 6, 30),
+            )
+            second = await mgr.create_download(
+                symbols=["SECOND"],
+                date_range_start=date(2024, 1, 1),
+                date_range_end=date(2024, 6, 30),
+            )
+
+            # Let the first download grab the semaphore and start running.
+            await asyncio.sleep(0.1)
+
+            cancelled = await mgr.cancel_download(second["id"])
+            assert cancelled is True
+
+            dl_second = await mgr.get_download(second["id"])
+            assert dl_second["status"] == "cancelled"
+
+            # Release the first; second's fetch_bars must never be invoked.
+            block_first.set()
+            await asyncio.sleep(0.2)
+            assert not second_called.is_set()
+        finally:
+            block_first.set()
+            await mgr.shutdown()
 
     @pytest.mark.asyncio
     async def test_cancel_download(self, download_manager):
@@ -424,6 +537,168 @@ class TestDownloadManager:
         assert dl["progress_message"] is None
         # Status must reflect completion (not stuck running)
         assert dl["status"] in ("completed", "failed", "completed_with_errors")
+
+    @pytest.mark.asyncio
+    async def test_incremental_save_invoked_per_page(self, session_factory, mock_data_service):
+        """When a provider streams pages via on_bars, the manager saves each page
+        as it arrives — not only after fetch_bars returns."""
+        import asyncio
+        saves: list[int] = []
+        original_save = mock_data_service.save_market_data
+
+        def tracking_save(provider, symbol, timeframe, df):
+            saves.append(len(df))
+            return original_save(provider, symbol, timeframe, df)
+
+        mock_data_service.save_market_data = tracking_save
+
+        async def streaming_fetch(symbol, timeframe, start, end, on_page=None, on_status=None, on_bars=None):
+            page_a = [{"timestamp": "2024-01-01T00:00:00+00:00", "open": 1, "high": 1,
+                       "low": 1, "close": 1, "volume": 10}]
+            page_b = [{"timestamp": "2024-01-02T00:00:00+00:00", "open": 2, "high": 2,
+                       "low": 2, "close": 2, "volume": 20}]
+            if on_bars is not None:
+                await on_bars(page_a)
+                await on_bars(page_b)
+            return page_a + page_b
+
+        streaming_provider = AsyncMock()
+        streaming_provider.fetch_bars = streaming_fetch
+
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": streaming_provider},
+        )
+
+        result = await mgr.create_download(
+            symbols=["AAPL"],
+            date_range_start=date(2024, 1, 1),
+            date_range_end=date(2024, 6, 30),
+        )
+        await asyncio.sleep(1.0)
+
+        dl = await mgr.get_download(result["id"])
+        # Two per-page saves should have happened, with no redundant third save of
+        # the full list (incremental_saved suppresses the final save).
+        if dl["status"] in ("completed", "completed_with_errors"):
+            assert saves == [1, 1], f"Expected two single-page saves, got {saves}"
+
+    @pytest.mark.asyncio
+    async def test_resume_skips_already_covered_range(self, session_factory, mock_data_service):
+        """If existing parquet already covers the requested end date, fetch_bars
+        must not be called for that symbol."""
+        import asyncio
+        # Pre-populate data through 2024-12-31
+        existing = pd.DataFrame({
+            "timestamp": ["2024-01-01T00:00:00+00:00", "2024-12-31T00:00:00+00:00"],
+            "open": [1.0, 2.0], "high": [1.0, 2.0],
+            "low": [1.0, 2.0], "close": [1.0, 2.0], "volume": [10, 20],
+        })
+        mock_data_service.save_market_data("polygon", "AAPL", "1day", existing)
+
+        provider = AsyncMock()
+        provider.fetch_bars = AsyncMock(return_value=[])
+
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": provider},
+        )
+        result = await mgr.create_download(
+            symbols=["AAPL"],
+            date_range_start=date(2024, 1, 1),
+            date_range_end=date(2024, 6, 30),
+        )
+        await asyncio.sleep(1.0)
+
+        dl = await mgr.get_download(result["id"])
+        if dl["status"] != "running":
+            provider.fetch_bars.assert_not_called()
+            assert dl["status"] in ("completed", "completed_with_errors")
+
+    @pytest.mark.asyncio
+    async def test_resume_advances_start_date(self, session_factory, mock_data_service):
+        """If existing data covers part of the range, fetch_bars is called with a
+        start date past the last saved timestamp."""
+        import asyncio
+        existing = pd.DataFrame({
+            "timestamp": ["2024-03-15T00:00:00+00:00"],
+            "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [10],
+        })
+        mock_data_service.save_market_data("polygon", "AAPL", "1day", existing)
+
+        captured_start: list = []
+
+        async def capturing_fetch(symbol, timeframe, start, end, **kwargs):
+            captured_start.append(start)
+            return []
+
+        provider = AsyncMock()
+        provider.fetch_bars = capturing_fetch
+
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": provider},
+        )
+        result = await mgr.create_download(
+            symbols=["AAPL"],
+            date_range_start=date(2024, 1, 1),
+            date_range_end=date(2024, 6, 30),
+        )
+        await asyncio.sleep(1.0)
+
+        dl = await mgr.get_download(result["id"])
+        if dl["status"] != "running":
+            assert captured_start, "fetch_bars was not called"
+            # Start should be advanced to day after the last saved bar
+            assert captured_start[0] == date(2024, 3, 16), (
+                f"Expected resume from 2024-03-16, got {captured_start[0]}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_provider_falls_back_to_full_save(self, session_factory, mock_data_service):
+        """A provider that returns bars without invoking on_bars (e.g. Theta) must
+        still have its data persisted by the manager's fallback save."""
+        import asyncio
+        saves: list[int] = []
+        original_save = mock_data_service.save_market_data
+
+        def tracking_save(provider, symbol, timeframe, df):
+            saves.append(len(df))
+            return original_save(provider, symbol, timeframe, df)
+
+        mock_data_service.save_market_data = tracking_save
+
+        async def non_streaming_fetch(symbol, timeframe, start, end, **kwargs):
+            # Ignores on_bars completely
+            return [
+                {"timestamp": "2024-01-01T00:00:00+00:00", "open": 1, "high": 1,
+                 "low": 1, "close": 1, "volume": 10},
+                {"timestamp": "2024-01-02T00:00:00+00:00", "open": 2, "high": 2,
+                 "low": 2, "close": 2, "volume": 20},
+            ]
+
+        provider = AsyncMock()
+        provider.fetch_bars = non_streaming_fetch
+
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": provider},
+        )
+        result = await mgr.create_download(
+            symbols=["AAPL"],
+            date_range_start=date(2024, 1, 1),
+            date_range_end=date(2024, 6, 30),
+        )
+        await asyncio.sleep(1.0)
+
+        dl = await mgr.get_download(result["id"])
+        if dl["status"] in ("completed", "completed_with_errors"):
+            # Exactly one full-list save via the fallback path
+            assert saves == [2], f"Expected single fallback save of 2 bars, got {saves}"
 
     @pytest.mark.asyncio
     async def test_current_symbol_pct_set_during_download(self, session_factory, mock_data_service):

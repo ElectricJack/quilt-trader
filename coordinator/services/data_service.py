@@ -37,6 +37,23 @@ class DataService:
             return None
         return pd.read_parquet(path)
 
+    def latest_market_data_timestamp(
+        self, provider: str, symbol: str, timeframe: str
+    ) -> Optional[pd.Timestamp]:
+        """Return the max timestamp in the saved parquet, or None if no file/column."""
+        path = self.market_data_path(provider, symbol, timeframe)
+        if not os.path.exists(path):
+            return None
+        try:
+            df = pd.read_parquet(path, columns=["timestamp"])
+        except Exception:
+            df = pd.read_parquet(path)
+            if "timestamp" not in df.columns:
+                return None
+        if df.empty:
+            return None
+        return pd.to_datetime(df["timestamp"], utc=True).max()
+
     def save_custom_data(self, name: str, df: pd.DataFrame, fmt: str) -> str:
         path = self.custom_data_path(name, fmt)
         os.makedirs(os.path.dirname(path), exist_ok=True)

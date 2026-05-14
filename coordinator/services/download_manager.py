@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import pandas as pd
@@ -24,6 +24,10 @@ class DownloadManager:
         self._data_service = data_service
         self._providers = providers
         self._active_tasks: dict[str, asyncio.Task] = {}
+        # Serialize downloads: only one runs at a time so we don't fan out parallel
+        # API requests and trip provider rate limits. Queued downloads wait inside
+        # their own task on this semaphore and remain cancellable while waiting.
+        self._download_semaphore = asyncio.Semaphore(1)
 
     async def create_download(
         self,
@@ -128,6 +132,19 @@ class DownloadManager:
             await session.commit()
             return count
 
+    async def shutdown(self) -> None:
+        """Cancel all live download tasks. Safe to call multiple times."""
+        tasks = list(self._active_tasks.values())
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        for t in tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._active_tasks.clear()
+
     async def cancel_download(self, download_id: str) -> bool:
         """Cancel an active task. If the DB row exists but no in-memory task
         is registered, mark it as cancelled directly (orphan case)."""
@@ -162,27 +179,48 @@ class DownloadManager:
             return False
 
     async def _run_download(self, download_id: str) -> None:
-        async with self._session_factory() as session:
-            result = await session.execute(
-                select(MarketDataDownload).where(MarketDataDownload.id == download_id)
-            )
-            dl = result.scalar_one_or_none()
-            if dl is None:
-                return
+        # Wait our turn — only one download fetches at a time. The row stays
+        # status="queued" while we wait; this task is still cancellable.
+        async with self._download_semaphore:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(MarketDataDownload).where(MarketDataDownload.id == download_id)
+                )
+                dl = result.scalar_one_or_none()
+                if dl is None:
+                    return
+                # If a concurrent cancel flipped status while we were queued, bail
+                # out before doing any work.
+                if dl.status != "queued":
+                    return
 
-            symbols = dl.symbols
-            provider_name = dl.provider
-            data_type = dl.data_type
-            timeframe = dl.timeframe
-            start = dl.date_range_start
-            end = dl.date_range_end
+                symbols = dl.symbols
+                provider_name = dl.provider
+                data_type = dl.data_type
+                timeframe = dl.timeframe
+                start = dl.date_range_start
+                end = dl.date_range_end
 
-            await session.execute(
-                update(MarketDataDownload)
-                .where(MarketDataDownload.id == download_id)
-                .values(status="running", started_at=datetime.now(timezone.utc))
+                await session.execute(
+                    update(MarketDataDownload)
+                    .where(MarketDataDownload.id == download_id)
+                    .values(status="running", started_at=datetime.now(timezone.utc))
+                )
+                await session.commit()
+            await self._run_download_body(
+                download_id, symbols, provider_name, data_type, timeframe, start, end,
             )
-            await session.commit()
+
+    async def _run_download_body(
+        self,
+        download_id: str,
+        symbols: list[str],
+        provider_name: str,
+        data_type: str,
+        timeframe: str,
+        start: date,
+        end: date,
+    ) -> None:
 
         provider = self._providers[provider_name]
         errors = []
@@ -228,16 +266,68 @@ class DownloadManager:
                 async def on_status(msg: str, sym: str = symbol) -> None:
                     await _update_progress_message(f"{sym}: {msg}")
 
+                incremental_saved = False
+
+                async def on_bars(page_bars: list[dict], sym: str = symbol) -> None:
+                    nonlocal incremental_saved
+                    if not page_bars:
+                        return
+                    # Persist each page to disk as it arrives so a cancel or crash
+                    # mid-pagination still leaves earlier pages on disk for resume.
+                    df = pd.DataFrame(page_bars)
+                    await asyncio.to_thread(
+                        self._data_service.save_market_data,
+                        provider_name, sym, timeframe, df,
+                    )
+                    incremental_saved = True
+
+                # Resume: if data already covers part of the requested range, advance
+                # the start date so we only fetch the remainder. dedup in
+                # save_market_data handles any small overlap on the boundary day.
+                effective_start = start
+                latest = self._data_service.latest_market_data_timestamp(
+                    provider_name, symbol, timeframe
+                )
+                if latest is not None:
+                    latest_date = latest.date()
+                    if latest_date >= end:
+                        await _update_progress_message(
+                            f"{symbol}: already up to date (through {latest_date.isoformat()})"
+                        )
+                        # Skip the provider call entirely; existing data covers the range.
+                        async with self._session_factory() as session:
+                            await session.execute(
+                                update(MarketDataDownload)
+                                .where(MarketDataDownload.id == download_id)
+                                .values(progress_current=i + 1, current_symbol_pct=None)
+                            )
+                            await session.commit()
+                        continue
+                    if latest_date >= start:
+                        effective_start = latest_date + timedelta(days=1)
+                        await _update_progress_message(
+                            f"{symbol}: resuming from {effective_start.isoformat()}"
+                        )
+
                 await _update_progress_message(f"{symbol}: starting…")
-                bars = await provider.fetch_bars(symbol, timeframe, start, end, on_page=on_page, on_status=on_status)
+                bars = await provider.fetch_bars(
+                    symbol, timeframe, effective_start, end,
+                    on_page=on_page, on_status=on_status, on_bars=on_bars,
+                )
                 if bars:
-                    df = pd.DataFrame(bars)
-                    self._data_service.save_market_data(provider_name, symbol, timeframe, df)
+                    # Providers that don't stream pages (e.g. Theta) won't have invoked
+                    # on_bars; save the full result for them.
+                    if not incremental_saved:
+                        df = pd.DataFrame(bars)
+                        await asyncio.to_thread(
+                            self._data_service.save_market_data,
+                            provider_name, symbol, timeframe, df,
+                        )
                     logger.info("Downloaded %d bars for %s/%s", len(bars), symbol, timeframe)
                     await _update_progress_message(f"{symbol}: saved {len(bars):,} bars")
                 else:
-                    logger.warning("No data returned for %s/%s", symbol, timeframe)
-                    await _update_progress_message(f"{symbol}: no data returned")
+                    logger.info("No new bars for %s/%s", symbol, timeframe)
+                    await _update_progress_message(f"{symbol}: no new data")
             except NotImplementedError as e:
                 logger.warning("%s", e)
                 errors.append(f"{symbol}: {e}")

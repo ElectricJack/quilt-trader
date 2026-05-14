@@ -39,6 +39,7 @@ class Account(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     name: Mapped[str] = mapped_column(String, nullable=False)
     broker_type: Mapped[str] = mapped_column(String, nullable=False)
+    environment: Mapped[str] = mapped_column(String, nullable=False, default="paper")
     credentials: Mapped[str] = mapped_column(Text, nullable=False)
     supported_asset_types: Mapped[list] = mapped_column(JSON, nullable=False)
     options_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -82,6 +83,8 @@ class Worker(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="offline")
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     max_algorithms: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    install_token: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True, unique=True)
+    install_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     instances: Mapped[list["AlgorithmInstance"]] = relationship(back_populates="worker")
 
@@ -166,6 +169,7 @@ class TradeLog(Base):
     fee_breakdown: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     slippage: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     is_day_trade: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    broker_txn_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True)
 
 
@@ -295,6 +299,7 @@ class AccountCashFlow(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    broker_txn_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     account: Mapped["Account"] = relationship(back_populates="cash_flows")
 

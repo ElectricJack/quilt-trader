@@ -16,11 +16,80 @@ async def test_create_account(client):
     body = response.json()
     assert body["name"] == "Alpaca Main"
     assert body["broker_type"] == "alpaca"
+    assert body["environment"] == "paper"  # default
     assert body["supported_asset_types"] == ["equities", "options", "crypto"]
     assert body["options_level"] == 3
     assert body["pdt_mode"] == "warn"
     assert "id" in body
     assert "credentials" not in body
+
+
+@pytest.mark.asyncio
+async def test_create_account_with_live_environment(client):
+    response = await client.post("/api/accounts", json={
+        "name": "Alpaca Live",
+        "broker_type": "alpaca",
+        "environment": "live",
+        "credentials": {"api_key": "k", "secret_key": "s"},
+        "supported_asset_types": ["equities"],
+        "pdt_mode": "off",
+    })
+    assert response.status_code == 201
+    assert response.json()["environment"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_create_account_rejects_bad_environment(client):
+    response = await client.post("/api/accounts", json={
+        "name": "Bad",
+        "broker_type": "alpaca",
+        "environment": "production",
+        "credentials": {},
+        "supported_asset_types": ["equities"],
+        "pdt_mode": "off",
+    })
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_environment(client):
+    create_resp = await client.post("/api/accounts", json={
+        "name": "Acct",
+        "broker_type": "alpaca",
+        "credentials": {"api_key": "k", "secret_key": "s"},
+        "supported_asset_types": ["equities"],
+        "pdt_mode": "off",
+    })
+    aid = create_resp.json()["id"]
+    resp = await client.patch(f"/api/accounts/{aid}", json={"environment": "live"})
+    assert resp.status_code == 200
+    assert resp.json()["environment"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_test_connection_unknown_broker(client):
+    resp = await client.post("/api/accounts/test-connection", json={
+        "broker_type": "no_such_broker",
+        "environment": "paper",
+        "credentials": {},
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "no_such_broker" in body["error"].lower() or "unknown" in body["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_missing_credentials(client):
+    resp = await client.post("/api/accounts/test-connection", json={
+        "broker_type": "alpaca",
+        "environment": "paper",
+        "credentials": {},
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "api_key" in body["error"] or "missing" in body["error"].lower()
 
 
 @pytest.mark.asyncio

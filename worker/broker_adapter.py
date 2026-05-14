@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 
@@ -15,6 +16,27 @@ class OrderResult:
     broker_order_id: Optional[str] = None
 
 
+@dataclass
+class BrokerTransaction:
+    """Normalized broker transaction. Used by the sync flow.
+
+    `type` is one of: fill, dividend, interest, deposit, withdrawal, fee, other.
+    For fills, symbol/side/quantity/price are populated. For cash flows, only `amount` is required.
+    `amount` is signed: positive = cash in, negative = cash out.
+    """
+    broker_id: str
+    type: str
+    timestamp: datetime
+    amount: float = 0.0
+    symbol: Optional[str] = None
+    side: Optional[str] = None
+    quantity: Optional[float] = None
+    price: Optional[float] = None
+    fees: float = 0.0
+    description: Optional[str] = None
+    raw: dict = field(default_factory=dict)
+
+
 class BrokerAdapter(ABC):
     @abstractmethod
     def get_positions(self) -> dict[str, dict]: ...
@@ -23,6 +45,10 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def submit_order(self, symbol: str, side: str, quantity: float, order_type: str,
                      limit_price: Optional[float] = None, stop_price: Optional[float] = None) -> OrderResult: ...
+
+    def get_transactions(self, since: datetime) -> list[BrokerTransaction]:
+        """Fetch broker activity since `since`. Default: not implemented."""
+        return []
 
 
 class MockBrokerAdapter(BrokerAdapter):

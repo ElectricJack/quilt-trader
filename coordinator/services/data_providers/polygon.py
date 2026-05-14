@@ -10,6 +10,10 @@ PageCallback = Callable[[int, int, "float | None"], Awaitable[None]]
 StatusCallback = Callable[[str], Awaitable[None]]
 # (message) -> awaitable
 
+BarsCallback = Callable[[list[dict]], Awaitable[None]]
+# (bars_for_this_page) -> awaitable — fired before fetching the next page so partial
+# data is persisted even if the run is cancelled or the next request fails.
+
 logger = logging.getLogger(__name__)
 
 TIMEFRAME_MAP = {
@@ -141,6 +145,7 @@ class PolygonProvider:
         end: date,
         on_page: PageCallback | None = None,
         on_status: StatusCallback | None = None,
+        on_bars: BarsCallback | None = None,
     ) -> list[dict]:
         multiplier, span = self._timeframe_params(timeframe)
         url = (
@@ -149,39 +154,45 @@ class PolygonProvider:
         )
         params = {"apiKey": self._api_key, "limit": 50000, "sort": "asc"}
 
-        all_results: list[dict] = []
+        all_bars: list[dict] = []
+        last_raw_t: int | None = None
         page_index = 0
         while True:
             await self._safe_status(on_status, f"Starting page {page_index + 1}")
             response = await self._request_with_retry(url, params, on_status=on_status)
             data = response.json()
             results = data.get("results") or []
-            all_results.extend(results)
+            page_bars = [
+                {
+                    "timestamp": datetime.fromtimestamp(r["t"] / 1000, tz=timezone.utc).isoformat(),
+                    "open": r["o"], "high": r["h"], "low": r["l"], "close": r["c"], "volume": r["v"],
+                }
+                for r in results
+            ]
+            all_bars.extend(page_bars)
+            if results:
+                last_raw_t = results[-1].get("t")
             fraction: float | None = None
-            if all_results:
-                last_ms = all_results[-1].get("t")
-                if last_ms is not None:
-                    last_ts = datetime.fromtimestamp(last_ms / 1000, tz=timezone.utc)
-                    start_dt = datetime.combine(start, dtime(0, 0), tzinfo=timezone.utc)
-                    end_dt = datetime.combine(end, dtime(23, 59, 59), tzinfo=timezone.utc)
-                    total = (end_dt - start_dt).total_seconds()
-                    elapsed = (last_ts - start_dt).total_seconds()
-                    if total > 0:
-                        fraction = max(0.0, min(1.0, elapsed / total))
+            if last_raw_t is not None:
+                last_ts = datetime.fromtimestamp(last_raw_t / 1000, tz=timezone.utc)
+                start_dt = datetime.combine(start, dtime(0, 0), tzinfo=timezone.utc)
+                end_dt = datetime.combine(end, dtime(23, 59, 59), tzinfo=timezone.utc)
+                total = (end_dt - start_dt).total_seconds()
+                elapsed = (last_ts - start_dt).total_seconds()
+                if total > 0:
+                    fraction = max(0.0, min(1.0, elapsed / total))
+            # Persist this page's bars BEFORE following next_url. Guarantees the data is
+            # on disk if the loop is cancelled or the next request fails.
+            if on_bars is not None and page_bars:
+                await on_bars(page_bars)
             if on_page is not None:
-                await on_page(page_index, len(all_results), fraction)
+                await on_page(page_index, len(all_bars), fraction)
             next_url = data.get("next_url")
             if not next_url:
                 break
             url = next_url
             params = {"apiKey": self._api_key}
             page_index += 1
-            logger.info("Polygon pagination: %d bars fetched, following next_url for %s", len(all_results), symbol)
+            logger.info("Polygon pagination: %d bars fetched, following next_url for %s", len(all_bars), symbol)
 
-        return [
-            {
-                "timestamp": datetime.fromtimestamp(r["t"] / 1000, tz=timezone.utc).isoformat(),
-                "open": r["o"], "high": r["h"], "low": r["l"], "close": r["c"], "volume": r["v"],
-            }
-            for r in all_results
-        ]
+        return all_bars
