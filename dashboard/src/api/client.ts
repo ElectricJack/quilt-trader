@@ -275,6 +275,13 @@ export const api = {
       method: "POST",
     });
   },
+  deleteDownload(id: string): Promise<void> {
+    return request<void>(`/api/data/downloads/${id}`, { method: "DELETE" });
+  },
+  clearDownloads(status?: string): Promise<{ deleted: number }> {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return request<{ deleted: number }>(`/api/data/downloads${qs}`, { method: "DELETE" });
+  },
   getMarketData(provider: string, symbol: string, timeframe: string): Promise<MarketDataResponse> {
     return request<MarketDataResponse>(
       `/api/data/market/${encodeURIComponent(symbol)}?provider=${encodeURIComponent(provider)}&timeframe=${encodeURIComponent(timeframe)}`

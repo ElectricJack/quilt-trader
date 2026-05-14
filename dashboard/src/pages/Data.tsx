@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { z } from "zod";
+import { Trash2 } from "lucide-react";
 import {
   useAvailableData,
   useDownloads,
   useCreateDownload,
   useCancelDownload,
+  useDeleteDownload,
+  useClearDownloads,
 } from "../api/hooks";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { StatusBadge } from "../components/StatusBadge";
 import { DatasetPreviewModal } from "../components/DatasetPreviewModal";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useUIStore } from "../stores/ui";
 import type { MarketDataDownload, AvailableMarketData } from "../types";
 
@@ -56,59 +60,79 @@ const ACTIVE_STATUSES = new Set(["pending", "running"]);
 
 // ─── History columns ──────────────────────────────────────────────────────────
 
-const historyColumns: ColumnDef<MarketDataDownload, unknown>[] = [
-  {
-    id: "symbols",
-    header: "Symbols",
-    accessorFn: (row) => row.symbols.join(", "),
-  },
-  {
-    id: "provider",
-    header: "Provider",
-    accessorKey: "provider",
-  },
-  {
-    id: "data_type",
-    header: "Type",
-    accessorKey: "data_type",
-  },
-  {
-    id: "timeframe",
-    header: "Timeframe",
-    accessorKey: "timeframe",
-  },
-  {
-    id: "date_range",
-    header: "Date Range",
-    accessorFn: (row) => `${row.date_range_start} – ${row.date_range_end}`,
-    cell: ({ row }) =>
-      `${formatDate(row.original.date_range_start)} – ${formatDate(row.original.date_range_end)}`,
-  },
-  {
-    id: "status",
-    header: "Status",
-    accessorKey: "status",
-    cell: ({ row }) => (
-      <div className="flex flex-col gap-0.5">
-        <StatusBadge status={row.original.status} />
-        {row.original.error_message && (
-          <span
-            className="text-[10px] text-red-400 truncate max-w-[260px]"
-            title={row.original.error_message}
-          >
-            {row.original.error_message}
-          </span>
-        )}
-      </div>
-    ),
-  },
-  {
-    id: "completed_at",
-    header: "Completed",
-    accessorKey: "completed_at",
-    cell: ({ row }) => formatDate(row.original.completed_at),
-  },
-];
+function makeHistoryColumns(
+  setRowToDelete: (row: MarketDataDownload | null) => void
+): ColumnDef<MarketDataDownload, unknown>[] {
+  return [
+    {
+      id: "symbols",
+      header: "Symbols",
+      accessorFn: (row) => row.symbols.join(", "),
+    },
+    {
+      id: "provider",
+      header: "Provider",
+      accessorKey: "provider",
+    },
+    {
+      id: "data_type",
+      header: "Type",
+      accessorKey: "data_type",
+    },
+    {
+      id: "timeframe",
+      header: "Timeframe",
+      accessorKey: "timeframe",
+    },
+    {
+      id: "date_range",
+      header: "Date Range",
+      accessorFn: (row) => `${row.date_range_start} – ${row.date_range_end}`,
+      cell: ({ row }) =>
+        `${formatDate(row.original.date_range_start)} – ${formatDate(row.original.date_range_end)}`,
+    },
+    {
+      id: "status",
+      header: "Status",
+      accessorKey: "status",
+      cell: ({ row }) => (
+        <div className="flex flex-col gap-0.5">
+          <StatusBadge status={row.original.status} />
+          {row.original.error_message && (
+            <span
+              className="text-[10px] text-red-400 truncate max-w-[260px]"
+              title={row.original.error_message}
+            >
+              {row.original.error_message}
+            </span>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: "completed_at",
+      header: "Completed",
+      accessorKey: "completed_at",
+      cell: ({ row }) => formatDate(row.original.completed_at),
+    },
+    {
+      id: "actions",
+      header: "",
+      cell: ({ row }) => (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setRowToDelete(row.original);
+          }}
+          title="Delete row"
+          className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+        >
+          <Trash2 size={14} />
+        </button>
+      ),
+    },
+  ];
+}
 
 // ─── Active download card ─────────────────────────────────────────────────────
 
@@ -173,12 +197,18 @@ function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProp
 export function Data() {
   const [modalOpen, setModalOpen] = useState(false);
   const [preview, setPreview] = useState<{ provider: string; symbol: string; timeframe: string } | null>(null);
+  const [rowToDelete, setRowToDelete] = useState<MarketDataDownload | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const { data: available, isLoading: availableLoading } = useAvailableData();
   const { data: downloads, isLoading: downloadsLoading, refetch } = useDownloads();
   const { mutateAsync: createDownload, isPending: isCreating } = useCreateDownload();
   const { mutate: cancelDownload, isPending: isCancelling } = useCancelDownload();
+  const deleteDownload = useDeleteDownload();
+  const clearDownloads = useClearDownloads();
   const addAlert = useUIStore((s) => s.addAlert);
+
+  const historyColumns = useMemo(() => makeHistoryColumns(setRowToDelete), []);
 
   const activeDownloads = useMemo(
     () => (downloads ?? []).filter((d) => ACTIVE_STATUSES.has(d.status)),
@@ -305,9 +335,17 @@ export function Data() {
 
       {/* Download History */}
       <section>
-        <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
-          Download History
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-gray-400 uppercase">Download History</h2>
+          {historyDownloads.length > 0 && (
+            <button
+              onClick={() => setConfirmClear(true)}
+              className="text-xs text-gray-400 hover:text-red-400 transition-colors"
+            >
+              Clear History
+            </button>
+          )}
+        </div>
         <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
           <DataTable
             data={historyDownloads}
@@ -369,6 +407,54 @@ export function Data() {
         provider={preview?.provider ?? null}
         symbol={preview?.symbol ?? null}
         timeframe={preview?.timeframe ?? null}
+      />
+
+      {/* Delete single row confirm */}
+      <ConfirmDialog
+        open={!!rowToDelete}
+        title="Delete download row"
+        message={`Remove this ${rowToDelete?.status} download for ${rowToDelete?.symbols.join(", ")} from history?`}
+        confirmLabel="Delete"
+        onConfirm={async () => {
+          if (!rowToDelete) return;
+          try {
+            await deleteDownload.mutateAsync(rowToDelete.id);
+            addAlert({ message: "Download row deleted.", severity: "success" });
+          } catch (err) {
+            addAlert({
+              message: err instanceof Error ? err.message : "Failed to delete row.",
+              severity: "error",
+            });
+          } finally {
+            setRowToDelete(null);
+          }
+        }}
+        onCancel={() => setRowToDelete(null)}
+      />
+
+      {/* Clear history confirm */}
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear download history"
+        message={`Delete all ${historyDownloads.length} non-active download rows from history? Active downloads will be preserved.`}
+        confirmLabel="Clear"
+        onConfirm={async () => {
+          try {
+            const result = await clearDownloads.mutateAsync(undefined);
+            addAlert({
+              message: `Cleared ${result.deleted} download row${result.deleted === 1 ? "" : "s"}.`,
+              severity: "success",
+            });
+          } catch (err) {
+            addAlert({
+              message: err instanceof Error ? err.message : "Failed to clear history.",
+              severity: "error",
+            });
+          } finally {
+            setConfirmClear(false);
+          }
+        }}
+        onCancel={() => setConfirmClear(false)}
       />
 
       {/* Download Data modal */}

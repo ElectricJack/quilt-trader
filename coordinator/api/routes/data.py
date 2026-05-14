@@ -100,6 +100,35 @@ async def get_download(download_id: str):
     return dl
 
 
+ACTIVE_STATUSES = {"queued", "running"}
+
+
+@router.delete("/downloads/{download_id}", status_code=204)
+async def delete_download(download_id: str):
+    mgr = get_download_manager()
+    dl = await mgr.get_download(download_id)
+    if dl is None:
+        raise HTTPException(status_code=404, detail="Download not found")
+    if dl["status"] in ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete an active download (status={dl['status']}). Cancel it first."
+        )
+    deleted = await mgr.delete_download(download_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Download not found")
+
+
+@router.delete("/downloads")
+async def clear_downloads(status: Optional[str] = Query(None)):
+    mgr = get_download_manager()
+    statuses = None
+    if status:
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+    n = await mgr.clear_downloads(statuses=statuses)
+    return {"deleted": n}
+
+
 @router.post("/downloads/{download_id}/cancel")
 async def cancel_download(download_id: str):
     mgr = get_download_manager()

@@ -76,6 +76,34 @@ class DownloadManager:
             )
             return [self._to_dict(dl) for dl in result.scalars().all()]
 
+    async def delete_download(self, download_id: str) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MarketDataDownload).where(MarketDataDownload.id == download_id)
+            )
+            dl = result.scalar_one_or_none()
+            if dl is None:
+                return False
+            await session.delete(dl)
+            await session.commit()
+        return True
+
+    async def clear_downloads(self, statuses: Optional[list[str]] = None) -> int:
+        """Delete completed/failed/cancelled downloads. Always preserves active rows."""
+        async with self._session_factory() as session:
+            query = select(MarketDataDownload).where(
+                ~MarketDataDownload.status.in_(["queued", "running"])
+            )
+            if statuses:
+                query = query.where(MarketDataDownload.status.in_(statuses))
+            rows = (await session.execute(query)).scalars().all()
+            count = 0
+            for r in rows:
+                await session.delete(r)
+                count += 1
+            await session.commit()
+            return count
+
     async def cancel_download(self, download_id: str) -> bool:
         task = self._active_tasks.get(download_id)
         if task and not task.done():

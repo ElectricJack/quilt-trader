@@ -315,6 +315,26 @@ export function useCancelDownload() {
   });
 }
 
+export function useDeleteDownload() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteDownload(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.downloads() });
+    },
+  });
+}
+
+export function useClearDownloads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (status?: string) => api.clearDownloads(status),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.downloads() });
+    },
+  });
+}
+
 // ─── Backtests ────────────────────────────────────────────────────────────────
 
 export function useBacktests() {
