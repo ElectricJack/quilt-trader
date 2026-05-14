@@ -600,4 +600,111 @@ export const api = {
   getBrokerAssetTypes(brokerType: string): Promise<{ asset_types: string[] }> {
     return request<{ asset_types: string[] }>(`/api/brokers/${brokerType}/asset-types`);
   },
+
+  // ── U5: live subscriptions + compare ──
+  listLiveSubscriptions(): Promise<LiveSubscription[]> {
+    return request<LiveSubscription[]>("/api/live-subscriptions");
+  },
+  createLiveSubscription(body: {
+    broker: string;
+    symbol: string;
+    tick_retention_hours?: number;
+  }): Promise<LiveSubscription> {
+    return request<LiveSubscription>("/api/live-subscriptions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  estimateLiveSubStorage(
+    broker: string,
+    symbol: string,
+    retention_hours: number
+  ): Promise<LiveSubStorageEstimate> {
+    const qs = new URLSearchParams({
+      broker,
+      symbol,
+      retention_hours: String(retention_hours),
+    });
+    return request<LiveSubStorageEstimate>(
+      `/api/live-subscriptions/estimate?${qs.toString()}`
+    );
+  },
+  deleteLiveSubscription(id: string): Promise<void> {
+    return request<void>(`/api/live-subscriptions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  },
+  getMarketDataWithSource(
+    symbol: string,
+    opts: { source?: string; provider?: string; timeframe?: string; bars?: number }
+  ): Promise<MarketDataResponse> {
+    const qs = new URLSearchParams();
+    if (opts.source) qs.set("source", opts.source);
+    if (opts.provider) qs.set("provider", opts.provider);
+    if (opts.timeframe) qs.set("timeframe", opts.timeframe);
+    if (opts.bars !== undefined) qs.set("bars", String(opts.bars));
+    const query = qs.toString();
+    return request<MarketDataResponse>(
+      `/api/data/market/${encodeURIComponent(symbol)}${query ? `?${query}` : ""}`
+    );
+  },
+
+  // ── U6: options chain + submit ──
+  getOptionExpiries(accountId: string, underlying: string): Promise<{ expiries: string[] }> {
+    return request<{ expiries: string[] }>(
+      `/api/accounts/${accountId}/options-chain/expiries?underlying=${encodeURIComponent(underlying)}`
+    );
+  },
+  getOptionChain(accountId: string, underlying: string, expiry: string): Promise<OptionChainResponse> {
+    return request<OptionChainResponse>(
+      `/api/accounts/${accountId}/options-chain/${encodeURIComponent(expiry)}?underlying=${encodeURIComponent(underlying)}`
+    );
+  },
 };
+
+// ── U5: live subscriptions + compare ──
+export interface LiveSubscription {
+  id: string;
+  broker: string;
+  symbol: string;
+  tick_retention_hours: number;
+  tick_rate_per_min: number | null;
+  status: string;
+  created_at: string | null;
+  last_tick_at: string | null;
+  error_message: string | null;
+}
+
+export interface LiveSubStorageEstimate {
+  broker: string;
+  symbol: string;
+  retention_hours: number;
+  estimated_bytes: number;
+  estimated_ticks: number;
+  estimated_rate_per_min: number | null;
+}
+
+// ── U6: options chain + submit ──
+export interface OptionChainContract {
+  strike: number;
+  right: "call" | "put";
+  occ_symbol: string;
+  bid: number | null;
+  ask: number | null;
+  last: number | null;
+  iv: number | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  open_interest: number | null;
+  volume: number | null;
+}
+
+export interface OptionChainResponse {
+  underlying: string;
+  spot: number;
+  expiry: string;
+  as_of: string | null;
+  contracts: OptionChainContract[];
+}

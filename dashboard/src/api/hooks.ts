@@ -713,3 +713,68 @@ export function useOpenPosition(accountId: string) {
     },
   });
 }
+
+// ── U5: live subscriptions + compare ──
+
+export function useLiveSubscriptions() {
+  return useQuery({
+    queryKey: ["live-subs"] as const,
+    queryFn: api.listLiveSubscriptions,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCreateLiveSubscription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof api.createLiveSubscription>[0]) =>
+      api.createLiveSubscription(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["live-subs"] });
+    },
+  });
+}
+
+export function useDeleteLiveSubscription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteLiveSubscription(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["live-subs"] });
+    },
+  });
+}
+
+export function useLiveSubStorageEstimate(
+  broker: string | null,
+  symbol: string | null,
+  retentionHours: number
+) {
+  return useQuery({
+    queryKey: ["live-sub-estimate", broker, symbol, retentionHours] as const,
+    queryFn: () => api.estimateLiveSubStorage(broker!, symbol!, retentionHours),
+    enabled: !!broker && !!symbol,
+    staleTime: 60_000,
+  });
+}
+
+/** Fetch market data, allowing `source` (provider or live source like `alpaca_live`). */
+export function useMarketDataSource(
+  source: string | null,
+  symbol: string | null,
+  timeframe: string | null,
+  bars?: number
+) {
+  return useQuery({
+    queryKey: ["market-data-source", source, symbol, timeframe, bars ?? null] as const,
+    queryFn: () =>
+      api.getMarketDataWithSource(symbol!, {
+        source: source!,
+        timeframe: timeframe!,
+        ...(bars !== undefined ? { bars } : {}),
+      }),
+    enabled: !!source && !!symbol && !!timeframe,
+    staleTime: 30_000,
+  });
+}

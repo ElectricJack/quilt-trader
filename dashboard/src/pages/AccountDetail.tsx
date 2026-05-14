@@ -14,6 +14,7 @@ import {
   useAccountTrades,
   useAccountEquityCurve,
 } from "../api/hooks";
+import { OpenPositionModal } from "../components/OpenPositionModal";
 import type { CashFlow, AlgorithmInstance, TradeRow } from "../types";
 import type { BrokerPosition } from "../api/client";
 import { DataTable, type ColumnDef } from "../components/DataTable";
@@ -139,6 +140,7 @@ export function AccountDetail() {
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [cashFlowOpen, setCashFlowOpen] = useState(false);
+  const [openPositionOpen, setOpenPositionOpen] = useState(false);
   const [syncRange, setSyncRange] = useState<"incremental" | "30d" | "90d" | "1y" | "all">("incremental");
   const [chartRange, setChartRange] = useState<"30d" | "90d" | "1y" | "all">("90d");
 
@@ -472,6 +474,14 @@ export function AccountDetail() {
           </Link>
           <h1 className="text-2xl font-bold text-white truncate">{account.name}</h1>
           <StatusBadge status={account.locked_by ? "locked" : "available"} />
+          {account.locked_by && (
+            <Link
+              to={`/instances/${account.locked_by}`}
+              className="text-xs px-2 py-0.5 rounded border bg-amber-900/40 text-amber-300 border-amber-800 hover:underline"
+            >
+              Locked by instance {account.locked_by.slice(0, 8)}…
+            </Link>
+          )}
         </div>
         <div className="flex gap-2 flex-shrink-0">
           <button
@@ -507,6 +517,32 @@ export function AccountDetail() {
               {syncAccount.isPending ? "Syncing…" : "Sync"}
             </button>
           </div>
+          {/* Open Position */}
+          <button
+            className="flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={() => setOpenPositionOpen(true)}
+            disabled={!!account.locked_by}
+            title={account.locked_by
+              ? "Locked by algorithm. Stop the algo to open positions manually."
+              : "Open a new position"}
+          >
+            Open Position
+          </button>
+
+          {/* Strategies (options only) */}
+          {(account.supported_asset_types ?? []).includes("options") && (
+            <button
+              className="flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={() => navigate(`/accounts/${account.id}/strategies`)}
+              disabled={!!account.locked_by}
+              title={account.locked_by
+                ? "Locked by algorithm. Stop the algo to use the strategy builder."
+                : "Open the options strategy builder"}
+            >
+              Strategies
+            </button>
+          )}
+
           <button
             className="flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-gray-300 bg-gray-700 hover:bg-gray-600 transition-colors"
             onClick={() => setEditOpen(true)}
@@ -818,6 +854,16 @@ export function AccountDetail() {
         onConfirm={handleDelete}
         onCancel={() => setDeleteOpen(false)}
       />
+
+      {/* Open Position Modal */}
+      {account && (
+        <OpenPositionModal
+          open={openPositionOpen}
+          onClose={() => setOpenPositionOpen(false)}
+          accountId={account.id}
+          allowedAssetTypes={account.supported_asset_types ?? []}
+        />
+      )}
     </div>
   );
 }
