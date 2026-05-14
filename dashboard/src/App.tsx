@@ -17,6 +17,7 @@ import { Backtests } from "./pages/Backtests";
 import { BacktestDetail } from "./pages/BacktestDetail";
 import { Notifications } from "./pages/Notifications";
 import { Settings } from "./pages/Settings";
+import { Strategies } from "./pages/Strategies";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -43,6 +44,8 @@ export function App() {
             <Route path="/" element={<Overview />} />
             <Route path="/accounts" element={<Accounts />} />
             <Route path="/accounts/:id" element={<AccountDetail />} />
+            {/* U6: Options strategy builder */}
+            <Route path="/accounts/:id/strategies" element={<Strategies />} />
             <Route path="/algorithms" element={<Algorithms />} />
             <Route path="/algorithms/:id" element={<AlgorithmDetail />} />
             <Route path="/instances/:id" element={<InstanceDetail />} />
