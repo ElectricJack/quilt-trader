@@ -1,7 +1,9 @@
 import argparse
 import asyncio
 import logging
+import subprocess
 import sys
+from typing import Optional
 
 from worker.config import WorkerConfig
 
@@ -9,18 +11,38 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger(__name__)
 
 
+def _discover_tailscale_ip() -> Optional[str]:
+    try:
+        out = subprocess.run(
+            ["tailscale", "ip", "-4"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip() or None
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 async def run_worker(config: WorkerConfig) -> None:
     import websockets
     from worker.agent import WorkerAgent
     from worker.data_client import DataClient
 
-    logger.info("Starting worker '%s', connecting to %s", config.worker_name, config.coordinator_url)
+    tailscale_ip = _discover_tailscale_ip()
+    logger.info("Starting worker '%s' (id=%s, ts_ip=%s), connecting to %s",
+                config.worker_name, config.worker_id, tailscale_ip, config.coordinator_url)
     data_client = DataClient(base_url=config.coordinator_http_url, cache_ttl=config.data_cache_ttl)
     ws_url = f"{config.coordinator_url}/ws/worker"
 
     async for websocket in websockets.connect(ws_url):
         try:
-            agent = WorkerAgent(worker_name=config.worker_name, websocket=websocket)
+            agent = WorkerAgent(
+                worker_id=config.worker_id,
+                worker_name=config.worker_name,
+                websocket=websocket,
+                tailscale_ip=tailscale_ip,
+            )
             logger.info("Connected to coordinator")
 
             async def heartbeat_loop():

@@ -26,8 +26,11 @@ class MessageRouter:
 
 
 class WorkerAgent:
-    def __init__(self, worker_name: str, websocket: Any) -> None:
+    def __init__(self, worker_id: str, worker_name: str, websocket: Any,
+                 tailscale_ip: Optional[str] = None) -> None:
+        self.worker_id = worker_id
         self.worker_name = worker_name
+        self.tailscale_ip = tailscale_ip
         self._ws = websocket
         self.router = MessageRouter()
         self._running_instances: dict[str, Any] = {}
@@ -41,8 +44,15 @@ class WorkerAgent:
         return json.loads(raw)
 
     async def send_heartbeat(self) -> None:
-        await self._send({"type": "heartbeat", "worker_name": self.worker_name,
-                         "timestamp": datetime.now(timezone.utc).isoformat()})
+        payload: dict = {
+            "type": "heartbeat",
+            "worker_id": self.worker_id,
+            "worker_name": self.worker_name,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if self.tailscale_ip:
+            payload["tailscale_ip"] = self.tailscale_ip
+        await self._send(payload)
 
     async def send_event(self, event_type: str, instance_id: str, payload: Optional[dict] = None) -> None:
         await self._send({"type": event_type, "instance_id": instance_id, "payload": payload or {},

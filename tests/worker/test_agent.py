@@ -25,7 +25,7 @@ async def test_message_router_unknown_type():
 @pytest.mark.asyncio
 async def test_agent_sends_heartbeat():
     ws = AsyncMock()
-    agent = WorkerAgent(worker_name="test-pi", websocket=ws)
+    agent = WorkerAgent(worker_id="x", worker_name="test-pi", websocket=ws)
     await agent.send_heartbeat()
     ws.send.assert_called_once()
     sent = json.loads(ws.send.call_args[0][0])
@@ -36,7 +36,7 @@ async def test_agent_sends_heartbeat():
 @pytest.mark.asyncio
 async def test_agent_sends_event():
     ws = AsyncMock()
-    agent = WorkerAgent(worker_name="test-pi", websocket=ws)
+    agent = WorkerAgent(worker_id="x", worker_name="test-pi", websocket=ws)
     await agent.send_event(event_type="trade_executed", instance_id="inst-1", payload={"symbol": "AAPL", "side": "buy"})
     ws.send.assert_called_once()
     sent = json.loads(ws.send.call_args[0][0])
@@ -49,7 +49,7 @@ async def test_agent_sends_event():
 async def test_agent_sends_signal_request():
     ws = AsyncMock()
     ws.recv.return_value = json.dumps({"type": "signal_approved", "approved": True})
-    agent = WorkerAgent(worker_name="test-pi", websocket=ws)
+    agent = WorkerAgent(worker_id="x", worker_name="test-pi", websocket=ws)
     result = await agent.request_signal_approval(instance_id="inst-1", signal={"legs": [{"symbol": "AAPL"}]})
     assert result["approved"] is True
     ws.send.assert_called_once()
@@ -60,7 +60,7 @@ async def test_agent_sends_signal_request():
 @pytest.mark.asyncio
 async def test_agent_sends_state_checkpoint():
     ws = AsyncMock()
-    agent = WorkerAgent(worker_name="test-pi", websocket=ws)
+    agent = WorkerAgent(worker_id="x", worker_name="test-pi", websocket=ws)
     await agent.send_state_checkpoint(instance_id="inst-1", state={"positions": ["AAPL"]})
     ws.send.assert_called_once()
     sent = json.loads(ws.send.call_args[0][0])
@@ -71,8 +71,32 @@ async def test_agent_sends_state_checkpoint():
 @pytest.mark.asyncio
 async def test_agent_sends_decision_log():
     ws = AsyncMock()
-    agent = WorkerAgent(worker_name="test-pi", websocket=ws)
+    agent = WorkerAgent(worker_id="x", worker_name="test-pi", websocket=ws)
     await agent.send_decision_log(instance_id="inst-1", log_entry={"timestamp": "2025-01-01T09:30:00", "signals_produced": []})
     ws.send.assert_called_once()
     sent = json.loads(ws.send.call_args[0][0])
     assert sent["type"] == "decision_log"
+
+
+@pytest.mark.asyncio
+async def test_send_heartbeat_includes_worker_id_and_tailscale_ip():
+    ws = AsyncMock()
+    ws.send = AsyncMock()
+    agent = WorkerAgent(worker_id="uuid-abc", worker_name="pi-1", websocket=ws,
+                        tailscale_ip="100.64.0.5")
+    await agent.send_heartbeat()
+    sent_payload = json.loads(ws.send.call_args.args[0])
+    assert sent_payload["type"] == "heartbeat"
+    assert sent_payload["worker_id"] == "uuid-abc"
+    assert sent_payload["worker_name"] == "pi-1"
+    assert sent_payload["tailscale_ip"] == "100.64.0.5"
+
+@pytest.mark.asyncio
+async def test_send_heartbeat_omits_tailscale_ip_when_none():
+    ws = AsyncMock()
+    ws.send = AsyncMock()
+    agent = WorkerAgent(worker_id="uuid-abc", worker_name="pi-1", websocket=ws,
+                        tailscale_ip=None)
+    await agent.send_heartbeat()
+    sent_payload = json.loads(ws.send.call_args.args[0])
+    assert "tailscale_ip" not in sent_payload

@@ -116,6 +116,7 @@ ws_url="${ws_url/http:\/\//ws://}"
 
 cat > /etc/quilt-trader-worker.env <<EOF
 QTW_COORDINATOR_URL=${ws_url}
+QTW_WORKER_ID=${WORKER_ID}
 QTW_WORKER_NAME=${WORKER_NAME}
 QTW_HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}
 QTW_MAX_ALGORITHMS=${MAX_ALGORITHMS}

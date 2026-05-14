@@ -1,4 +1,16 @@
+import os
 from worker.config import WorkerConfig
+
+
+def test_worker_config_reads_worker_id_from_env(monkeypatch):
+    monkeypatch.setenv("QTW_WORKER_ID", "uuid-123")
+    cfg = WorkerConfig()
+    assert cfg.worker_id == "uuid-123"
+
+def test_worker_config_worker_id_defaults_empty(monkeypatch):
+    monkeypatch.delenv("QTW_WORKER_ID", raising=False)
+    cfg = WorkerConfig()
+    assert cfg.worker_id == ""
 
 
 def test_default_config():

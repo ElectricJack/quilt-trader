@@ -6,6 +6,7 @@ class WorkerConfig(BaseSettings):
 
     coordinator_url: str = "ws://localhost:8000"
     worker_name: str = "worker"
+    worker_id: str = ""
     heartbeat_interval: int = 30
     data_cache_ttl: int = 60
     max_algorithms: int = 2
