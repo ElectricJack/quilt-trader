@@ -47,7 +47,7 @@ class TickContext(ABC):
         ...
 
     @abstractmethod
-    def market_data(self, symbol: str, timeframe: str = "1min", bars: int = 100) -> pd.DataFrame:
+    def market_data(self, symbol: str, timeframe: str = "1min", bars: int = 100, source: Optional[str] = None) -> pd.DataFrame:
         ...
 
     @abstractmethod

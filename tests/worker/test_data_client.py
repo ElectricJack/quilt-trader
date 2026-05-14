@@ -87,3 +87,33 @@ async def test_clear_cache():
     client.clear_cache()
     await client.get_custom_data("test")
     assert http.call_count == 2
+
+
+class ParamCapturingHTTPClient:
+    """HTTP client that captures the params passed to get()."""
+
+    def __init__(self):
+        self.last_params = None
+
+    async def get(self, url, **kwargs):
+        self.last_params = kwargs.get("params", {})
+        return FakeHTTPResponse({"data": []})
+
+    async def aclose(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_get_market_data_passes_source_param():
+    http = ParamCapturingHTTPClient()
+    client = DataClient(base_url="http://coordinator:8000", cache_ttl=60, http_client=http)
+    await client.get_market_data("AAPL", timeframe="1min", bars=100, source="alpaca_live")
+    assert http.last_params["source"] == "alpaca_live"
+
+
+@pytest.mark.asyncio
+async def test_get_market_data_omits_source_when_none():
+    http = ParamCapturingHTTPClient()
+    client = DataClient(base_url="http://coordinator:8000", cache_ttl=60, http_client=http)
+    await client.get_market_data("AAPL", timeframe="1min", bars=100)
+    assert "source" not in http.last_params

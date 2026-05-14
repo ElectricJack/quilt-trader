@@ -24,13 +24,16 @@ class DataClient:
     def clear_cache(self) -> None:
         self._cache.clear()
 
-    async def get_market_data(self, symbol: str, timeframe: str = "1min", bars: int = 100) -> pd.DataFrame:
+    async def get_market_data(self, symbol: str, timeframe: str = "1min", bars: int = 100, source: Optional[str] = None) -> pd.DataFrame:
         url = f"{self._base_url}/api/data/market/{symbol}"
-        cache_key = f"market:{symbol}:{timeframe}:{bars}"
+        cache_key = f"market:{symbol}:{timeframe}:{bars}:{source or '_default'}"
         cached = self._get_cached(cache_key)
         if cached is not None:
             return cached
-        response = await self._http.get(url, params={"timeframe": timeframe, "bars": bars})
+        params: dict = {"timeframe": timeframe, "bars": bars}
+        if source is not None:
+            params["source"] = source
+        response = await self._http.get(url, params=params)
         response.raise_for_status()
         data = response.json().get("data", [])
         df = pd.DataFrame(data)
