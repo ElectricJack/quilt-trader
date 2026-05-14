@@ -143,10 +143,14 @@ interface ActiveCardProps {
 }
 
 function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProps) {
-  const pct =
-    download.progress_total > 0
-      ? Math.round((download.progress_current / download.progress_total) * 100)
-      : 0;
+  const total = download.progress_total;
+  // Overall pct = (symbols completed + fraction of current symbol) / total symbols
+  const symbolFraction = download.current_symbol_pct ?? 0;
+  const pct = total > 0
+    ? Math.round(((download.progress_current + symbolFraction) / total) * 100)
+    : 0;
+  const isRunning = download.status === "running" || download.status === "queued";
+  const indeterminate = isRunning && pct === 0;
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
@@ -174,14 +178,20 @@ function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProp
       </div>
 
       {/* Progress bar */}
-      <div className="bg-gray-700 rounded-full h-2 mb-1">
-        <div
-          className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {indeterminate ? (
+        <div className="bg-gray-700 rounded-full h-2 mb-1 progress-indeterminate" />
+      ) : (
+        <div className="bg-gray-700 rounded-full h-2 mb-1">
+          <div
+            className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
       <p className="text-xs text-gray-500">
-        {download.progress_current} of {download.progress_total}
+        {indeterminate
+          ? "working…"
+          : `${download.progress_current} of ${download.progress_total}${pct > 0 ? ` · ${pct}%` : ""}`}
       </p>
       {download.progress_message && (
         <p className="text-xs text-gray-400 mt-0.5">{download.progress_message}</p>

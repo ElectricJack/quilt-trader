@@ -230,6 +230,7 @@ export interface MarketDataDownload {
   progress_total: number;
   error_message: string | null;
   progress_message: string | null;
+  current_symbol_pct: number | null;
   started_at: string | null;
   completed_at: string | null;
 }

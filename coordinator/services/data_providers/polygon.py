@@ -1,11 +1,11 @@
 import asyncio
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dtime, timezone
 from typing import Any, Awaitable, Callable
 
-PageCallback = Callable[[int, int], Awaitable[None]]
-# (page_index_zero_based, cumulative_bars_so_far) -> awaitable
+PageCallback = Callable[[int, int, "float | None"], Awaitable[None]]
+# (page_index_zero_based, cumulative_bars_so_far, fraction_of_date_range_or_None) -> awaitable
 
 StatusCallback = Callable[[str], Awaitable[None]]
 # (message) -> awaitable
@@ -157,8 +157,19 @@ class PolygonProvider:
             data = response.json()
             results = data.get("results") or []
             all_results.extend(results)
+            fraction: float | None = None
+            if all_results:
+                last_ms = all_results[-1].get("t")
+                if last_ms is not None:
+                    last_ts = datetime.fromtimestamp(last_ms / 1000, tz=timezone.utc)
+                    start_dt = datetime.combine(start, dtime(0, 0), tzinfo=timezone.utc)
+                    end_dt = datetime.combine(end, dtime(23, 59, 59), tzinfo=timezone.utc)
+                    total = (end_dt - start_dt).total_seconds()
+                    elapsed = (last_ts - start_dt).total_seconds()
+                    if total > 0:
+                        fraction = max(0.0, min(1.0, elapsed / total))
             if on_page is not None:
-                await on_page(page_index, len(all_results))
+                await on_page(page_index, len(all_results), fraction)
             next_url = data.get("next_url")
             if not next_url:
                 break

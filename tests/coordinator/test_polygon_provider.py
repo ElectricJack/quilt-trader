@@ -154,7 +154,7 @@ async def test_min_request_interval_pacing():
 
 @pytest.mark.asyncio
 async def test_pagination_emits_on_page_callback():
-    """on_page callback is called once per page with correct (page_index, cumulative_bars) args."""
+    """on_page callback is called once per page with correct (page_index, cumulative_bars, fraction) args."""
     page1 = _make_response(200, {
         "results": [{"t": 1000, "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}],
         "next_url": "https://api.polygon.io/next?cursor=abc",
@@ -166,16 +166,64 @@ async def test_pagination_emits_on_page_callback():
     http = AsyncMock()
     http.get.side_effect = [page1, page2]
 
-    callback_calls: list[tuple[int, int]] = []
+    callback_calls: list[tuple[int, int, float | None]] = []
 
-    async def cb(page_idx: int, total: int) -> None:
-        callback_calls.append((page_idx, total))
+    async def cb(page_idx: int, total: int, fraction: float | None = None) -> None:
+        callback_calls.append((page_idx, total, fraction))
 
     provider = PolygonProvider(api_key="k", http_client=http)
     bars = await provider.fetch_bars("X", "1day", date(2025, 1, 1), date(2025, 1, 2), on_page=cb)
 
     assert len(bars) == 2
-    assert callback_calls == [(0, 1), (1, 2)]
+    assert callback_calls[0][0] == 0
+    assert callback_calls[0][1] == 1
+    assert callback_calls[1][0] == 1
+    assert callback_calls[1][1] == 2
+
+
+@pytest.mark.asyncio
+async def test_pagination_fraction_progresses():
+    """Fraction values from on_page calls are monotonically increasing and clamped to [0, 1]."""
+    from datetime import datetime, timezone
+
+    start = date(2024, 1, 1)
+    end = date(2024, 1, 10)
+
+    # 2024-01-05 midnight UTC in ms
+    t_mid = int(datetime(2024, 1, 5, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    # 2024-01-10 23:59:59 UTC in ms
+    t_end = int(datetime(2024, 1, 10, 23, 59, 59, tzinfo=timezone.utc).timestamp() * 1000)
+
+    page1 = _make_response(200, {
+        "results": [{"t": t_mid, "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}],
+        "next_url": "https://api.polygon.io/next?cursor=abc",
+    })
+    page2 = _make_response(200, {
+        "results": [{"t": t_end, "o": 2, "h": 2, "l": 2, "c": 2, "v": 2}],
+    })
+
+    http = AsyncMock()
+    http.get.side_effect = [page1, page2]
+
+    fractions: list[float | None] = []
+
+    async def cb(page_idx: int, total: int, fraction: float | None = None) -> None:
+        fractions.append(fraction)
+
+    provider = PolygonProvider(api_key="k", http_client=http)
+    await provider.fetch_bars("AAPL", "1day", start, end, on_page=cb)
+
+    assert len(fractions) == 2
+    # Both fractions should be non-None
+    assert fractions[0] is not None
+    assert fractions[1] is not None
+    # Fractions should be in [0, 1]
+    assert 0.0 <= fractions[0] <= 1.0
+    assert 0.0 <= fractions[1] <= 1.0
+    # Fractions should be monotonically increasing (page 2 is closer to end)
+    assert fractions[1] > fractions[0]
+    # Page 2 (last bar = end of range) should be at/near 1.0
+    assert fractions[1] == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio

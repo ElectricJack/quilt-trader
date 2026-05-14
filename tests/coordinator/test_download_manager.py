@@ -393,12 +393,10 @@ class TestDownloadManager:
         """progress_message is written during paginated fetch and cleared on completion."""
         import asyncio
 
-        captured_messages: list[str] = []
-
-        # Provider that calls on_page once and records messages seen mid-flight
-        async def fetch_with_callback(symbol, timeframe, start, end, on_page=None):
+        # Provider that calls on_page once with the new 3-arg signature
+        async def fetch_with_callback(symbol, timeframe, start, end, on_page=None, on_status=None):
             if on_page is not None:
-                await on_page(0, 1)
+                await on_page(0, 1, 0.5)
             return [
                 {"timestamp": "2024-01-01T00:00:00+00:00", "open": 100, "high": 105,
                  "low": 99, "close": 103, "volume": 1000},
@@ -425,4 +423,42 @@ class TestDownloadManager:
         # After completion, progress_message must be cleared (set to None)
         assert dl["progress_message"] is None
         # Status must reflect completion (not stuck running)
+        assert dl["status"] in ("completed", "failed", "completed_with_errors")
+
+    @pytest.mark.asyncio
+    async def test_current_symbol_pct_set_during_download(self, session_factory, mock_data_service):
+        """current_symbol_pct is set mid-download and cleared to None on completion."""
+        import asyncio
+        from sqlalchemy import select as sa_select
+
+        # Provider calls on_page(0, 100, 0.5) then returns bars
+        async def fetch_with_fraction(symbol, timeframe, start, end, on_page=None, on_status=None):
+            if on_page is not None:
+                await on_page(0, 100, 0.5)
+            return [
+                {"timestamp": "2024-01-01T00:00:00+00:00", "open": 100, "high": 105,
+                 "low": 99, "close": 103, "volume": 1000},
+            ]
+
+        paging_provider = AsyncMock()
+        paging_provider.fetch_bars = fetch_with_fraction
+
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": paging_provider},
+        )
+
+        result = await mgr.create_download(
+            symbols=["AAPL"],
+            date_range_start=date(2024, 1, 1),
+            date_range_end=date(2024, 6, 30),
+        )
+        await asyncio.sleep(1.0)
+
+        dl = await mgr.get_download(result["id"])
+        assert dl is not None
+        # After completion, current_symbol_pct must be cleared (set to None)
+        assert dl["current_symbol_pct"] is None
+        # Status must reflect completion
         assert dl["status"] in ("completed", "failed", "completed_with_errors")

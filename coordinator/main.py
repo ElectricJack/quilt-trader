@@ -32,6 +32,12 @@ def create_app(
                 ))
             except Exception:
                 pass  # column already exists
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE market_data_downloads ADD COLUMN current_symbol_pct REAL"
+                ))
+            except Exception:
+                pass  # column already exists
         session_factory = create_session_factory(engine)
         event_bus = EventBus()
         encryption = EncryptionService(encryption_key)

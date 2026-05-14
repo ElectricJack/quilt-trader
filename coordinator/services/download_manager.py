@@ -197,15 +197,33 @@ class DownloadManager:
                 await session.commit()
 
         for i, symbol in enumerate(symbols):
+            # Reset current_symbol_pct before starting each new symbol
+            async with self._session_factory() as session:
+                await session.execute(
+                    update(MarketDataDownload)
+                    .where(MarketDataDownload.id == download_id)
+                    .values(current_symbol_pct=None)
+                )
+                await session.commit()
+
             try:
                 if data_type != "bars":
                     raise NotImplementedError(
                         f"data_type '{data_type}' is not yet supported by provider '{provider_name}'"
                     )
 
-                async def on_page(page_idx: int, total_bars: int, sym: str = symbol) -> None:
-                    msg = f"{sym}: page {page_idx + 1}, {total_bars:,} bars fetched"
-                    await _update_progress_message(msg)
+                async def on_page(page_idx: int, total_bars: int, fraction: float | None = None, sym: str = symbol) -> None:
+                    parts = [f"{sym}: page {page_idx + 1}", f"{total_bars:,} bars"]
+                    if fraction is not None:
+                        parts.append(f"{int(fraction * 100)}% of range")
+                    msg = ", ".join(parts)
+                    async with self._session_factory() as session:
+                        await session.execute(
+                            update(MarketDataDownload)
+                            .where(MarketDataDownload.id == download_id)
+                            .values(progress_message=msg, current_symbol_pct=fraction)
+                        )
+                        await session.commit()
 
                 async def on_status(msg: str, sym: str = symbol) -> None:
                     await _update_progress_message(f"{sym}: {msg}")
@@ -254,6 +272,7 @@ class DownloadManager:
                     completed_at=datetime.now(timezone.utc),
                     error_message=error_msg,
                     progress_message=None,
+                    current_symbol_pct=None,
                 )
             )
             await session.commit()
@@ -275,6 +294,7 @@ class DownloadManager:
             "progress_total": dl.progress_total,
             "error_message": dl.error_message,
             "progress_message": dl.progress_message,
+            "current_symbol_pct": dl.current_symbol_pct,
             "started_at": dl.started_at.isoformat() if dl.started_at else None,
             "completed_at": dl.completed_at.isoformat() if dl.completed_at else None,
         }
