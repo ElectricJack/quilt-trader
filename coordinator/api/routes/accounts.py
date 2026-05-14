@@ -1,9 +1,11 @@
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -656,3 +658,275 @@ async def delete_account(account_id: str, db: AsyncSession = Depends(get_db)):
     )
 
     await db.delete(account)
+
+
+class _LegSpecIn(BaseModel):
+    symbol: str
+    asset_type: str
+    side: str
+    quantity: float
+    expiry: Optional[str] = None
+    strike: Optional[float] = None
+    right: Optional[str] = None
+
+
+class OpenPositionRequest(BaseModel):
+    legs: list[_LegSpecIn]
+    strategy_type: str = "single"
+    order_type: str = "market"
+    limit_price: Optional[float] = None
+
+
+@router.post("/{account_id}/positions/open")
+async def open_position(
+    account_id: str,
+    body: OpenPositionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from worker.broker_adapter import MultilegLegSpec
+    from coordinator.database.models import Position, TradeLog
+
+    account = (
+        await db.execute(select(Account).where(Account.id == account_id))
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.locked_by:
+        return Response(
+            content=json.dumps({"detail": {"locked_by": account.locked_by}}),
+            status_code=423,
+            media_type="application/json",
+        )
+
+    # Validate asset types vs account
+    allowed = set(account.supported_asset_types or [])
+    bad = [l.asset_type for l in body.legs if l.asset_type not in allowed]
+    if bad:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Asset types not enabled on this account: {sorted(set(bad))}. "
+                   f"Allowed: {sorted(allowed)}.",
+        )
+
+    # Options legs must have expiry/strike/right
+    missing = [
+        i for i, l in enumerate(body.legs)
+        if l.asset_type == "options" and not (l.expiry and l.strike is not None and l.right)
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Options legs missing expiry/strike/right at indices: {missing}",
+        )
+
+    adapter = await _adapter_for_account(account)
+    legs_spec = [
+        MultilegLegSpec(
+            symbol=l.symbol,
+            asset_type=l.asset_type,
+            side=l.side,
+            quantity=l.quantity,
+            expiry=l.expiry,
+            strike=l.strike,
+            right=l.right,
+        )
+        for l in body.legs
+    ]
+
+    try:
+        if len(legs_spec) > 1 and adapter.supports_multileg_orders(legs_spec):
+            # Atomic path
+            def _submit():
+                return adapter.submit_multileg_order(
+                    legs_spec,
+                    order_type=body.order_type,
+                    limit_price=body.limit_price,
+                )
+
+            try:
+                result = await asyncio.to_thread(_submit)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=422, detail=f"Broker rejected: {e}")
+
+            # Persist
+            position = Position(
+                account_id=account_id,
+                instance_id=None,
+                strategy_type=body.strategy_type,
+                legs=[
+                    {
+                        "symbol": l.symbol,
+                        "asset_type": l.asset_type,
+                        "side": l.side,
+                        "quantity": l.quantity,
+                        "expiry": l.expiry,
+                        "strike": l.strike,
+                        "right": l.right,
+                        "avg_price": leg_res.filled_price,
+                    }
+                    for l, leg_res in zip(body.legs, result.legs)
+                ],
+                status="open",
+                net_cost=sum(
+                    (leg_res.filled_price or 0.0)
+                    * l.quantity
+                    * (1 if l.side == "buy" else -1)
+                    for l, leg_res in zip(body.legs, result.legs)
+                ),
+                metadata_={"broker_order_id": result.broker_order_id},
+            )
+            db.add(position)
+            await db.flush()
+            for leg, leg_res in zip(body.legs, result.legs):
+                db.add(
+                    TradeLog(
+                        account_id=account_id,
+                        source="manual",
+                        timestamp=datetime.now(timezone.utc),
+                        symbol=leg.symbol,
+                        asset_type=leg.asset_type,
+                        side=leg.side,
+                        quantity=leg.quantity,
+                        order_type=body.order_type,
+                        filled_price=leg_res.filled_price or 0.0,
+                        fees=leg_res.fees or 0.0,
+                        broker_txn_id=leg_res.broker_order_id,
+                        position_id=position.id,
+                    )
+                )
+            await db.flush()
+            return {
+                "position_id": position.id,
+                "broker_order_id": result.broker_order_id,
+                "legs": [
+                    {
+                        "index": r.index,
+                        "status": r.status,
+                        "filled_price": r.filled_price,
+                        "fees": r.fees,
+                        "error": r.error,
+                        "broker_order_id": r.broker_order_id,
+                    }
+                    for r in result.legs
+                ],
+                "atomic": True,
+                "partial_fill": False,
+            }
+        else:
+            # Fallback: sequential per-leg submit_order
+            leg_outcomes = []
+            filled_legs = []
+            for i, leg in enumerate(legs_spec):
+                def _sub(leg=leg):
+                    return adapter.submit_order(
+                        symbol=adapter.compose_symbol(leg),
+                        side=leg.side,
+                        quantity=leg.quantity,
+                        order_type=body.order_type,
+                        limit_price=body.limit_price,
+                    )
+
+                try:
+                    res = await asyncio.to_thread(_sub)
+                    leg_outcomes.append(
+                        {
+                            "index": i,
+                            "status": "filled",
+                            "filled_price": res.filled_price,
+                            "fees": res.fees,
+                            "broker_order_id": res.broker_order_id,
+                            "error": None,
+                        }
+                    )
+                    filled_legs.append((i, leg, res))
+                except Exception as e:  # noqa: BLE001
+                    leg_outcomes.append(
+                        {
+                            "index": i,
+                            "status": "rejected",
+                            "filled_price": None,
+                            "fees": None,
+                            "broker_order_id": None,
+                            "error": str(e),
+                        }
+                    )
+            partial = (
+                any(lo["status"] == "rejected" for lo in leg_outcomes)
+                and len(filled_legs) > 0
+            )
+            position_id = None
+            if filled_legs:
+                pos = Position(
+                    account_id=account_id,
+                    instance_id=None,
+                    strategy_type=body.strategy_type,
+                    legs=[
+                        {
+                            "symbol": l.symbol,
+                            "asset_type": l.asset_type,
+                            "side": l.side,
+                            "quantity": l.quantity,
+                            "expiry": l.expiry,
+                            "strike": l.strike,
+                            "right": l.right,
+                            "avg_price": r.filled_price,
+                        }
+                        for _, l, r in filled_legs
+                    ],
+                    status="open",
+                    net_cost=sum(
+                        r.filled_price * l.quantity * (1 if l.side == "buy" else -1)
+                        for _, l, r in filled_legs
+                    ),
+                    metadata_={"partial_fill": True} if partial else None,
+                )
+                db.add(pos)
+                await db.flush()
+                position_id = pos.id
+                for _, leg, res in filled_legs:
+                    db.add(
+                        TradeLog(
+                            account_id=account_id,
+                            source="manual",
+                            timestamp=datetime.now(timezone.utc),
+                            symbol=leg.symbol,
+                            asset_type=leg.asset_type,
+                            side=leg.side,
+                            quantity=leg.quantity,
+                            order_type=body.order_type,
+                            filled_price=res.filled_price,
+                            fees=res.fees or 0.0,
+                            broker_txn_id=res.broker_order_id,
+                            position_id=pos.id,
+                        )
+                    )
+                await db.flush()
+            if not filled_legs:
+                return Response(
+                    content=json.dumps(
+                        {
+                            "position_id": None,
+                            "broker_order_id": None,
+                            "legs": leg_outcomes,
+                            "atomic": False,
+                            "partial_fill": False,
+                        }
+                    ),
+                    media_type="application/json",
+                    status_code=422,
+                )
+            return Response(
+                content=json.dumps(
+                    {
+                        "position_id": position_id,
+                        "broker_order_id": None,
+                        "legs": leg_outcomes,
+                        "atomic": False,
+                        "partial_fill": partial,
+                    }
+                ),
+                media_type="application/json",
+                status_code=207 if partial else 200,
+            )
+    finally:
+        _close_adapter(adapter)
