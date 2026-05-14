@@ -5,8 +5,7 @@ import { z } from "zod";
 import {
   useAlgorithms,
   useDeleteAlgorithm,
-  useInstallAlgorithm,
-  useGithubRepos,
+  useInstallAlgorithmFromUrl,
   useUpdateAlgorithm,
 } from "../api/hooks";
 import { FormModal } from "../components/FormModal";
@@ -17,7 +16,10 @@ import { GitStatusBadge } from "../components/GitStatusBadge";
 import { useUIStore } from "../stores/ui";
 
 const installSchema = z.object({
-  full_name: z.string().min(1),
+  repo_url: z.string().url("Must be a valid URL").refine(
+    (v) => /^https?:\/\/github\.com\/[^/]+\/[^/]+/.test(v),
+    "Must be a GitHub repo URL",
+  ),
 });
 type InstallForm = z.infer<typeof installSchema>;
 
@@ -25,8 +27,8 @@ export function Algorithms() {
   const navigate = useNavigate();
   const { data: algorithms, isLoading } = useAlgorithms();
   const { mutateAsync: deleteAlgorithm } = useDeleteAlgorithm();
-  const { mutateAsync: installAlgorithm, isPending: isInstalling } =
-    useInstallAlgorithm();
+  const { mutateAsync: installFromUrl, isPending: isInstalling } =
+    useInstallAlgorithmFromUrl();
   const { mutateAsync: updateAlgorithm } = useUpdateAlgorithm();
   const addAlert = useUIStore((s) => s.addAlert);
 
@@ -42,17 +44,14 @@ export function Algorithms() {
   } | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
 
-  // Only fetch repos when the modal is open
-  const { data: repos, isLoading: reposLoading } = useGithubRepos(installOpen);
-
   const filtered = (algorithms ?? []).filter((a) =>
     a.name.toLowerCase().includes(search.toLowerCase())
   );
 
   async function handleInstall(data: InstallForm) {
     try {
-      await installAlgorithm(data.full_name);
-      addAlert({ message: `Installing ${data.full_name}…`, severity: "info" });
+      await installFromUrl(data.repo_url);
+      addAlert({ message: `Installing ${data.repo_url}…`, severity: "info" });
       setInstallOpen(false);
     } catch {
       addAlert({ message: "Failed to start installation.", severity: "error" });
@@ -219,38 +218,21 @@ export function Algorithms() {
         onClose={() => setInstallOpen(false)}
         title="Install from GitHub"
         schema={installSchema}
-        defaultValues={{ full_name: "" }}
+        defaultValues={{ repo_url: "" }}
         onSubmit={handleInstall}
         submitLabel="Install"
         isSubmitting={isInstalling}
       >
         {(form) => (
-          <FormField
-            label="Repository"
-            error={form.formState.errors.full_name?.message}
-          >
-            <select
-              {...form.register("full_name")}
+          <FormField label="Repository URL" error={form.formState.errors.repo_url?.message}>
+            <input
+              {...form.register("repo_url")}
               className="bg-gray-800 border border-gray-700 text-gray-100 rounded px-3 py-2 text-sm w-full"
-              disabled={reposLoading}
-            >
-              <option value="">
-                {reposLoading ? "Loading repositories…" : "Select a repository"}
-              </option>
-              {(repos ?? []).map((repo) => (
-                <option key={repo.full_name} value={repo.full_name}>
-                  {repo.full_name}
-                </option>
-              ))}
-            </select>
-            {/* Description of selected repo */}
-            {(() => {
-              const selected = form.watch("full_name");
-              const repo = (repos ?? []).find((r) => r.full_name === selected);
-              return repo?.description ? (
-                <p className="text-xs text-gray-500 mt-1">{repo.description}</p>
-              ) : null;
-            })()}
+              placeholder="https://github.com/owner/algorithm-repo"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Public repos work without a PAT. Private repos require GitHub PAT in Settings.
+            </p>
           </FormField>
         )}
       </FormModal>

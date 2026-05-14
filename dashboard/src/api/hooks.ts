@@ -677,3 +677,39 @@ export function useAccountSnapshotsLatest() {
     refetchInterval: 60_000,
   });
 }
+
+// ── U3: install algorithm from URL ──
+
+export function useInstallAlgorithmFromUrl() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (repo_url: string) => api.installAlgorithmFromUrl(repo_url),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["algorithms"] }),
+  });
+}
+
+// ── U1: broker asset-type catalog ──
+export function useBrokerAssetTypes(brokerType: string | null | undefined) {
+  return useQuery({
+    queryKey: ["brokerAssetTypes", brokerType],
+    queryFn: async () => {
+      if (!brokerType) return [];
+      const r = await api.getBrokerAssetTypes(brokerType);
+      return r.asset_types;
+    },
+    enabled: !!brokerType,
+  });
+}
+
+// ── U2: open position ──
+
+export function useOpenPosition(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof api.openPosition>[1]) =>
+      api.openPosition(accountId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["brokerInfo", accountId] });
+    },
+  });
+}

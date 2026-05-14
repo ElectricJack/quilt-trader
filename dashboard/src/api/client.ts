@@ -550,4 +550,54 @@ export const api = {
   accountSnapshotsLatest(): Promise<{ items: AccountSnapshotLatestItem[] }> {
     return request<{ items: AccountSnapshotLatestItem[] }>("/api/accounts/snapshots/latest");
   },
+
+  // ── U3: install algorithm from URL ──
+  installAlgorithmFromUrl(repo_url: string): Promise<InstalledAlgorithmResponse> {
+    return request<InstalledAlgorithmResponse>("/api/algorithms/install-from-url", {
+      method: "POST",
+      body: JSON.stringify({ repo_url }),
+    });
+  },
+
+  // ── U2: open position ──
+  openPosition(
+    accountId: string,
+    body: {
+      legs: Array<{
+        symbol: string;
+        asset_type: string;
+        side: "buy" | "sell";
+        quantity: number;
+        expiry?: string;
+        strike?: number;
+        right?: "call" | "put";
+      }>;
+      strategy_type?: string;
+      order_type?: "market" | "limit";
+      limit_price?: number;
+    }
+  ): Promise<{
+    position_id: string | null;
+    broker_order_id: string | null;
+    legs: Array<{
+      index: number;
+      status: string;
+      filled_price: number | null;
+      fees: number | null;
+      error: string | null;
+      broker_order_id: string | null;
+    }>;
+    atomic: boolean;
+    partial_fill: boolean;
+  }> {
+    return request(`/api/accounts/${accountId}/positions/open`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  // ── U1: broker asset-type catalog ──
+  getBrokerAssetTypes(brokerType: string): Promise<{ asset_types: string[] }> {
+    return request<{ asset_types: string[] }>(`/api/brokers/${brokerType}/asset-types`);
+  },
 };
