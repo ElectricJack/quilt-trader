@@ -97,7 +97,7 @@ def create_app(
 
         if polygon_key:
             from coordinator.services.data_providers.polygon import PolygonProvider
-            providers["polygon"] = PolygonProvider(api_key=polygon_key, http_client=http_client)
+            providers["polygon"] = PolygonProvider(api_key=polygon_key, http_client=http_client, min_request_interval_s=13.0)
             logger.info("PolygonProvider wired into DownloadManager")
         else:
             logger.warning(
