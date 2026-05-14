@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     JSON,
     Date,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -79,7 +80,7 @@ class Worker(Base):
     __tablename__ = "workers"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    tailscale_ip: Mapped[str] = mapped_column(String, nullable=False)
+    tailscale_ip: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="offline")
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     max_algorithms: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
@@ -315,6 +316,24 @@ class AccountSnapshot(Base):
     net_deposits_cumulative: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     source: Mapped[str] = mapped_column(String, nullable=False)
     account: Mapped["Account"] = relationship(back_populates="snapshots")
+
+
+class LiveSubscription(Base):
+    __tablename__ = "live_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("broker", "symbol", name="uq_live_subscription_broker_symbol"),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    broker: Mapped[str] = mapped_column(String, nullable=False)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="stopped")
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_tick_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    tick_rate_per_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tick_retention_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    dependent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
 class Setting(Base):
