@@ -2,7 +2,10 @@ import asyncio
 import logging
 import time
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+PageCallback = Callable[[int, int], Awaitable[None]]
+# (page_index_zero_based, cumulative_bars_so_far) -> awaitable
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +73,14 @@ class PolygonProvider:
         # Last attempt — raise on whatever the final status was
         raise RuntimeError(f"Polygon request failed after {max_retries} retries: HTTP {response.status_code}")
 
-    async def fetch_bars(self, symbol: str, timeframe: str, start: date, end: date) -> list[dict]:
+    async def fetch_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start: date,
+        end: date,
+        on_page: PageCallback | None = None,
+    ) -> list[dict]:
         multiplier, span = self._timeframe_params(timeframe)
         url = (
             f"{self.BASE_URL}/v2/aggs/ticker/{symbol}/range"
@@ -78,20 +88,22 @@ class PolygonProvider:
         )
         params = {"apiKey": self._api_key, "limit": 50000, "sort": "asc"}
 
-        all_results = []
+        all_results: list[dict] = []
+        page_index = 0
         while True:
             response = await self._request_with_retry(url, params)
             data = response.json()
-            all_results.extend(data.get("results") or [])
+            results = data.get("results") or []
+            all_results.extend(results)
+            if on_page is not None:
+                await on_page(page_index, len(all_results))
             next_url = data.get("next_url")
             if not next_url:
                 break
             url = next_url
-            params = {"apiKey": self._api_key}  # next_url has the cursor; only re-add apiKey
-            logger.info(
-                "Polygon pagination: fetched %d so far, following next_url for %s",
-                len(all_results), symbol,
-            )
+            params = {"apiKey": self._api_key}
+            page_index += 1
+            logger.info("Polygon pagination: %d bars fetched, following next_url for %s", len(all_results), symbol)
 
         return [
             {

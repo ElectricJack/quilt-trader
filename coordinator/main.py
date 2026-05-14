@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from coordinator.database.connection import create_engine, create_session_factory
 from coordinator.database.models import Base, Setting
@@ -25,6 +25,13 @@ def create_app(
     async def lifespan(app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Idempotent column add for existing DBs
+            try:
+                await conn.execute(text(
+                    "ALTER TABLE market_data_downloads ADD COLUMN progress_message TEXT"
+                ))
+            except Exception:
+                pass  # column already exists
         session_factory = create_session_factory(engine)
         event_bus = EventBus()
         encryption = EncryptionService(encryption_key)

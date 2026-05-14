@@ -229,6 +229,7 @@ export interface MarketDataDownload {
   progress_current: number;
   progress_total: number;
   error_message: string | null;
+  progress_message: string | null;
   started_at: string | null;
   completed_at: string | null;
 }

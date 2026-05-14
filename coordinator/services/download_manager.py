@@ -144,19 +144,36 @@ class DownloadManager:
         provider = self._providers[provider_name]
         errors = []
 
+        async def _update_progress_message(message: str) -> None:
+            async with self._session_factory() as session:
+                await session.execute(
+                    update(MarketDataDownload)
+                    .where(MarketDataDownload.id == download_id)
+                    .values(progress_message=message)
+                )
+                await session.commit()
+
         for i, symbol in enumerate(symbols):
             try:
                 if data_type != "bars":
                     raise NotImplementedError(
                         f"data_type '{data_type}' is not yet supported by provider '{provider_name}'"
                     )
-                bars = await provider.fetch_bars(symbol, timeframe, start, end)
+
+                async def on_page(page_idx: int, total_bars: int, sym: str = symbol) -> None:
+                    msg = f"{sym}: page {page_idx + 1}, {total_bars:,} bars fetched"
+                    await _update_progress_message(msg)
+
+                await _update_progress_message(f"{symbol}: starting…")
+                bars = await provider.fetch_bars(symbol, timeframe, start, end, on_page=on_page)
                 if bars:
                     df = pd.DataFrame(bars)
                     self._data_service.save_market_data(provider_name, symbol, timeframe, df)
                     logger.info("Downloaded %d bars for %s/%s", len(bars), symbol, timeframe)
+                    await _update_progress_message(f"{symbol}: saved {len(bars):,} bars")
                 else:
                     logger.warning("No data returned for %s/%s", symbol, timeframe)
+                    await _update_progress_message(f"{symbol}: no data returned")
             except NotImplementedError as e:
                 logger.warning("%s", e)
                 errors.append(f"{symbol}: {e}")
@@ -190,6 +207,7 @@ class DownloadManager:
                     status=final_status,
                     completed_at=datetime.now(timezone.utc),
                     error_message=error_msg,
+                    progress_message=None,
                 )
             )
             await session.commit()
@@ -210,6 +228,7 @@ class DownloadManager:
             "progress_current": dl.progress_current,
             "progress_total": dl.progress_total,
             "error_message": dl.error_message,
+            "progress_message": dl.progress_message,
             "started_at": dl.started_at.isoformat() if dl.started_at else None,
             "completed_at": dl.completed_at.isoformat() if dl.completed_at else None,
         }

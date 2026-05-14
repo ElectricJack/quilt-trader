@@ -183,6 +183,9 @@ function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProp
       <p className="text-xs text-gray-500">
         {download.progress_current} of {download.progress_total}
       </p>
+      {download.progress_message && (
+        <p className="text-xs text-gray-400 mt-0.5">{download.progress_message}</p>
+      )}
 
       {/* Error */}
       {download.error_message && (
@@ -223,7 +226,7 @@ export function Data() {
   // Poll while there are active downloads
   useEffect(() => {
     if (activeDownloads.length === 0) return;
-    const id = setInterval(() => void refetch(), 5000);
+    const id = setInterval(() => void refetch(), 2000);
     return () => clearInterval(id);
   }, [activeDownloads.length, refetch]);
 

@@ -150,3 +150,29 @@ async def test_min_request_interval_pacing():
 
     # The second call should have been delayed by ~interval; total elapsed >= interval
     assert elapsed >= interval, f"Expected >= {interval}s elapsed, got {elapsed:.4f}s"
+
+
+@pytest.mark.asyncio
+async def test_pagination_emits_on_page_callback():
+    """on_page callback is called once per page with correct (page_index, cumulative_bars) args."""
+    page1 = _make_response(200, {
+        "results": [{"t": 1000, "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}],
+        "next_url": "https://api.polygon.io/next?cursor=abc",
+    })
+    page2 = _make_response(200, {
+        "results": [{"t": 2000, "o": 2, "h": 2, "l": 2, "c": 2, "v": 2}],
+    })
+
+    http = AsyncMock()
+    http.get.side_effect = [page1, page2]
+
+    callback_calls: list[tuple[int, int]] = []
+
+    async def cb(page_idx: int, total: int) -> None:
+        callback_calls.append((page_idx, total))
+
+    provider = PolygonProvider(api_key="k", http_client=http)
+    bars = await provider.fetch_bars("X", "1day", date(2025, 1, 1), date(2025, 1, 2), on_page=cb)
+
+    assert len(bars) == 2
+    assert callback_calls == [(0, 1), (1, 2)]
