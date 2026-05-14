@@ -349,3 +349,16 @@ export interface AccountSnapshotLatestItem {
   } | null;
   day_pct: number | null;
 }
+
+export interface MarketDataBar {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface MarketDataResponse {
+  data: MarketDataBar[];
+}

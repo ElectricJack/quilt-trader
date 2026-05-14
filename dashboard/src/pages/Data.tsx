@@ -10,6 +10,7 @@ import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { StatusBadge } from "../components/StatusBadge";
+import { DatasetPreviewModal } from "../components/DatasetPreviewModal";
 import { useUIStore } from "../stores/ui";
 import type { MarketDataDownload, AvailableMarketData } from "../types";
 
@@ -148,6 +149,7 @@ function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProp
 
 export function Data() {
   const [modalOpen, setModalOpen] = useState(false);
+  const [preview, setPreview] = useState<{ provider: string; symbol: string; timeframe: string } | null>(null);
 
   const { data: available, isLoading: availableLoading } = useAvailableData();
   const { data: downloads, isLoading: downloadsLoading, refetch } = useDownloads();
@@ -320,14 +322,15 @@ export function Data() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {items.map((it) => (
-                    <span
+                    <button
                       key={`${it.symbol}-${it.timeframe}`}
+                      onClick={() => setPreview({ provider: it.provider, symbol: it.symbol, timeframe: it.timeframe })}
                       title={`${formatSize(it.size_bytes)} · ${it.file_path}`}
-                      className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono text-gray-300"
+                      className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono text-gray-300 hover:bg-gray-700 hover:border-indigo-600 cursor-pointer transition-colors"
                     >
                       <strong>{it.symbol}</strong>
                       <span className="text-gray-500 ml-1">{it.timeframe}</span>
-                    </span>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -335,6 +338,15 @@ export function Data() {
           </div>
         )}
       </section>
+
+      {/* Dataset Preview modal */}
+      <DatasetPreviewModal
+        open={!!preview}
+        onClose={() => setPreview(null)}
+        provider={preview?.provider ?? null}
+        symbol={preview?.symbol ?? null}
+        timeframe={preview?.timeframe ?? null}
+      />
 
       {/* Download Data modal */}
       <FormModal

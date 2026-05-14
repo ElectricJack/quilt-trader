@@ -14,6 +14,7 @@ import type {
   BacktestComparison,
   MarketDataDownload,
   AvailableMarketData,
+  MarketDataResponse,
   PortfolioEquityResponse,
   PortfolioKpis,
   AllocationResponse,
@@ -273,6 +274,11 @@ export const api = {
     return request<MarketDataDownload>(`/api/data/downloads/${id}/cancel`, {
       method: "POST",
     });
+  },
+  getMarketData(provider: string, symbol: string, timeframe: string): Promise<MarketDataResponse> {
+    return request<MarketDataResponse>(
+      `/api/data/market/${encodeURIComponent(symbol)}?provider=${encodeURIComponent(provider)}&timeframe=${encodeURIComponent(timeframe)}`
+    );
   },
 
   // Events

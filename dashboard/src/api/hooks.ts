@@ -350,6 +350,15 @@ export function useAvailableData() {
   });
 }
 
+export function useMarketData(provider: string | null, symbol: string | null, timeframe: string | null) {
+  return useQuery({
+    queryKey: ["market-data", provider, symbol, timeframe] as const,
+    queryFn: () => api.getMarketData(provider!, symbol!, timeframe!),
+    enabled: !!provider && !!symbol && !!timeframe,
+    staleTime: 60_000,
+  });
+}
+
 // ─── Settings Mutations ──────────────────────────────────────────────────────
 
 export function useSetGithubPat() {
