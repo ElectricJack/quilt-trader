@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date as _date
 from typing import Optional
 
 
@@ -37,6 +37,61 @@ class BrokerTransaction:
     raw: dict = field(default_factory=dict)
 
 
+@dataclass
+class MultilegLegSpec:
+    """Input shape for one leg of a multi-leg order. Matches Spec A's API LegSpec."""
+    symbol: str
+    asset_type: str               # "equities" | "options" | "crypto"
+    side: str                     # "buy" | "sell"
+    quantity: float
+    expiry: Optional[str] = None  # YYYY-MM-DD, options only
+    strike: Optional[float] = None
+    right: Optional[str] = None   # "call" | "put"
+
+
+@dataclass
+class MultilegLegResult:
+    index: int
+    status: str                              # "filled" | "rejected" | "pending"
+    filled_price: Optional[float] = None
+    fees: Optional[float] = None
+    error: Optional[str] = None
+    broker_order_id: Optional[str] = None
+
+
+@dataclass
+class MultilegOrderResult:
+    broker_order_id: Optional[str]           # parent order id when atomic
+    legs: list[MultilegLegResult]
+    atomic: bool                             # True if filled via native multi-leg endpoint
+
+
+@dataclass
+class OptionContract:
+    strike: float
+    right: str                               # "call" | "put"
+    occ_symbol: str
+    bid: Optional[float]
+    ask: Optional[float]
+    last: Optional[float]
+    iv: Optional[float]
+    delta: Optional[float]
+    gamma: Optional[float]
+    theta: Optional[float]
+    vega: Optional[float]
+    open_interest: Optional[int]
+    volume: Optional[int]
+
+
+@dataclass
+class OptionChainSnapshot:
+    underlying: str
+    spot: float
+    expiry: _date
+    contracts: list[OptionContract]
+    as_of: Optional[datetime]
+
+
 class BrokerAdapter(ABC):
     @abstractmethod
     def get_positions(self) -> dict[str, dict]: ...
@@ -49,6 +104,33 @@ class BrokerAdapter(ABC):
     def get_transactions(self, since: datetime) -> list[BrokerTransaction]:
         """Fetch broker activity since `since`. Default: not implemented."""
         return []
+
+    # ---- Multi-leg orders (Spec A) ----
+    def supports_multileg_orders(self, legs: list[MultilegLegSpec]) -> bool:
+        """Whether this adapter can submit `legs` as a single atomic ticket."""
+        return False
+
+    def compose_symbol(self, leg: MultilegLegSpec) -> str:
+        """Format a leg into a broker-specific symbol (OCC for options)."""
+        return leg.symbol
+
+    def submit_multileg_order(
+        self,
+        legs: list[MultilegLegSpec],
+        order_type: str,
+        limit_price: Optional[float],
+    ) -> MultilegOrderResult:
+        """Submit `legs` as one atomic broker order. Raises if unsupported."""
+        raise NotImplementedError
+
+    # ---- Options chain (Spec C) ----
+    def list_option_expiries(self, underlying: str) -> list[_date]:
+        """Return available option expirations for the underlying."""
+        raise NotImplementedError
+
+    def get_option_chain(self, underlying: str, expiry: _date) -> OptionChainSnapshot:
+        """Return the full chain for one expiry."""
+        raise NotImplementedError
 
 
 class MockBrokerAdapter(BrokerAdapter):

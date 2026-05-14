@@ -52,3 +52,56 @@ def test_mock_broker_order_history():
 def test_broker_adapter_is_abstract():
     with pytest.raises(TypeError):
         BrokerAdapter()
+
+
+from datetime import date
+from worker.broker_adapter import (
+    MultilegLegSpec, MultilegOrderResult, MultilegLegResult,
+    OptionContract, OptionChainSnapshot, MockBrokerAdapter,
+)
+
+def test_multileg_leg_spec_fields():
+    leg = MultilegLegSpec(
+        symbol="SPY", asset_type="options", side="buy", quantity=1,
+        expiry="2026-06-20", strike=560.0, right="call",
+    )
+    assert leg.symbol == "SPY"
+    assert leg.right == "call"
+
+def test_multileg_order_result_aggregates_legs():
+    result = MultilegOrderResult(
+        broker_order_id="parent-1",
+        legs=[
+            MultilegLegResult(index=0, status="filled", filled_price=8.30, fees=0.65, broker_order_id="leg-1"),
+            MultilegLegResult(index=1, status="filled", filled_price=4.20, fees=0.65, broker_order_id="leg-2"),
+        ],
+        atomic=True,
+    )
+    assert len(result.legs) == 2
+    assert result.atomic is True
+
+def test_option_chain_snapshot_sorts_contracts_by_strike():
+    snap = OptionChainSnapshot(
+        underlying="SPY", spot=565.0, expiry=date(2026, 6, 20),
+        contracts=[
+            OptionContract(strike=570.0, right="call", occ_symbol="SPY260620C00570000",
+                           bid=4.1, ask=4.3, last=4.2, iv=0.28, delta=0.35,
+                           gamma=0.018, theta=-12.4, vega=45.2, open_interest=1234, volume=567),
+            OptionContract(strike=560.0, right="call", occ_symbol="SPY260620C00560000",
+                           bid=8.2, ask=8.4, last=8.3, iv=0.30, delta=0.55,
+                           gamma=0.020, theta=-14.1, vega=48.0, open_interest=2345, volume=789),
+        ],
+        as_of=None,  # populated by adapter
+    )
+    assert snap.contracts[0].strike == 570.0  # not auto-sorted; adapters sort
+
+def test_mock_supports_multileg_false_by_default():
+    adapter = MockBrokerAdapter()
+    leg = MultilegLegSpec(symbol="SPY", asset_type="options", side="buy", quantity=1,
+                          expiry="2026-06-20", strike=560.0, right="call")
+    assert adapter.supports_multileg_orders([leg, leg]) is False
+
+def test_mock_compose_symbol_passthrough():
+    adapter = MockBrokerAdapter()
+    leg = MultilegLegSpec(symbol="SPY", asset_type="equities", side="buy", quantity=1)
+    assert adapter.compose_symbol(leg) == "SPY"
