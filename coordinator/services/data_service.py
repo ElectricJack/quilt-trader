@@ -19,6 +19,15 @@ class DataService:
     def save_market_data(self, provider: str, symbol: str, timeframe: str, df: pd.DataFrame) -> str:
         path = self.market_data_path(provider, symbol, timeframe)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            existing = pd.read_parquet(path)
+            # Keep new on collision: put existing first, then new; drop_duplicates keeps the last.
+            # If "timestamp" column missing in either df, fall back to overwrite.
+            if "timestamp" in df.columns and "timestamp" in existing.columns:
+                combined = pd.concat([existing, df], ignore_index=True)
+                combined = combined.drop_duplicates(subset="timestamp", keep="last")
+                combined = combined.sort_values("timestamp").reset_index(drop=True)
+                df = combined
         df.to_parquet(path, index=False)
         return path
 
