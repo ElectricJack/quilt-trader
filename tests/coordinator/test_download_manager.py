@@ -254,6 +254,141 @@ class TestDownloadManager:
         assert cancelled is False
 
     @pytest.mark.asyncio
+    async def test_recover_orphaned_downloads(self, session_factory, mock_data_service, mock_provider):
+        """Seed a running and a queued row directly, then confirm recover_orphaned_downloads marks both failed."""
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": mock_provider},
+        )
+
+        # Seed rows directly via session factory (no in-memory task registered)
+        async with session_factory() as session:
+            running_row = MarketDataDownload(
+                symbols=["AAPL"],
+                date_range_start=date(2024, 1, 1),
+                date_range_end=date(2024, 6, 30),
+                provider="polygon",
+                data_type="bars",
+                timeframe="1day",
+                status="running",
+                progress_current=0,
+                progress_total=1,
+            )
+            queued_row = MarketDataDownload(
+                symbols=["MSFT"],
+                date_range_start=date(2024, 1, 1),
+                date_range_end=date(2024, 6, 30),
+                provider="polygon",
+                data_type="bars",
+                timeframe="1day",
+                status="queued",
+                progress_current=0,
+                progress_total=1,
+            )
+            session.add(running_row)
+            session.add(queued_row)
+            await session.commit()
+            running_id = running_row.id
+            queued_id = queued_row.id
+
+        count = await mgr.recover_orphaned_downloads()
+        assert count == 2
+
+        async with session_factory() as session:
+            result = await session.execute(
+                select(MarketDataDownload).where(MarketDataDownload.id == running_id)
+            )
+            recovered_running = result.scalar_one_or_none()
+            assert recovered_running is not None
+            assert recovered_running.status == "failed"
+            assert recovered_running.error_message == "Orphaned by coordinator restart"
+
+            result = await session.execute(
+                select(MarketDataDownload).where(MarketDataDownload.id == queued_id)
+            )
+            recovered_queued = result.scalar_one_or_none()
+            assert recovered_queued is not None
+            assert recovered_queued.status == "failed"
+            assert recovered_queued.error_message == "Orphaned by coordinator restart"
+
+    @pytest.mark.asyncio
+    async def test_cancel_orphan_marks_cancelled(self, session_factory, mock_data_service, mock_provider):
+        """A running row with no in-memory task should be cancelled gracefully (orphan case)."""
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": mock_provider},
+        )
+
+        # Seed a running row directly — no task registered in mgr._active_tasks
+        async with session_factory() as session:
+            orphan = MarketDataDownload(
+                symbols=["AAPL"],
+                date_range_start=date(2024, 1, 1),
+                date_range_end=date(2024, 6, 30),
+                provider="polygon",
+                data_type="bars",
+                timeframe="1day",
+                status="running",
+                progress_current=0,
+                progress_total=1,
+            )
+            session.add(orphan)
+            await session.commit()
+            orphan_id = orphan.id
+
+        result = await mgr.cancel_download(orphan_id)
+        assert result is True
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(MarketDataDownload).where(MarketDataDownload.id == orphan_id)
+                )
+            ).scalar_one_or_none()
+            assert row is not None
+            assert row.status == "cancelled"
+            assert row.error_message == "Cancelled (orphan; no live task)"
+
+    @pytest.mark.asyncio
+    async def test_cancel_terminal_row_returns_false(self, session_factory, mock_data_service, mock_provider):
+        """Cancelling a row that is already in a terminal state should return False and leave it unchanged."""
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": mock_provider},
+        )
+
+        async with session_factory() as session:
+            completed = MarketDataDownload(
+                symbols=["AAPL"],
+                date_range_start=date(2024, 1, 1),
+                date_range_end=date(2024, 6, 30),
+                provider="polygon",
+                data_type="bars",
+                timeframe="1day",
+                status="completed",
+                progress_current=1,
+                progress_total=1,
+            )
+            session.add(completed)
+            await session.commit()
+            completed_id = completed.id
+
+        result = await mgr.cancel_download(completed_id)
+        assert result is False
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(MarketDataDownload).where(MarketDataDownload.id == completed_id)
+                )
+            ).scalar_one_or_none()
+            assert row is not None
+            assert row.status == "completed"
+
+    @pytest.mark.asyncio
     async def test_progress_message_set_during_download(self, session_factory, mock_data_service):
         """progress_message is written during paginated fetch and cleared on completion."""
         import asyncio

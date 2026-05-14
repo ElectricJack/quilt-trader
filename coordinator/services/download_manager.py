@@ -104,7 +104,33 @@ class DownloadManager:
             await session.commit()
             return count
 
+    async def recover_orphaned_downloads(self) -> int:
+        """Mark any DB row stuck in 'queued' or 'running' as 'failed'.
+
+        Called at startup. Any row in those states must be an orphan because
+        we just constructed this DownloadManager — no tasks have been registered yet.
+        Returns the count of rows marked.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MarketDataDownload).where(
+                    MarketDataDownload.status.in_(["queued", "running"])
+                )
+            )
+            orphans = result.scalars().all()
+            count = 0
+            for row in orphans:
+                row.status = "failed"
+                row.completed_at = datetime.now(timezone.utc)
+                row.error_message = "Orphaned by coordinator restart"
+                row.progress_message = None
+                count += 1
+            await session.commit()
+            return count
+
     async def cancel_download(self, download_id: str) -> bool:
+        """Cancel an active task. If the DB row exists but no in-memory task
+        is registered, mark it as cancelled directly (orphan case)."""
         task = self._active_tasks.get(download_id)
         if task and not task.done():
             task.cancel()
@@ -112,11 +138,28 @@ class DownloadManager:
                 await session.execute(
                     update(MarketDataDownload)
                     .where(MarketDataDownload.id == download_id)
-                    .values(status="cancelled")
+                    .values(status="cancelled", completed_at=datetime.now(timezone.utc))
                 )
                 await session.commit()
             return True
-        return False
+
+        # No live task — check if there's an orphan row
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MarketDataDownload).where(MarketDataDownload.id == download_id)
+            )
+            dl = result.scalar_one_or_none()
+            if dl is None:
+                return False
+            if dl.status in {"queued", "running"}:
+                dl.status = "cancelled"
+                dl.completed_at = datetime.now(timezone.utc)
+                dl.error_message = "Cancelled (orphan; no live task)"
+                dl.progress_message = None
+                await session.commit()
+                return True
+            # Already in a terminal state — nothing to do
+            return False
 
     async def _run_download(self, download_id: str) -> None:
         async with self._session_factory() as session:

@@ -130,6 +130,10 @@ def create_app(
         from coordinator.api.routes.data import set_download_manager
         set_download_manager(download_manager)
 
+        n_recovered = await download_manager.recover_orphaned_downloads()
+        if n_recovered > 0:
+            logger.info("Recovered %d orphaned download row(s) from previous run", n_recovered)
+
         container = ServiceContainer(session_factory, event_bus, encryption, scheduler)
         set_container(container)
         yield
