@@ -30,6 +30,7 @@ import type {
 export interface AccountCreate {
   name: string;
   broker_type: string;
+  environment?: "paper" | "live";
   credentials: Record<string, unknown>;
   supported_asset_types: string[];
   options_level?: number;
@@ -39,11 +40,104 @@ export interface AccountCreate {
 
 export interface AccountUpdate {
   name?: string;
+  environment?: "paper" | "live";
   credentials?: Record<string, unknown>;
   supported_asset_types?: string[];
   options_level?: number;
   account_features?: string[];
   pdt_mode?: string;
+}
+
+export interface TestConnectionRequest {
+  broker_type: string;
+  environment: "paper" | "live";
+  credentials: Record<string, unknown>;
+}
+
+export interface TestConnectionResponse {
+  ok: boolean;
+  error?: string;
+  info?: {
+    cash: number | null;
+    portfolio_value: number | null;
+    buying_power: number | null;
+    currency: string | null;
+  };
+}
+
+export interface BrokerPosition {
+  symbol: string;
+  quantity: number;
+  side: string;
+  avg_price: number;
+  current_price: number;
+  unrealized_pnl: number;
+  market_value: number;
+}
+
+export interface BrokerInfo {
+  account_info: {
+    cash: number;
+    portfolio_value: number;
+    buying_power: number;
+    equity?: number;
+    currency?: string;
+  };
+  positions: BrokerPosition[];
+}
+
+export interface SyncResult {
+  ok: boolean;
+  since: string;
+  trades_inserted: number;
+  cash_flows_inserted: number;
+  total_fetched: number;
+  snapshot: {
+    total_value: number;
+    cash: number;
+    positions_value: number;
+  };
+  positions_count: number;
+}
+
+export interface EquityCurvePoint {
+  timestamp: string;
+  value: number;
+  source: "snapshot" | "estimated" | "live";
+}
+
+export interface ScraperRecord {
+  name: string;
+  schedule: string;
+  jitter_seconds: number | null;
+  next_run_at: string | null;
+  version: string | null;
+  description: string | null;
+  config_overrides: string[];
+  last_status: string | null;
+  last_run_at: string | null;
+  data_url: string;
+  last_error: string | null;
+}
+
+export interface ScraperInstall {
+  repo_url: string;
+  name?: string;
+}
+
+export interface DataSourceRow {
+  id: string;
+  type: string;
+  source: string;
+  name: string;
+  description: string | null;
+  file_path: string | null;
+  last_updated: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface CustomDatasetResponse {
+  data: Record<string, unknown>[];
 }
 
 export interface WorkerCreate {
@@ -159,6 +253,25 @@ export const api = {
   deleteAccount(id: string): Promise<void> {
     return request<void>(`/api/accounts/${id}`, { method: "DELETE" });
   },
+  testAccountConnection(body: TestConnectionRequest): Promise<TestConnectionResponse> {
+    return request<TestConnectionResponse>("/api/accounts/test-connection", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  getBrokerInfo(id: string): Promise<BrokerInfo> {
+    return request<BrokerInfo>(`/api/accounts/${id}/broker-info`);
+  },
+  syncAccount(id: string, since?: string): Promise<SyncResult> {
+    return request<SyncResult>(`/api/accounts/${id}/sync`, {
+      method: "POST",
+      body: JSON.stringify(since ? { since } : {}),
+    });
+  },
+  getEquityCurve(id: string, since?: string): Promise<{ items: EquityCurvePoint[] }> {
+    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+    return request<{ items: EquityCurvePoint[] }>(`/api/accounts/${id}/equity-curve${qs}`);
+  },
 
   // Workers
   listWorkers(): Promise<Worker[]> {
@@ -181,6 +294,12 @@ export const api = {
   },
   deleteWorker(id: string): Promise<void> {
     return request<void>(`/api/workers/${id}`, { method: "DELETE" });
+  },
+  getWorkerInstallCommand(id: string): Promise<string> {
+    return request<string>(`/api/workers/${id}/install-command`);
+  },
+  regenerateWorkerInstallToken(id: string): Promise<Worker> {
+    return request<Worker>(`/api/workers/${id}/regenerate-token`, { method: "POST" });
   },
 
   // Algorithms
@@ -264,6 +383,28 @@ export const api = {
   // Data
   listAvailableData(): Promise<AvailableMarketData[]> {
     return request<AvailableMarketData[]>("/api/data/available");
+  },
+  listScrapers(): Promise<ScraperRecord[]> {
+    return request<ScraperRecord[]>("/api/scrapers");
+  },
+  installScraper(body: ScraperInstall): Promise<ScraperRecord> {
+    return request<ScraperRecord>("/api/scrapers", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  deleteScraper(name: string): Promise<void> {
+    return request<void>(`/api/scrapers/${encodeURIComponent(name)}`, { method: "DELETE" });
+  },
+  runScraper(name: string): Promise<{ success: boolean; error: string | null; record: ScraperRecord }> {
+    return request(`/api/scrapers/${encodeURIComponent(name)}/run`, { method: "POST" });
+  },
+  listDataSources(type?: string): Promise<DataSourceRow[]> {
+    const qs = type ? `?type=${encodeURIComponent(type)}` : "";
+    return request<DataSourceRow[]>(`/api/data/sources${qs}`);
+  },
+  getCustomData(name: string): Promise<CustomDatasetResponse> {
+    return request<CustomDatasetResponse>(`/api/data/custom/${encodeURIComponent(name)}`);
   },
   listDownloads(): Promise<MarketDataDownload[]> {
     return request<MarketDataDownload[]>("/api/data/downloads");
@@ -393,6 +534,11 @@ export const api = {
   // Trades
   listRecentTrades(limit = 10): Promise<{ items: TradeRow[] }> {
     return request<{ items: TradeRow[] }>(`/api/trades?limit=${limit}`);
+  },
+  listAccountTrades(accountId: string, limit = 100): Promise<{ items: TradeRow[] }> {
+    return request<{ items: TradeRow[] }>(
+      `/api/trades?limit=${limit}&account_id=${encodeURIComponent(accountId)}`
+    );
   },
 
   // Alerts

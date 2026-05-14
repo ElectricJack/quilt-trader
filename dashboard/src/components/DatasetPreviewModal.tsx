@@ -1,9 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useMarketData } from "../api/hooks";
 import type { MarketDataBar } from "../types";
 import type { ColumnDef } from "./DataTable";
 import { DataTable } from "./DataTable";
-import { PriceChart } from "./PriceChart";
+import { PriceChart, type ChartType } from "./PriceChart";
 
 // ─── Format helpers ────────────────────────────────────────────────────────────
 
@@ -108,13 +108,21 @@ export function DatasetPreviewModal({
     open ? timeframe : null
   );
 
+  const [chartType, setChartType] = useState<ChartType>("bars");
+
   const bars = data?.data ?? [];
 
   const stats = useMemo(() => {
     if (bars.length === 0) return null;
-    const closes = bars.map((b) => b.close);
-    const minClose = Math.min(...closes);
-    const maxClose = Math.max(...closes);
+    // Loop instead of Math.min(...arr): spread blows the JS arg-list limit
+    // (~100k) for high-frequency timeframes and crashes the modal.
+    let minClose = bars[0].close;
+    let maxClose = bars[0].close;
+    for (let i = 1; i < bars.length; i++) {
+      const c = bars[i].close;
+      if (c < minClose) minClose = c;
+      if (c > maxClose) maxClose = c;
+    }
     const earliest = bars[0].timestamp;
     const latest = bars[bars.length - 1].timestamp;
     return { count: bars.length, earliest, latest, minClose, maxClose };
@@ -189,8 +197,36 @@ export function DatasetPreviewModal({
                 </div>
               )}
 
-              {/* Price chart */}
-              {bars.length > 0 && <PriceChart bars={bars} height={280} />}
+              {/* Chart + type toggle */}
+              {bars.length > 0 && (
+                <div>
+                  <div className="flex justify-end mb-2">
+                    <div
+                      className="inline-flex rounded border border-gray-700 bg-gray-800 text-xs overflow-hidden"
+                      role="tablist"
+                      aria-label="Chart type"
+                    >
+                      {(["bars", "line"] as ChartType[]).map((t) => (
+                        <button
+                          key={t}
+                          type="button"
+                          role="tab"
+                          aria-selected={chartType === t}
+                          onClick={() => setChartType(t)}
+                          className={`px-3 py-1 transition-colors ${
+                            chartType === t
+                              ? "bg-indigo-600 text-white"
+                              : "text-gray-300 hover:bg-gray-700"
+                          }`}
+                        >
+                          {t === "bars" ? "Bars" : "Line"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <PriceChart bars={bars} height={280} chartType={chartType} />
+                </div>
+              )}
 
               {/* Data table */}
               {bars.length > 0 && (

@@ -12,6 +12,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { WorkerInstallCommand } from "../components/WorkerInstallCommand";
 import { useUIStore } from "../stores/ui";
 import type { Worker } from "../types";
 
@@ -65,13 +66,17 @@ export function Workers() {
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Worker | null>(null);
 
+  // Just-registered worker — shows the install one-liner inline until dismissed.
+  const [justRegistered, setJustRegistered] = useState<Worker | null>(null);
+
   // ── Handlers ────────────────────────────────────────────────────────────────
 
   async function handleRegister(values: WorkerFormValues) {
     try {
-      await createWorker.mutateAsync(values);
+      const created = await createWorker.mutateAsync(values);
       addAlert({ message: "Worker registered.", severity: "success" });
       setRegisterOpen(false);
+      setJustRegistered(created as Worker);
     } catch {
       addAlert({ message: "Failed to register worker.", severity: "error" });
     }
@@ -121,6 +126,24 @@ export function Workers() {
         </button>
       </div>
 
+      {/* Install command for the most recently registered worker */}
+      {justRegistered && (
+        <div className="space-y-2">
+          <WorkerInstallCommand
+            workerId={justRegistered.id}
+            workerName={justRegistered.name}
+          />
+          <div className="flex justify-end">
+            <button
+              onClick={() => setJustRegistered(null)}
+              className="text-xs text-gray-400 hover:text-gray-200"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Worker list */}
       {isLoading ? (
         <p className="text-gray-400 text-sm">Loading…</p>
@@ -139,6 +162,11 @@ export function Workers() {
                     {w.name}
                   </span>
                   <StatusBadge status={w.status} />
+                  {w.install_status === "pending" && (
+                    <span className="text-[10px] uppercase tracking-wide bg-amber-900/40 text-amber-300 border border-amber-800 px-1.5 py-0.5 rounded">
+                      Not installed
+                    </span>
+                  )}
                 </div>
                 <div
                   className="flex items-center gap-1 shrink-0 ml-2"

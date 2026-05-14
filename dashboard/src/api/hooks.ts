@@ -87,6 +87,48 @@ export function useDeleteAccount() {
   });
 }
 
+export function useBrokerInfo(id: string) {
+  return useQuery({
+    queryKey: ["accounts", id, "broker-info"] as const,
+    queryFn: () => api.getBrokerInfo(id),
+    enabled: !!id,
+    staleTime: 30_000,
+    retry: false, // Surface broker errors immediately rather than hammering
+  });
+}
+
+export function useSyncAccount(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (since?: string) => api.syncAccount(id, since),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["accounts", id, "broker-info"] });
+      void qc.invalidateQueries({ queryKey: keys.cashFlows(id) });
+      void qc.invalidateQueries({ queryKey: ["accounts", id, "trades"] });
+      void qc.invalidateQueries({ queryKey: ["accounts", id, "equity-curve"] });
+      void qc.invalidateQueries({ queryKey: ["accounts", "snapshots", "latest"] });
+    },
+  });
+}
+
+export function useAccountTrades(id: string, limit = 100) {
+  return useQuery({
+    queryKey: ["accounts", id, "trades", limit] as const,
+    queryFn: () => api.listAccountTrades(id, limit),
+    enabled: !!id,
+    staleTime: 30_000,
+  });
+}
+
+export function useAccountEquityCurve(id: string, since?: string) {
+  return useQuery({
+    queryKey: ["accounts", id, "equity-curve", since ?? "default"] as const,
+    queryFn: () => api.getEquityCurve(id, since),
+    enabled: !!id,
+    staleTime: 60_000,
+  });
+}
+
 // ─── Workers ──────────────────────────────────────────────────────────────────
 
 export function useWorkers() {
@@ -129,6 +171,28 @@ export function useDeleteWorker() {
     mutationFn: (id: string) => api.deleteWorker(id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.workers() });
+    },
+  });
+}
+
+export function useWorkerInstallCommand(id: string, enabled = true) {
+  return useQuery({
+    queryKey: ["workers", id, "install-command"] as const,
+    queryFn: () => api.getWorkerInstallCommand(id),
+    enabled: !!id && enabled,
+    retry: false,
+    staleTime: Infinity,
+  });
+}
+
+export function useRegenerateWorkerInstallToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.regenerateWorkerInstallToken(id),
+    onSuccess: (_data, id) => {
+      void qc.invalidateQueries({ queryKey: keys.workers() });
+      void qc.invalidateQueries({ queryKey: keys.worker(id) });
+      void qc.invalidateQueries({ queryKey: ["workers", id, "install-command"] });
     },
   });
 }
@@ -388,6 +452,66 @@ export function useAvailableData() {
   return useQuery({
     queryKey: keys.availableData(),
     queryFn: api.listAvailableData,
+  });
+}
+
+// ─── Scrapers ─────────────────────────────────────────────────────────────────
+
+export function useScrapers() {
+  return useQuery({
+    queryKey: ["scrapers"] as const,
+    queryFn: api.listScrapers,
+    staleTime: 30_000,
+  });
+}
+
+export function useInstallScraper() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { repo_url: string; name?: string }) => api.installScraper(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["scrapers"] });
+      void qc.invalidateQueries({ queryKey: ["data-sources"] });
+    },
+  });
+}
+
+export function useDeleteScraper() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.deleteScraper(name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["scrapers"] });
+      void qc.invalidateQueries({ queryKey: ["data-sources"] });
+    },
+  });
+}
+
+export function useRunScraper() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.runScraper(name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["scrapers"] });
+      void qc.invalidateQueries({ queryKey: ["data-sources"] });
+    },
+  });
+}
+
+export function useDataSources(type?: string) {
+  return useQuery({
+    queryKey: ["data-sources", type ?? "all"] as const,
+    queryFn: () => api.listDataSources(type),
+    staleTime: 30_000,
+  });
+}
+
+export function useCustomData(name: string | null) {
+  return useQuery({
+    queryKey: ["custom-data", name] as const,
+    queryFn: () => api.getCustomData(name!),
+    enabled: !!name,
+    staleTime: 30_000,
   });
 }
 

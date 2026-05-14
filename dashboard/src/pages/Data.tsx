@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { z } from "zod";
-import { Trash2 } from "lucide-react";
+import { Trash2, Play, Eye } from "lucide-react";
 import {
   useAvailableData,
   useDownloads,
@@ -8,15 +8,22 @@ import {
   useCancelDownload,
   useDeleteDownload,
   useClearDownloads,
+  useScrapers,
+  useInstallScraper,
+  useDeleteScraper,
+  useRunScraper,
+  useDataSources,
 } from "../api/hooks";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { StatusBadge } from "../components/StatusBadge";
 import { DatasetPreviewModal } from "../components/DatasetPreviewModal";
+import { CustomDataPreviewModal } from "../components/CustomDataPreviewModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useUIStore } from "../stores/ui";
 import type { MarketDataDownload, AvailableMarketData } from "../types";
+import type { DataSourceRow } from "../api/client";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -29,6 +36,9 @@ const DATA_TYPE_OPTIONS: { value: "bars" | "quotes" | "trades"; label: string; a
 const DATA_TYPES = ["bars", "quotes", "trades"] as const;
 type DataType = (typeof DATA_TYPES)[number];
 
+const TIMEFRAMES = ["1min", "5min", "15min", "1hour", "1day"] as const;
+type Timeframe = (typeof TIMEFRAMES)[number];
+
 const downloadSchema = z.object({
   symbols: z.string().min(1, "Required"),
   date_range_start: z.string().min(1, "Required"),
@@ -37,10 +47,43 @@ const downloadSchema = z.object({
   data_types: z
     .array(z.enum(DATA_TYPES))
     .min(1, "Select at least one data type"),
-  timeframe: z.string().min(1, "Required"),
+  timeframes: z
+    .array(z.enum(TIMEFRAMES))
+    .min(1, "Select at least one timeframe"),
 });
 
 type DownloadFormValues = z.infer<typeof downloadSchema>;
+
+const DOWNLOAD_PREFS_KEY = "data.downloadModal.lastSettings";
+
+const EMPTY_DOWNLOAD_DEFAULTS: DownloadFormValues = {
+  symbols: "",
+  date_range_start: "",
+  date_range_end: "",
+  provider: "",
+  data_types: [] as DataType[],
+  timeframes: [] as Timeframe[],
+};
+
+function loadDownloadDefaults(): DownloadFormValues {
+  if (typeof window === "undefined") return EMPTY_DOWNLOAD_DEFAULTS;
+  try {
+    const raw = window.localStorage.getItem(DOWNLOAD_PREFS_KEY);
+    if (!raw) return EMPTY_DOWNLOAD_DEFAULTS;
+    const parsed = downloadSchema.partial().safeParse(JSON.parse(raw));
+    if (!parsed.success) return EMPTY_DOWNLOAD_DEFAULTS;
+    return { ...EMPTY_DOWNLOAD_DEFAULTS, ...parsed.data };
+  } catch {
+    return EMPTY_DOWNLOAD_DEFAULTS;
+  }
+}
+
+const scraperInstallSchema = z.object({
+  repo_url: z.string().min(1, "Required").url("Must be a valid URL"),
+  name: z.string().optional(),
+});
+
+type ScraperInstallValues = z.infer<typeof scraperInstallSchema>;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -212,6 +255,10 @@ export function Data() {
   const [preview, setPreview] = useState<{ provider: string; symbol: string; timeframe: string } | null>(null);
   const [rowToDelete, setRowToDelete] = useState<MarketDataDownload | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [installScraperOpen, setInstallScraperOpen] = useState(false);
+  const [scraperToDelete, setScraperToDelete] = useState<string | null>(null);
+  const [customPreview, setCustomPreview] = useState<DataSourceRow | null>(null);
+  const [downloadDefaults, setDownloadDefaults] = useState<DownloadFormValues>(loadDownloadDefaults);
 
   const { data: available, isLoading: availableLoading } = useAvailableData();
   const { data: downloads, isLoading: downloadsLoading, refetch } = useDownloads();
@@ -219,7 +266,60 @@ export function Data() {
   const { mutate: cancelDownload, isPending: isCancelling } = useCancelDownload();
   const deleteDownload = useDeleteDownload();
   const clearDownloads = useClearDownloads();
+  const { data: scrapers = [], isLoading: scrapersLoading } = useScrapers();
+  const { data: scraperSources = [], isLoading: sourcesLoading } = useDataSources("scraper");
+  const installScraper = useInstallScraper();
+  const deleteScraper = useDeleteScraper();
+  const runScraper = useRunScraper();
   const addAlert = useUIStore((s) => s.addAlert);
+
+  // Index sources by scraper name so we can join with the scraper list cleanly.
+  const sourceBySrc = useMemo(() => {
+    const m = new Map<string, DataSourceRow>();
+    for (const s of scraperSources) m.set(s.source, s);
+    return m;
+  }, [scraperSources]);
+
+  async function handleInstallScraper(values: ScraperInstallValues) {
+    try {
+      const record = await installScraper.mutateAsync({
+        repo_url: values.repo_url,
+        name: values.name?.trim() || undefined,
+      });
+      addAlert({ message: `Installed scraper '${record.name}'.`, severity: "success" });
+      setInstallScraperOpen(false);
+    } catch (e) {
+      addAlert({
+        message: `Install failed: ${(e as Error).message}`,
+        severity: "error",
+      });
+    }
+  }
+
+  async function handleRunScraper(name: string) {
+    try {
+      const r = await runScraper.mutateAsync(name);
+      if (r.success) {
+        addAlert({ message: `Scraper '${name}' completed.`, severity: "success" });
+      } else {
+        addAlert({ message: `Scraper '${name}' failed: ${r.error}`, severity: "error" });
+      }
+    } catch (e) {
+      addAlert({ message: `Run failed: ${(e as Error).message}`, severity: "error" });
+    }
+  }
+
+  async function handleConfirmDeleteScraper() {
+    if (!scraperToDelete) return;
+    try {
+      await deleteScraper.mutateAsync(scraperToDelete);
+      addAlert({ message: `Scraper '${scraperToDelete}' removed.`, severity: "success" });
+    } catch (e) {
+      addAlert({ message: `Delete failed: ${(e as Error).message}`, severity: "error" });
+    } finally {
+      setScraperToDelete(null);
+    }
+  }
 
   const historyColumns = useMemo(() => makeHistoryColumns(setRowToDelete), []);
 
@@ -261,20 +361,31 @@ export function Data() {
   }
 
   async function handleSubmit(values: DownloadFormValues) {
+    setDownloadDefaults(values);
+    try {
+      window.localStorage.setItem(DOWNLOAD_PREFS_KEY, JSON.stringify(values));
+    } catch {
+      // Storage may be unavailable (private mode, quota); silently ignore.
+    }
+
     const symbols = values.symbols
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
 
+    const jobs = values.data_types.flatMap((dt) =>
+      values.timeframes.map((tf) => ({ data_type: dt, timeframe: tf }))
+    );
+
     const results = await Promise.allSettled(
-      values.data_types.map((dt) =>
+      jobs.map((j) =>
         createDownload({
           symbols,
           date_range_start: values.date_range_start,
           date_range_end: values.date_range_end,
           provider: values.provider,
-          data_type: dt,
-          timeframe: values.timeframe,
+          data_type: j.data_type,
+          timeframe: j.timeframe,
         })
       )
     );
@@ -283,7 +394,7 @@ export function Data() {
     setModalOpen(false);
     if (failures === 0) {
       addAlert({
-        message: `Queued ${successes} download${successes === 1 ? "" : "s"} (${values.data_types.join(", ")} for ${symbols.join(", ")}).`,
+        message: `Queued ${successes} download${successes === 1 ? "" : "s"} (${values.data_types.join(", ")} × ${values.timeframes.join(", ")} for ${symbols.join(", ")}).`,
         severity: "success",
       });
     } else {
@@ -314,14 +425,118 @@ export function Data() {
     <div className="space-y-8">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Market Data</h1>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="px-4 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
-        >
-          Download Data
-        </button>
+        <h1 className="text-2xl font-bold text-white">Data</h1>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setInstallScraperOpen(true)}
+            className="px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors"
+          >
+            Install Scraper
+          </button>
+          <button
+            onClick={() => setModalOpen(true)}
+            className="px-4 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
+          >
+            Download Market Data
+          </button>
+        </div>
       </div>
+
+      {/* Scrapers & their outputs */}
+      <section>
+        <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
+          Scrapers{" "}
+          {scrapers.length > 0 && (
+            <span className="font-normal text-gray-500">({scrapers.length})</span>
+          )}
+        </h2>
+        {scrapersLoading || sourcesLoading ? (
+          <p className="text-gray-400 text-sm">Loading…</p>
+        ) : scrapers.length === 0 ? (
+          <p className="text-gray-500 text-sm">
+            No scrapers installed. Click "Install Scraper" above to add one from a git repo.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {scrapers.map((s) => {
+              const source = sourceBySrc.get(s.name);
+              const rowCount = (source?.metadata as { row_count?: number } | null)?.row_count ?? null;
+              return (
+                <div
+                  key={s.name}
+                  className="bg-gray-900 border border-gray-800 rounded p-3 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-gray-100 truncate">{s.name}</span>
+                      {s.version && (
+                        <span className="text-[10px] text-gray-500 font-mono">v{s.version}</span>
+                      )}
+                      {s.last_status && (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                            s.last_status === "ok"
+                              ? "bg-green-900/40 text-green-300 border-green-800"
+                              : s.last_status === "running"
+                              ? "bg-blue-900/40 text-blue-300 border-blue-800"
+                              : "bg-red-900/40 text-red-300 border-red-800"
+                          }`}
+                        >
+                          {s.last_status}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-4 gap-y-0.5">
+                      {s.description && <span className="truncate max-w-md">{s.description}</span>}
+                      <span>schedule: <span className="font-mono text-gray-400">{s.schedule}</span></span>
+                      {s.next_run_at && s.next_run_at !== "None" && (
+                        <span>next: <span className="text-gray-400">{s.next_run_at}</span></span>
+                      )}
+                      {source?.last_updated && (
+                        <span>
+                          updated: <span className="text-gray-400">{new Date(source.last_updated).toLocaleString()}</span>
+                          {rowCount != null && <span className="text-gray-500"> ({rowCount} rows)</span>}
+                        </span>
+                      )}
+                    </div>
+                    {s.last_error && (
+                      <p className="text-xs text-red-400 mt-1 truncate" title={s.last_error}>
+                        {s.last_error}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {source && (
+                      <button
+                        onClick={() => setCustomPreview(source)}
+                        className="p-1.5 text-gray-400 hover:text-indigo-400 hover:bg-gray-800 rounded transition-colors"
+                        title="Preview output"
+                      >
+                        <Eye size={14} />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleRunScraper(s.name)}
+                      disabled={runScraper.isPending}
+                      className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-gray-800 rounded transition-colors disabled:opacity-60"
+                      title="Run now"
+                    >
+                      <Play size={14} />
+                    </button>
+                    <button
+                      onClick={() => setScraperToDelete(s.name)}
+                      className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded transition-colors"
+                      title="Uninstall"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {/* Active Downloads */}
       {(activeDownloads.length > 0 || downloadsLoading) && (
@@ -413,13 +628,71 @@ export function Data() {
         )}
       </section>
 
-      {/* Dataset Preview modal */}
+      {/* Dataset Preview modal (market data) */}
       <DatasetPreviewModal
         open={!!preview}
         onClose={() => setPreview(null)}
         provider={preview?.provider ?? null}
         symbol={preview?.symbol ?? null}
         timeframe={preview?.timeframe ?? null}
+      />
+
+      {/* Custom data preview modal (scraper outputs) */}
+      <CustomDataPreviewModal
+        open={!!customPreview}
+        onClose={() => setCustomPreview(null)}
+        sourceName={customPreview?.source ?? null}
+        description={customPreview?.description ?? null}
+        lastUpdated={customPreview?.last_updated ?? null}
+      />
+
+      {/* Install scraper modal */}
+      <FormModal
+        open={installScraperOpen}
+        onClose={() => setInstallScraperOpen(false)}
+        title="Install Scraper"
+        schema={scraperInstallSchema}
+        defaultValues={{ repo_url: "", name: "" }}
+        onSubmit={handleInstallScraper}
+        submitLabel="Install"
+        isSubmitting={installScraper.isPending}
+      >
+        {(form) => (
+          <>
+            <FormField label="Repository URL" error={form.formState.errors.repo_url?.message}>
+              <input
+                {...form.register("repo_url")}
+                className={INPUT_CLS}
+                placeholder="https://github.com/owner/scraper-repo.git"
+              />
+            </FormField>
+            <FormField
+              label="Local Name (optional)"
+              error={form.formState.errors.name?.message}
+            >
+              <input
+                {...form.register("name")}
+                className={INPUT_CLS}
+                placeholder="derived from repo name if blank"
+              />
+            </FormField>
+            <p className="text-xs text-gray-500">
+              The scraper is cloned to <code>packages/&lt;name&gt;</code>, a venv is created,
+              <code> requirements.txt </code>is installed, and the cron schedule from
+              <code> quilt.yaml </code>is registered. This can take ~30s.
+            </p>
+          </>
+        )}
+      </FormModal>
+
+      {/* Confirm scraper delete */}
+      <ConfirmDialog
+        open={!!scraperToDelete}
+        title="Uninstall scraper"
+        message={`Remove '${scraperToDelete}'? This unschedules cron and deletes the package directory.`}
+        confirmLabel="Uninstall"
+        onConfirm={handleConfirmDeleteScraper}
+        onCancel={() => setScraperToDelete(null)}
       />
 
       {/* Delete single row confirm */}
@@ -476,14 +749,7 @@ export function Data() {
         onClose={() => setModalOpen(false)}
         title="Download Data"
         schema={downloadSchema}
-        defaultValues={{
-          symbols: "",
-          date_range_start: "",
-          date_range_end: "",
-          provider: "",
-          data_types: [] as DataType[],
-          timeframe: "",
-        }}
+        defaultValues={downloadDefaults}
         onSubmit={handleSubmit}
         submitLabel="Start Download"
         isSubmitting={isCreating}
@@ -553,15 +819,26 @@ export function Data() {
               </div>
             </FormField>
 
-            <FormField label="Timeframe" error={form.formState.errors.timeframe?.message}>
-              <select {...form.register("timeframe")} className={INPUT_CLS}>
-                <option value="">Select timeframe…</option>
-                <option value="1min">1min</option>
-                <option value="5min">5min</option>
-                <option value="15min">15min</option>
-                <option value="1hour">1hour</option>
-                <option value="1day">1day</option>
-              </select>
+            <FormField
+              label="Timeframes"
+              error={form.formState.errors.timeframes?.message as string | undefined}
+            >
+              <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+                {TIMEFRAMES.map((tf) => (
+                  <label key={tf} className="inline-flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      value={tf}
+                      {...form.register("timeframes")}
+                      className="accent-indigo-500"
+                    />
+                    <span>{tf}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-500 mt-1">
+                Each selected timeframe queues its own download.
+              </p>
             </FormField>
           </>
         )}

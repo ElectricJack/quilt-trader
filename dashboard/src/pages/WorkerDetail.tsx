@@ -12,6 +12,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { WorkerInstallCommand } from "../components/WorkerInstallCommand";
 import { useUIStore } from "../stores/ui";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -148,6 +149,11 @@ export function WorkerDetail() {
           </button>
         </div>
       </div>
+
+      {/* Install command when worker hasn't claimed itself yet */}
+      {worker.install_status === "pending" && (
+        <WorkerInstallCommand workerId={worker.id} workerName={worker.name} />
+      )}
 
       {/* Info cards */}
       <section>

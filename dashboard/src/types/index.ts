@@ -4,6 +4,7 @@ export interface Account {
   id: string;
   name: string;
   broker_type: string;
+  environment: "paper" | "live";
   supported_asset_types: string[];
   options_level: number | null;
   account_features: string[] | null;
@@ -20,6 +21,8 @@ export interface Worker {
   status: string;
   last_heartbeat: string | null;
   max_algorithms: number;
+  install_status: "pending" | "claimed";
+  install_token: string | null;
   created_at: string;
 }
 
