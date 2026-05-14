@@ -114,11 +114,12 @@ Response (HTTP 200 if all legs filled, HTTP 207 if partial):
 2. Validate every leg's `asset_type` is in `account.supported_asset_types`. Return 422 on mismatch.
 3. Validate options legs include `expiry`, `strike`, `right`. Return 422 on missing fields.
 4. Decrypt creds, construct broker adapter (existing `_adapter_for_account` helper).
-5. **For each leg (sequential):** call `adapter.submit_order(symbol=composed_symbol, side, quantity, order_type, limit_price)`. For options, compose an OCC-style symbol (`SPY  240620C00500000` or broker-specific equivalent — broker adapters know their format). On exception, record the leg as rejected and continue.
-6. After all legs: if at least one filled, persist:
+5. **Per-broker symbol composition.** Extend `BrokerAdapter` with a `compose_symbol(leg: LegSpec) -> str` method (default implementation returns `leg.symbol` unchanged for equities/crypto). `AlpacaAdapter` and `TradierAdapter` each override it to produce their broker-specific options symbol from `(symbol, expiry, strike, right)` — Alpaca uses OCC (`SPY240620C00500000`), Tradier uses a near-identical OCC variant. The route handler does NOT format symbols itself; it calls `adapter.compose_symbol(leg)` and passes the result to `submit_order`.
+6. **For each leg (sequential):** call `adapter.submit_order(symbol=composed, side, quantity, order_type, limit_price)`. On exception, record the leg as rejected and continue.
+7. After all legs: if at least one filled, persist:
    - One `TradeLog` per filled leg (`source="manual"`, `asset_type` from the leg).
    - One `Position` row with `legs=[...]` containing the filled legs only, `strategy_type` from request, `status="open"`, `net_cost=sum_of_signed_costs`, `metadata_={"partial_fill": True}` if any leg failed.
-7. Return per-leg results plus the new position id.
+8. Return per-leg results plus the new position id.
 
 **Idempotency / dedup:** None needed for v1. Re-submitting the form produces a new position.
 
@@ -193,7 +194,7 @@ class InstallFromUrlRequest(BaseModel):
     ),
   });
   ```
-- Submit button label: "Install". While installing, show staged status text via the existing event bus or a generic "Installing… (this may take ~60s)" message.
+- Submit button label: "Install". While installing, show a generic "Installing… (this may take ~60s)" message. Staged status (clone → venv → deps) is a future enhancement; not in this spec.
 - `useInstallAlgorithm` calls the new endpoint (`POST /api/algorithms/install-from-url`).
 - The existing `POST /api/github/install` (PAT-only, full_name-based) and `GET /api/github/repos` endpoints stay in the codebase for now. **Deletion is deferred to a cleanup pass** to keep this spec focused; nothing in the UI will call them after this change.
 
@@ -253,9 +254,11 @@ Replace the current "register + inline command + dismiss" UX with a single `Work
 
 ```
 [ form ] --register--> [ waiting ] --worker_connected event--> [ connected (1.5s) ] --auto-close--> [ closed ]
-                              ^                                                                  |
-                              | regenerate-token                                                 |
-                              +--------------------------------------------------------------(cancel anytime)
+                          |  ^
+                          |  | regenerate-token (stays in waiting; new token, new command rendered)
+                          +--+
+
+       cancel (from any state)  -->  [ closed ]   (worker row preserved in install_status=pending if it was created)
 ```
 
 **Step 1 — Form.** Fields: **Name** (required), **Max algorithms** (default 2). No tailscale_ip field. Submit calls `POST /api/workers` → on success, dialog advances; does NOT close.
