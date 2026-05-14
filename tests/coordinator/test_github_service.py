@@ -62,3 +62,60 @@ def test_get_repo_clone_url():
     mock_github.get_repo.return_value = mock_repo
     service = GitHubService(github_client=mock_github)
     assert service.get_clone_url("ElectricJack/algo") == "https://github.com/ElectricJack/algo.git"
+
+
+def _mock_repo_with_head(default_branch: str, head_sha: str) -> MagicMock:
+    mock_repo = MagicMock()
+    mock_repo.default_branch = default_branch
+    mock_branch = MagicMock()
+    mock_branch.commit.sha = head_sha
+    mock_repo.get_branch.return_value = mock_branch
+    return mock_repo
+
+
+def test_get_repo_status_up_to_date():
+    mock_github = MagicMock()
+    mock_github.get_repo.return_value = _mock_repo_with_head("main", "sha-head")
+    service = GitHubService(github_client=mock_github)
+    result = service.get_repo_status("user/algo", "sha-head")
+    assert result == {
+        "default_branch": "main",
+        "head_sha": "sha-head",
+        "commits_behind": 0,
+        "current_sha": "sha-head",
+    }
+
+
+def test_get_repo_status_behind():
+    mock_github = MagicMock()
+    mock_repo = _mock_repo_with_head("main", "sha-head")
+    mock_cmp = MagicMock()
+    mock_cmp.ahead_by = 5
+    mock_repo.compare.return_value = mock_cmp
+    mock_github.get_repo.return_value = mock_repo
+    service = GitHubService(github_client=mock_github)
+    result = service.get_repo_status("user/algo", "sha-old")
+    assert result["commits_behind"] == 5
+    assert result["head_sha"] == "sha-head"
+    assert result["current_sha"] == "sha-old"
+    assert result["default_branch"] == "main"
+    mock_repo.compare.assert_called_once_with("sha-old", "sha-head")
+
+
+def test_get_repo_status_diverged_unknown():
+    mock_github = MagicMock()
+    mock_repo = _mock_repo_with_head("main", "sha-head")
+    mock_repo.compare.side_effect = Exception("not in history")
+    mock_github.get_repo.return_value = mock_repo
+    service = GitHubService(github_client=mock_github)
+    result = service.get_repo_status("user/algo", "sha-fork")
+    assert result["commits_behind"] == -1
+
+
+def test_get_repo_status_no_current_sha():
+    mock_github = MagicMock()
+    mock_github.get_repo.return_value = _mock_repo_with_head("main", "sha-head")
+    service = GitHubService(github_client=mock_github)
+    result = service.get_repo_status("user/algo", None)
+    assert result["commits_behind"] == 0
+    assert result["current_sha"] is None

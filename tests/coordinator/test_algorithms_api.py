@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
 import pytest_asyncio
 
@@ -401,3 +403,89 @@ async def test_list_instances_enriched_fields(client, db_session):
     assert row["pnl_sparkline"] is not None
     assert len(row["pnl_sparkline"]) <= 20
     assert row["today_pnl"] is not None
+
+
+# ─── Algorithm update + git-status endpoints ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_algorithm_happy_path(client):
+    create_resp = await client.post("/api/algorithms", json={
+        "repo_url": "https://github.com/user/upd-algo",
+        "name": "upd-algo",
+        "version": "1.0.0",
+        "commit_hash": "oldsha000",
+    })
+    algo_id = create_resp.json()["id"]
+
+    with patch("coordinator.api.routes.algorithms.PackageManager") as mock_pm:
+        mock_pm_inst = MagicMock()
+        mock_pm_inst.update_package.return_value = "newsha123"
+        mock_pm_inst.validate_package.return_value = {"version": "2.0.0"}
+        mock_pm.return_value = mock_pm_inst
+        resp = await client.post(f"/api/algorithms/{algo_id}/update")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["commit_hash"] == "newsha123"
+    assert body["version"] == "2.0.0"
+
+
+@pytest.mark.asyncio
+async def test_update_algorithm_not_found(client):
+    resp = await client.post("/api/algorithms/nonexistent/update")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_git_status_happy_path(client):
+    await client.put("/api/settings/github-pat", json={"value": "ghp_test123"})
+    create_resp = await client.post("/api/algorithms", json={
+        "repo_url": "https://github.com/user/gs-algo",
+        "name": "gs-algo",
+        "commit_hash": "currsha",
+    })
+    algo_id = create_resp.json()["id"]
+
+    with patch("coordinator.api.routes.algorithms.GitHubService") as mock_cls:
+        mock_service = MagicMock()
+        mock_service.get_repo_status.return_value = {
+            "default_branch": "main",
+            "head_sha": "headsha999",
+            "commits_behind": 3,
+            "current_sha": "currsha",
+        }
+        mock_cls.return_value = mock_service
+        resp = await client.get(f"/api/algorithms/{algo_id}/git-status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["default_branch"] == "main"
+    assert body["head_sha"] == "headsha999"
+    assert body["commits_behind"] == 3
+    assert body["current_sha"] == "currsha"
+
+
+@pytest.mark.asyncio
+async def test_git_status_without_pat(client):
+    create_resp = await client.post("/api/algorithms", json={
+        "repo_url": "https://github.com/user/no-pat-algo",
+        "name": "no-pat-algo",
+    })
+    algo_id = create_resp.json()["id"]
+    resp = await client.get(f"/api/algorithms/{algo_id}/git-status")
+    assert resp.status_code == 400
+    assert "GitHub PAT not configured" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_git_status_bad_url(client):
+    await client.put("/api/settings/github-pat", json={"value": "ghp_test123"})
+    create_resp = await client.post("/api/algorithms", json={
+        "repo_url": "https://example.com/not-github",
+        "name": "bad-url-algo",
+    })
+    algo_id = create_resp.json()["id"]
+    resp = await client.get(f"/api/algorithms/{algo_id}/git-status")
+    assert resp.status_code == 400
+    assert "Unsupported repo URL" in resp.json()["detail"]

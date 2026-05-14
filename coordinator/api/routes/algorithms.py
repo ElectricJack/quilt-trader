@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -6,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from coordinator.api.dependencies import get_db
+from coordinator.api.dependencies import get_container, get_db
 from coordinator.database.models import (
     Account,
     Algorithm,
@@ -16,8 +17,11 @@ from coordinator.database.models import (
     DecisionLog,
     PDTTracking,
     Position,
+    Setting,
     TradeLog,
 )
+from coordinator.services.github_service import GitHubService
+from coordinator.services.package_manager import PackageError, PackageManager
 
 router = APIRouter(tags=["algorithms"])
 
@@ -160,6 +164,77 @@ async def get_algorithm(algorithm_id: str, db: AsyncSession = Depends(get_db)):
     if algo is None:
         raise HTTPException(status_code=404, detail="Algorithm not found")
     return _algo_to_response(algo)
+
+
+def _full_name_from_url(repo_url: str) -> str | None:
+    """Parse 'owner/repo' from a GitHub clone URL."""
+    if not repo_url:
+        return None
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url)
+    return m.group(1) if m else None
+
+
+@router.get("/api/algorithms/{algorithm_id}/git-status")
+async def algorithm_git_status(algorithm_id: str, db: AsyncSession = Depends(get_db)):
+    algo = (await db.execute(select(Algorithm).where(Algorithm.id == algorithm_id))).scalar_one_or_none()
+    if algo is None:
+        raise HTTPException(status_code=404, detail="Algorithm not found")
+    full_name = _full_name_from_url(algo.repo_url)
+    if not full_name:
+        raise HTTPException(status_code=400, detail=f"Unsupported repo URL: {algo.repo_url}")
+
+    # PAT lookup mirrors GitHub repo listing endpoint
+    setting = (await db.execute(select(Setting).where(Setting.key == "github_pat"))).scalar_one_or_none()
+    if not setting:
+        raise HTTPException(status_code=400, detail="GitHub PAT not configured")
+    container = get_container()
+    pat = container.encryption.decrypt(setting.value)
+    gh = GitHubService(pat=pat)
+    try:
+        status = gh.get_repo_status(full_name, algo.commit_hash)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"GitHub error: {e}")
+    return status
+
+
+@router.post("/api/algorithms/{algorithm_id}/update")
+async def update_algorithm(algorithm_id: str, db: AsyncSession = Depends(get_db)):
+    algo = (await db.execute(select(Algorithm).where(Algorithm.id == algorithm_id))).scalar_one_or_none()
+    if algo is None:
+        raise HTTPException(status_code=404, detail="Algorithm not found")
+
+    full_name = _full_name_from_url(algo.repo_url)
+    if not full_name:
+        raise HTTPException(status_code=400, detail=f"Unsupported repo URL: {algo.repo_url}")
+
+    name = full_name.split("/")[-1]
+    pm = PackageManager(packages_dir="data/packages")
+    try:
+        new_sha = pm.update_package(name)
+        # Re-validate manifest in case manifest fields changed
+        manifest = pm.validate_package(name)
+    except PackageError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update failed: {e}")
+
+    algo.commit_hash = new_sha
+    if manifest.get("version"):
+        algo.version = manifest["version"]
+    if manifest.get("description"):
+        algo.description = manifest["description"]
+    if manifest.get("name"):
+        algo.name = manifest["name"]
+    await db.flush()
+    return {
+        "id": algo.id,
+        "name": algo.name,
+        "description": algo.description,
+        "version": algo.version,
+        "commit_hash": algo.commit_hash,
+        "repo_url": algo.repo_url,
+        "install_status": algo.install_status,
+    }
 
 
 @router.delete("/api/algorithms/{algorithm_id}", status_code=204)
