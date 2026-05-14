@@ -1,7 +1,9 @@
+import base64
 import re
 from datetime import datetime, timezone
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, select, update
@@ -22,6 +24,7 @@ from coordinator.database.models import (
 )
 from coordinator.services.github_service import GitHubService
 from coordinator.services.package_manager import PackageError, PackageManager
+from sdk.manifest import ManifestError, QuiltManifest
 
 router = APIRouter(tags=["algorithms"])
 
@@ -370,3 +373,94 @@ async def delete_instance(instance_id: str, db: AsyncSession = Depends(get_db)):
     if inst is None:
         raise HTTPException(status_code=404, detail="Instance not found")
     await db.delete(inst)
+
+
+class InstallFromUrlRequest(BaseModel):
+    repo_url: str
+
+
+async def _fetch_manifest_yaml(owner: str, repo: str, db: AsyncSession) -> str:
+    """Try public raw URL; on 404 fall back to PAT-authenticated contents API."""
+    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/quilt.yaml"
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get(raw_url)
+    if r.status_code == 200:
+        return r.text
+    if r.status_code != 404:
+        raise HTTPException(status_code=502, detail=f"Manifest fetch failed: {r.status_code}")
+
+    setting = (await db.execute(
+        select(Setting).where(Setting.key == "github_pat")
+    )).scalar_one_or_none()
+    if setting is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository not found or quilt.yaml missing. "
+                   "If the repo is private, configure a GitHub PAT in Settings.",
+        )
+    container = get_container()
+    pat = container.encryption.decrypt(setting.value)
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/quilt.yaml"
+    headers = {"Authorization": f"Bearer {pat}", "Accept": "application/vnd.github+json"}
+    async with httpx.AsyncClient(timeout=10) as c:
+        ar = await c.get(api_url, headers=headers)
+    if ar.status_code != 200:
+        raise HTTPException(
+            status_code=400,
+            detail="Repository or quilt.yaml not found, even with configured PAT.",
+        )
+    body = ar.json()
+    if body.get("encoding") != "base64":
+        raise HTTPException(status_code=502, detail="Unexpected content encoding")
+    return base64.b64decode(body["content"]).decode()
+
+
+@router.post("/api/algorithms/install-from-url", status_code=201)
+async def install_from_url(body: InstallFromUrlRequest, db: AsyncSession = Depends(get_db)):
+    full_name = _full_name_from_url(body.repo_url)
+    if not full_name:
+        raise HTTPException(status_code=400, detail=f"Unsupported repo URL: {body.repo_url}")
+    owner, repo = full_name.split("/", 1)
+
+    yaml_text = await _fetch_manifest_yaml(owner, repo, db)
+    try:
+        manifest = QuiltManifest.from_string(yaml_text)
+    except ManifestError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid manifest: {e}")
+    if manifest.type != "algorithm":
+        raise HTTPException(status_code=422,
+                            detail=f"That repo is a {manifest.type}, not an algorithm.")
+
+    # Resolve clone url; private repos need PAT
+    public_url = f"https://github.com/{owner}/{repo}.git"
+    clone_url = public_url
+    setting = (await db.execute(
+        select(Setting).where(Setting.key == "github_pat")
+    )).scalar_one_or_none()
+    if setting is not None:
+        container = get_container()
+        pat = container.encryption.decrypt(setting.value)
+        clone_url = f"https://{pat}@github.com/{owner}/{repo}.git"
+
+    pm = PackageManager(packages_dir="data/packages")
+    name = repo
+    try:
+        pm.clone_repo(clone_url, name)
+        pm.create_venv(name)
+        pm.install_requirements(name)
+        manifest_disk = pm.validate_package(name)
+        commit_hash = pm.get_commit_hash(name)
+    except PackageError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    algo = Algorithm(
+        repo_url=public_url,
+        name=manifest_disk.get("name", manifest.name),
+        description=manifest_disk.get("description") or manifest.description,
+        version=manifest_disk.get("version") or manifest.version,
+        commit_hash=commit_hash,
+        install_status="installed",
+    )
+    db.add(algo)
+    await db.flush()
+    return _algo_to_response(algo)
