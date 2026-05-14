@@ -101,6 +101,7 @@ class DownloadManager:
 
             symbols = dl.symbols
             provider_name = dl.provider
+            data_type = dl.data_type
             timeframe = dl.timeframe
             start = dl.date_range_start
             end = dl.date_range_end
@@ -117,6 +118,10 @@ class DownloadManager:
 
         for i, symbol in enumerate(symbols):
             try:
+                if data_type != "bars":
+                    raise NotImplementedError(
+                        f"data_type '{data_type}' is not yet supported by provider '{provider_name}'"
+                    )
                 bars = await provider.fetch_bars(symbol, timeframe, start, end)
                 if bars:
                     df = pd.DataFrame(bars)
@@ -124,6 +129,9 @@ class DownloadManager:
                     logger.info("Downloaded %d bars for %s/%s", len(bars), symbol, timeframe)
                 else:
                     logger.warning("No data returned for %s/%s", symbol, timeframe)
+            except NotImplementedError as e:
+                logger.warning("%s", e)
+                errors.append(f"{symbol}: {e}")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -138,7 +146,12 @@ class DownloadManager:
                 )
                 await session.commit()
 
-        final_status = "completed" if not errors else "completed_with_errors"
+        if not errors:
+            final_status = "completed"
+        elif len(errors) == len(symbols):
+            final_status = "failed"
+        else:
+            final_status = "completed_with_errors"
         error_msg = "; ".join(errors) if errors else None
 
         async with self._session_factory() as session:
