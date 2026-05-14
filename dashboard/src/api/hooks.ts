@@ -160,6 +160,27 @@ export function useDeleteAlgorithm() {
   });
 }
 
+export function useAlgorithmGitStatus(id: string) {
+  return useQuery({
+    queryKey: ["algorithms", id, "git-status"] as const,
+    queryFn: () => api.getAlgorithmGitStatus(id),
+    enabled: !!id,
+    staleTime: 60_000,
+    retry: 1, // GitHub API hiccups; don't hammer
+  });
+}
+
+export function useUpdateAlgorithm() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.updateAlgorithm(id),
+    onSuccess: (_data, id) => {
+      void qc.invalidateQueries({ queryKey: keys.algorithms() });
+      void qc.invalidateQueries({ queryKey: ["algorithms", id, "git-status"] });
+    },
+  });
+}
+
 // ─── Instances ────────────────────────────────────────────────────────────────
 
 export function useInstances(algorithmId: string) {

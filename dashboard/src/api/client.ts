@@ -1,6 +1,7 @@
 import type {
   Account,
   Algorithm,
+  AlgorithmGitStatus,
   AlgorithmInstance,
   AlgorithmRun,
   InstalledAlgorithmResponse,
@@ -191,6 +192,12 @@ export const api = {
   },
   deleteAlgorithm(id: string): Promise<void> {
     return request<void>(`/api/algorithms/${id}`, { method: "DELETE" });
+  },
+  getAlgorithmGitStatus(id: string): Promise<AlgorithmGitStatus> {
+    return request<AlgorithmGitStatus>(`/api/algorithms/${id}/git-status`);
+  },
+  updateAlgorithm(id: string): Promise<Algorithm> {
+    return request<Algorithm>(`/api/algorithms/${id}/update`, { method: "POST" });
   },
 
   // Instances

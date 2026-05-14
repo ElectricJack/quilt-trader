@@ -1,17 +1,19 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Trash2, Search } from "lucide-react";
+import { Trash2, Search, RefreshCw } from "lucide-react";
 import { z } from "zod";
 import {
   useAlgorithms,
   useDeleteAlgorithm,
   useInstallAlgorithm,
   useGithubRepos,
+  useUpdateAlgorithm,
 } from "../api/hooks";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusBadge } from "../components/StatusBadge";
+import { GitStatusBadge } from "../components/GitStatusBadge";
 import { useUIStore } from "../stores/ui";
 
 const installSchema = z.object({
@@ -25,6 +27,7 @@ export function Algorithms() {
   const { mutateAsync: deleteAlgorithm } = useDeleteAlgorithm();
   const { mutateAsync: installAlgorithm, isPending: isInstalling } =
     useInstallAlgorithm();
+  const { mutateAsync: updateAlgorithm } = useUpdateAlgorithm();
   const addAlert = useUIStore((s) => s.addAlert);
 
   const [search, setSearch] = useState("");
@@ -33,6 +36,11 @@ export function Algorithms() {
     id: string;
     name: string;
   } | null>(null);
+  const [updateTarget, setUpdateTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
 
   // Only fetch repos when the modal is open
   const { data: repos, isLoading: reposLoading } = useGithubRepos(installOpen);
@@ -63,6 +71,27 @@ export function Algorithms() {
       addAlert({ message: "Failed to delete algorithm.", severity: "error" });
     } finally {
       setDeleteTarget(null);
+    }
+  }
+
+  async function handleUpdate() {
+    if (!updateTarget) return;
+    const target = updateTarget;
+    setUpdateTarget(null);
+    setUpdatingId(target.id);
+    try {
+      await updateAlgorithm(target.id);
+      addAlert({
+        message: `Updated "${target.name}" to latest commit.`,
+        severity: "success",
+      });
+    } catch {
+      addAlert({
+        message: `Failed to update "${target.name}".`,
+        severity: "error",
+      });
+    } finally {
+      setUpdatingId(null);
     }
   }
 
@@ -117,19 +146,10 @@ export function Algorithms() {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
-                  {/* Name + version + commit + badge */}
+                  {/* Name + status badge */}
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-gray-100">
                       {a.name}
-                    </span>
-                    {a.version && (
-                      <span className="text-xs text-gray-500">v{a.version}</span>
-                    )}
-                    <span
-                      className="text-xs font-mono text-gray-500"
-                      title={a.commit_hash ?? undefined}
-                    >
-                      {a.commit_hash ? a.commit_hash.slice(0, 7) : "—"}
                     </span>
                     <StatusBadge status={a.install_status} />
                   </div>
@@ -140,6 +160,35 @@ export function Algorithms() {
                       {a.description}
                     </p>
                   )}
+
+                  {/* Version + commit + git-status badge + update button */}
+                  <div className="flex items-center gap-2 flex-wrap mt-2">
+                    {a.version && (
+                      <span className="text-xs text-gray-500">v{a.version}</span>
+                    )}
+                    <span
+                      className="text-xs font-mono text-gray-500"
+                      title={a.commit_hash ?? undefined}
+                    >
+                      {a.commit_hash ? a.commit_hash.slice(0, 7) : "—"}
+                    </span>
+                    <GitStatusBadge algoId={a.id} />
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setUpdateTarget({ id: a.id, name: a.name });
+                      }}
+                      disabled={updatingId === a.id}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-gray-300 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      aria-label="Update algorithm"
+                      title="Pull latest from GitHub"
+                    >
+                      <RefreshCw
+                        className={`w-3 h-3 ${updatingId === a.id ? "animate-spin" : ""}`}
+                      />
+                      {updatingId === a.id ? "Updating…" : "Update"}
+                    </button>
+                  </div>
 
                   {/* Repo URL */}
                   <p className="text-xs text-gray-600 mt-1 truncate">
@@ -214,6 +263,16 @@ export function Algorithms() {
         confirmLabel="Delete"
         onConfirm={handleDelete}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      {/* Update confirm dialog */}
+      <ConfirmDialog
+        open={updateTarget !== null}
+        title="Update Algorithm"
+        message={`Pull the latest commit for "${updateTarget?.name}" from GitHub?`}
+        confirmLabel="Update"
+        onConfirm={handleUpdate}
+        onCancel={() => setUpdateTarget(null)}
       />
     </div>
   );

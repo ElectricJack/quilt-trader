@@ -152,6 +152,13 @@ export interface RepoInfo {
   html_url: string;
 }
 
+export interface AlgorithmGitStatus {
+  default_branch: string;
+  head_sha: string;
+  commits_behind: number;
+  current_sha: string | null;
+}
+
 export interface SettingsStatus {
   github_pat_set: boolean;
   discord_bot_token_set: boolean;
