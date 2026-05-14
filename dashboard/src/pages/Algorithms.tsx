@@ -117,7 +117,7 @@ export function Algorithms() {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
-                  {/* Name + version + badge */}
+                  {/* Name + version + commit + badge */}
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-gray-100">
                       {a.name}
@@ -125,6 +125,12 @@ export function Algorithms() {
                     {a.version && (
                       <span className="text-xs text-gray-500">v{a.version}</span>
                     )}
+                    <span
+                      className="text-xs font-mono text-gray-500"
+                      title={a.commit_hash ?? undefined}
+                    >
+                      {a.commit_hash ? a.commit_hash.slice(0, 7) : "—"}
+                    </span>
                     <StatusBadge status={a.install_status} />
                   </div>
 
