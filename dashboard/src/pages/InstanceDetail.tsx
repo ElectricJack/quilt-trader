@@ -139,7 +139,7 @@ export function InstanceDetail() {
       : null;
 
   const equityCurveData =
-    activeRun?.equity_curve?.map((p) => ({ timestamp: p.date, equity: p.equity })) ?? null;
+    activeRun?.equity_curve?.map((p) => ({ timestamp: p.timestamp, equity: p.equity })) ?? null;
 
   // ── Lifetime metrics rendering ────────────────────────────────────────────
   const metrics = instance.lifetime_metrics ?? {};

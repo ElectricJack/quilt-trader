@@ -64,7 +64,7 @@ export interface AlgorithmInstance {
 }
 
 export interface EquityPoint {
-  date: string;
+  timestamp: string;
   equity: number;
 }
 

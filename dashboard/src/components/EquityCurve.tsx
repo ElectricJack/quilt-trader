@@ -84,6 +84,14 @@ export function EquityCurve({ data, height = 300 }: EquityCurveProps) {
         time: (new Date(point.timestamp).getTime() / 1000) as Time,
         value: point.equity,
       }))
+      // Drop bad rows: lightweight-charts throws if `time` is NaN/Infinity
+      // or if `value` is not a finite number.
+      .filter(
+        (d) =>
+          Number.isFinite(d.time as number) &&
+          typeof d.value === "number" &&
+          Number.isFinite(d.value),
+      )
       .sort((a, b) => (a.time as number) - (b.time as number));
 
     seriesRef.current.setData(seriesData);

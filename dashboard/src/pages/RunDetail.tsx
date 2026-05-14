@@ -46,7 +46,7 @@ export function RunDetail() {
 
   // ── Equity curve ──────────────────────────────────────────────────────────
   const equityCurveData =
-    run.equity_curve?.map((p) => ({ timestamp: p.date, equity: p.equity })) ?? null;
+    run.equity_curve?.map((p) => ({ timestamp: p.timestamp, equity: p.equity })) ?? null;
 
   return (
     <div className="space-y-6">
