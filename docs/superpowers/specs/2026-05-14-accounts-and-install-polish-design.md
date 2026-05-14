@@ -95,18 +95,46 @@ class OpenPositionRequest(BaseModel):
     limit_price: float | None = None   # required if order_type == "limit"
 ```
 
-Response (HTTP 200 if all legs filled, HTTP 207 if partial):
+Response (HTTP 200 on full fill, HTTP 207 only on the rare partial-fill fallback path):
 
 ```python
 {
-  "position_id": str | None,                # null if no legs filled
+  "position_id": str | None,                # null if nothing filled
+  "broker_order_id": str | None,            # parent multi-leg order id when atomic
   "legs": [
-    {"index": int, "status": "filled" | "rejected", "filled_price": float | None,
-     "fees": float | None, "error": str | None, "broker_order_id": str | None}
+    {"index": int, "status": "filled" | "rejected" | "pending",
+     "filled_price": float | None, "fees": float | None,
+     "error": str | None, "broker_order_id": str | None}
   ],
-  "partial_fill": bool,
+  "atomic": bool,                           # true if filled via native multi-leg endpoint
+  "partial_fill": bool,                     # true only if atomic=false AND some legs failed
 }
 ```
+
+### BrokerAdapter additions
+
+Two new methods on `worker/broker_adapter.py`:
+
+```python
+class BrokerAdapter(ABC):
+    def supports_multileg_orders(self, legs: list[LegSpec]) -> bool:
+        """Whether this adapter can submit `legs` as a single atomic ticket."""
+        return False
+
+    def compose_symbol(self, leg: LegSpec) -> str:
+        """Format a leg into a broker-specific symbol (OCC for options)."""
+        return leg.symbol
+
+    def submit_multileg_order(
+        self, legs: list[LegSpec], order_type: str, limit_price: float | None
+    ) -> "MultilegOrderResult":
+        """Submit `legs` as one atomic broker order. Raises if unsupported."""
+        raise NotImplementedError
+```
+
+- `AlpacaAdapter`: implements both. `supports_multileg_orders` returns `True` when all legs are options on the same underlying (the constraint Alpaca's MLEG order class enforces). `submit_multileg_order` POSTs to `/v2/orders` with `order_class=mleg` and a `legs[]` array, returns parent order id + per-leg fills.
+- `TradierAdapter`: implements both. `supports_multileg_orders` returns `True` when all legs are options on the same underlying. `submit_multileg_order` POSTs to `/v1/accounts/{id}/orders` with `class=multileg` and per-leg `option_symbol_N/side_N/quantity_N` fields, returns the parent order id.
+- `MockBrokerAdapter`: `supports_multileg_orders` returns `False` so tests exercise the fallback path.
 
 ### Server-side flow
 
@@ -114,16 +142,14 @@ Response (HTTP 200 if all legs filled, HTTP 207 if partial):
 2. Validate every leg's `asset_type` is in `account.supported_asset_types`. Return 422 on mismatch.
 3. Validate options legs include `expiry`, `strike`, `right`. Return 422 on missing fields.
 4. Decrypt creds, construct broker adapter (existing `_adapter_for_account` helper).
-5. **Per-broker symbol composition.** Extend `BrokerAdapter` with a `compose_symbol(leg: LegSpec) -> str` method (default implementation returns `leg.symbol` unchanged for equities/crypto). `AlpacaAdapter` and `TradierAdapter` each override it to produce their broker-specific options symbol from `(symbol, expiry, strike, right)` — Alpaca uses OCC (`SPY240620C00500000`), Tradier uses a near-identical OCC variant. The route handler does NOT format symbols itself; it calls `adapter.compose_symbol(leg)` and passes the result to `submit_order`.
-6. **For each leg (sequential):** call `adapter.submit_order(symbol=composed, side, quantity, order_type, limit_price)`. On exception, record the leg as rejected and continue.
-7. After all legs: if at least one filled, persist:
-   - One `TradeLog` per filled leg (`source="manual"`, `asset_type` from the leg).
-   - One `Position` row with `legs=[...]` containing the filled legs only, `strategy_type` from request, `status="open"`, `net_cost=sum_of_signed_costs`, `metadata_={"partial_fill": True}` if any leg failed.
-8. Return per-leg results plus the new position id.
+5. **Dispatch:**
+   - If `len(legs) > 1 and adapter.supports_multileg_orders(legs)` → call `submit_multileg_order(...)`. On success: one `TradeLog` per filled leg, one `Position` row (`metadata_.broker_order_id` = parent id), `atomic=true` in the response. On broker rejection: 422 with the broker's error message; nothing persisted (atomic means all-or-nothing). **No partial-fill state possible on this path.**
+   - Else → sequential fallback: for each leg, call `adapter.submit_order(adapter.compose_symbol(leg), side, quantity, order_type, limit_price)`. On exception, record the leg as rejected and continue. After all legs, if at least one filled, persist one `Position` with `metadata_.partial_fill = True` if any failed. Return 207 if partial. This path is used for single-leg orders, mixed-broker scenarios, or any case `supports_multileg_orders` returns False.
+6. Return the response shape above.
 
 **Idempotency / dedup:** None needed for v1. Re-submitting the form produces a new position.
 
-**Spread atomicity (deferred):** Both Alpaca and Tradier support native multi-leg options tickets that fill atomically. v1 submits legs sequentially through the existing `submit_order` interface — simpler, sufficient for manual single-shot entry. A future change can extend `BrokerAdapter` with a `submit_multileg_order` method (and Spec C, the strategy builder, will surface it). Document the limitation in the response: when `partial_fill=true`, the dialog tells the user "Legs were filled individually; close the partial fill manually if needed."
+**Why this is simpler than my first draft.** Sequential individual fills required us to invent partial-rollback semantics that don't actually match how options spreads behave at the broker layer. Native multi-leg endpoints (Alpaca's MLEG, Tradier's `class=multileg`) fill atomically — either the whole spread fills at the requested net debit/credit, or nothing does. The complex 207/partial-fill response only applies to the fallback path (single-leg, equities, or mocks).
 
 ### UI
 
@@ -151,7 +177,7 @@ Response (HTTP 200 if all legs filled, HTTP 207 if partial):
 
 - Closing positions (separate workflow — already partly handled by sell-side trades).
 - Strategy visualization (Spec C).
-- Native atomic multi-leg broker tickets (deferred to a follow-up).
+- Lumibot order integration. Lumibot's footprint in this repo is the CLI backtest harness only (`sdk/cli/backtest.py`); the live path uses the project's own `BrokerAdapter` against the broker SDKs directly. Adopting Lumibot's broker layer to gain its multi-leg machinery would be a larger architectural swap than calling Alpaca's MLEG and Tradier's `class=multileg` endpoints ourselves.
 
 ---
 
@@ -213,38 +239,70 @@ Today the flow is: register the worker (modal closes), then a `WorkerInstallComm
 
 Additionally, the current `Worker` model requires `tailscale_ip` at registration time — but the user doesn't know the Tailscale IP before the Pi is provisioned. The Pi self-discovers it via `tailscale ip --4` once `tailscale up` runs.
 
+### Pre-existing bug to fix in this spec
+
+The current heartbeat path is **broken end-to-end** and the bug surfaces only when we start depending on `Worker.status` (which this spec does). Tracing it:
+
+- `worker/agent.py:43-44`: `send_heartbeat` sends `{"type": "heartbeat", "worker_name": self.worker_name, ...}` — **no `worker_id`**.
+- `coordinator/api/websocket.py:71-86`: handler reads `worker_id = data.get("worker_id")` (always `None`), then the `if worker_id:` block never executes. `Worker.last_heartbeat` and `Worker.status` are never updated by the running system today.
+- Root cause: `worker/config.py` has `worker_name` but no `worker_id` field, and `scripts/install-worker.sh:117-122` writes the env file without `QTW_WORKER_ID`. The worker literally doesn't know its own UUID — only its name.
+
+The dashboard tolerates this only because nothing currently reads those fields meaningfully (`relativeTime(w.last_heartbeat)` just prints "never" and the install-claim POST is enough to flip `install_status` to `claimed` for the UI's existing pending/online states).
+
 ### Server-side changes
 
-**1. Worker self-reports tailscale IP.**
+**1. Fix the worker-id wiring.** Three small changes:
 
-Extend the worker's heartbeat payload from `{type, worker_id}` → `{type, worker_id, tailscale_ip?}`. The worker reads its IP once on startup (via `subprocess.run(["tailscale", "ip", "-4"], ...)` or equivalent) and includes it in every heartbeat; falls back to omitting the field if unavailable.
+- `scripts/install-worker.sh`: add `QTW_WORKER_ID=${WORKER_ID}` to the env file written at lines 117-122. `WORKER_ID` is already in scope (required env var, line 45-47). One-line addition.
+- `worker/config.py` `WorkerConfig`: add `worker_id: str = ""` (env var `QTW_WORKER_ID`).
+- `worker/agent.py`: `WorkerAgent.__init__` takes `worker_id` alongside `worker_name`; `worker/main.py` passes both from config. `send_heartbeat` payload becomes:
+  ```python
+  {"type": "heartbeat", "worker_id": self.worker_id,
+   "worker_name": self.worker_name, "tailscale_ip": self.tailscale_ip,
+   "timestamp": datetime.now(timezone.utc).isoformat()}
+  ```
 
-`handle_worker_message` heartbeat branch (`coordinator/api/websocket.py:71`):
+**2. Worker self-reports tailscale IP.**
+
+`WorkerAgent` discovers the IP once on startup via `subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=2)` and caches it. Falls back to `None` if Tailscale isn't installed or the call fails (so the worker still functions when run locally outside a Tailscale-managed Pi). The cached value is included in every heartbeat.
+
+**3. Coordinator heartbeat handler (`coordinator/api/websocket.py:71`)** — now it actually finds the row, and we add the broadcast:
 
 ```python
-if worker:
-    prior_status = worker.status
-    worker.last_heartbeat = datetime.now(timezone.utc)
-    worker.status = "online"
-    if data.get("tailscale_ip"):
-        worker.tailscale_ip = data["tailscale_ip"]
-    await session.commit()
+elif msg_type == "heartbeat":
+    worker_id = data.get("worker_id")
+    await websocket.send_json({"type": "heartbeat_ack"})
+    if not worker_id:
+        return
+    try:
+        container = get_container()
+        async with container.session_factory() as session:
+            result = await session.execute(select(Worker).where(Worker.id == worker_id))
+            worker = result.scalar_one_or_none()
+            if not worker:
+                return
+            prior_status = worker.status
+            worker.last_heartbeat = datetime.now(timezone.utc)
+            worker.status = "online"
+            if data.get("tailscale_ip"):
+                worker.tailscale_ip = data["tailscale_ip"]
+            await session.commit()
 
-    if prior_status != "online":
-        await manager.broadcast_to_dashboards({
-            "type": "worker_connected",
-            "worker_id": worker.id,
-            "name": worker.name,
-            "tailscale_ip": worker.tailscale_ip,
-            "install_status": worker.install_status,
-        })
+            if prior_status != "online":
+                await manager.broadcast_to_dashboards({
+                    "type": "worker_connected",
+                    "worker_id": worker.id,
+                    "name": worker.name,
+                    "tailscale_ip": worker.tailscale_ip,
+                    "install_status": worker.install_status,
+                })
+    except Exception:
+        logger.exception("Failed to update heartbeat for worker %s", worker_id)
 ```
 
-**2. Make `tailscale_ip` optional at registration.**
+**4. Make `tailscale_ip` optional at registration.**
 
 `WorkerCreate.tailscale_ip: Optional[str] = None`. Schema/migration: `Worker.tailscale_ip: Mapped[Optional[str]]` (currently `nullable=False`). Backfill existing rows where needed.
-
-**3. No change to `install-worker.sh`** — it already runs `tailscale up`. We just add the IP reporting in `worker/agent.py`'s heartbeat code path.
 
 ### UI changes (Workers.tsx + new component)
 
@@ -283,7 +341,7 @@ State flips to `✓ Connected!` for ~1.5s, then auto-closes. The worker list (`u
 ### Out of scope
 
 - Streaming systemd journal logs into the dialog (could be a future enhancement).
-- Changing how the install script works on the Pi (no script changes in this spec; only worker agent adds tailscale IP to heartbeats).
+- Reworking the Pi-side install script's broader structure. This spec adds exactly one line (`QTW_WORKER_ID=${WORKER_ID}` to the env file) — everything else the script does (Tailscale, package download, venv, systemd) stays as-is.
 
 ---
 
@@ -304,16 +362,24 @@ Per section, plus integration coverage:
 - **Open-position UI:** API tests for the new endpoint:
   - 423 when account is locked.
   - 422 on disallowed asset_type / missing options fields.
-  - All-legs filled → 200 + Position created + per-leg TradeLog inserted.
-  - Mid-list leg fails → 207 + Position with `partial_fill=True` + only filled legs persisted.
+  - **Atomic-path success** (mock adapter set to `supports_multileg_orders=True`): 200 + Position with `metadata_.broker_order_id` set + atomic=true in response.
+  - **Atomic-path broker rejection:** 422 + nothing persisted.
+  - **Fallback-path success** (mock adapter returns `False`, all submit_order calls succeed): 200 + Position created + per-leg TradeLog inserted.
+  - **Fallback-path partial fill** (mid-list submit_order raises): 207 + Position with `metadata_.partial_fill=True` + only filled legs persisted.
+  - Per-broker OCC symbol composition: unit tests for `AlpacaAdapter.compose_symbol` and `TradierAdapter.compose_symbol` covering call/put, varying strikes.
 - **Algo install via URL:** unit test the manifest-fetch fallback chain (public → private → reject). API test using a fake `quilt.yaml` over a mocked HTTP layer. End-to-end manual smoke against a real public quilt algorithm repo.
-- **Worker install dialog:** existing heartbeat handler test extended to assert the `worker_connected` broadcast fires on offline→online transition. Frontend component test for the dialog's state machine. Manual smoke against a real Pi to confirm auto-close.
+- **Worker install dialog:**
+  - **Pre-existing-bug regression:** dedicated test that a heartbeat message with `worker_id` actually finds the row, updates `status="online"` and `last_heartbeat`, and writes `tailscale_ip` when present. Today this would fail; that's the point.
+  - Heartbeat handler test extended to assert the `worker_connected` broadcast fires on offline→online transition and is suppressed on subsequent heartbeats while already online.
+  - Frontend component test for the dialog's state machine (form → waiting → connected → auto-close), driven by a fake WS event source.
+  - Manual smoke against a real Pi to confirm auto-close end-to-end.
 
 ### Compatibility
 
 - Existing accounts with messy `supported_asset_types` (e.g. unrecognized entries from the old free-text input) keep working at read time, but `PATCH` will require the user to re-check the boxes from the new catalog. Acceptable — the dataset is small.
 - The legacy `/api/github/repos` and `/api/github/install` endpoints stay until a follow-up cleanup. No active callers after this spec lands.
 - `Worker.tailscale_ip` nullability change is forward-compatible; existing UI keeps rendering the IP when present.
+- **Already-installed workers won't have `QTW_WORKER_ID` in their env file.** They'll keep failing the heartbeat-update path until the env file is patched (or they're reinstalled with the updated script). Mitigation: a one-line manual fix on the Pi (`sudo sh -c 'echo QTW_WORKER_ID=... >> /etc/quilt-trader-worker.env && systemctl restart quilt-trader-worker'`) — document this in the spec's implementation notes. The user has one Pi today, so no migration tooling needed.
 
 ### Implementation order
 
