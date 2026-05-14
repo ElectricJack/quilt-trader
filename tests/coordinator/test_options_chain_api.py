@@ -5,44 +5,7 @@ from unittest.mock import patch
 from coordinator.database.models import Account
 from worker.broker_adapter import OptionContract, OptionChainSnapshot
 
-from coordinator.main import create_app
 from coordinator.api.routes import options_chain as options_chain_routes
-from coordinator.api.dependencies import get_container
-from httpx import ASGITransport, AsyncClient
-
-
-@pytest_asyncio.fixture
-async def test_app():
-    app = create_app(database_url="sqlite+aiosqlite:///:memory:")
-    # The static-files catch-all mount (dashboard) is registered last in
-    # create_app. Remove it temporarily so include_router can insert the
-    # options-chain route before the catch-all, then re-append it.
-    static_mount = None
-    for i, route in enumerate(app.routes):
-        if getattr(route, "name", "") == "dashboard":
-            static_mount = app.routes.pop(i)
-            break
-    app.include_router(options_chain_routes.router)
-    if static_mount is not None:
-        app.routes.append(static_mount)
-    async with app.router.lifespan_context(app):
-        yield app
-
-
-@pytest_asyncio.fixture
-async def db_session(test_app):
-    container = get_container()
-    async with container.session_factory() as session:
-        yield session
-        await session.rollback()
-
-
-@pytest_asyncio.fixture
-async def client(test_app):
-    async with AsyncClient(
-        transport=ASGITransport(app=test_app), base_url="http://test"
-    ) as c:
-        yield c
 
 
 @pytest.mark.asyncio

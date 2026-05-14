@@ -25,3 +25,24 @@ async def test_app_creates_tables():
     ) as client:
         response = await client.get("/api/health")
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_brokers_route_mounted(client):
+    r = await client.get("/api/brokers/alpaca/asset-types")
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_live_subs_route_mounted(client):
+    r = await client.get("/api/live-subscriptions")
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_options_chain_route_404_on_missing_account(client):
+    r = await client.get(
+        "/api/accounts/nonexistent/options-chain/expiries",
+        params={"underlying": "SPY"},
+    )
+    assert r.status_code == 404

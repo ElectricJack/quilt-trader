@@ -1,40 +1,5 @@
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-
-from coordinator.main import create_app
-from coordinator.api.routes import live_subscriptions as live_subs_routes
-
-
-@pytest_asyncio.fixture
-async def test_app():
-    """Override the default ``test_app`` fixture for this file.
-
-    The live-subscriptions router is not yet mounted by ``create_app`` —
-    that wiring lands in S6. Until then, mount it here so the route is
-    reachable. Pop the dashboard static-files mount (added last in
-    ``create_app``) so ``include_router`` is inserted *before* the
-    catch-all, then re-append it to preserve the original ordering.
-    """
-    app = create_app(database_url="sqlite+aiosqlite:///:memory:")
-    static_mount = None
-    for i, route in enumerate(app.routes):
-        if getattr(route, "name", "") == "dashboard":
-            static_mount = app.routes.pop(i)
-            break
-    app.include_router(live_subs_routes.router)
-    if static_mount is not None:
-        app.routes.append(static_mount)
-    async with app.router.lifespan_context(app):
-        yield app
-
-
-@pytest_asyncio.fixture
-async def client(test_app):
-    async with AsyncClient(
-        transport=ASGITransport(app=test_app), base_url="http://test"
-    ) as c:
-        yield c
+from httpx import AsyncClient
 
 
 @pytest.mark.asyncio

@@ -142,9 +142,18 @@ def create_app(
             logger.info("Recovered %d orphaned download row(s) from previous run", n_recovered)
 
         container = ServiceContainer(session_factory, event_bus, encryption, scheduler)
+
+        from coordinator.services.live_feed_manager import LiveFeedManager
+        from coordinator.services.live_feed_aggregator import LiveFeedAggregator
+        container.live_feed_manager = LiveFeedManager()
+        container.live_feed_aggregator = LiveFeedAggregator(session_factory)
+        await container.live_feed_aggregator.start()
+
         set_container(container)
         yield
 
+        if container.live_feed_aggregator:
+            await container.live_feed_aggregator.stop()
         await http_client.aclose()
         scheduler.shutdown()
         await engine.dispose()
@@ -202,6 +211,15 @@ def create_app(
 
     from coordinator.api.routes.alerts import router as alerts_router
     app.include_router(alerts_router)
+
+    from coordinator.api.routes import brokers as brokers_routes
+    app.include_router(brokers_routes.router)
+
+    from coordinator.api.routes import live_subscriptions as live_subs_routes
+    app.include_router(live_subs_routes.router)
+
+    from coordinator.api.routes import options_chain as options_chain_routes
+    app.include_router(options_chain_routes.router)
 
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")

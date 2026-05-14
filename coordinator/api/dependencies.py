@@ -1,8 +1,14 @@
-from typing import AsyncGenerator, Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, AsyncGenerator, Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coordinator.services.event_bus import EventBus
 from coordinator.services.encryption import EncryptionService
+
+if TYPE_CHECKING:
+    from coordinator.services.live_feed_manager import LiveFeedManager
+    from coordinator.services.live_feed_aggregator import LiveFeedAggregator
 
 
 class ServiceContainer:
@@ -17,6 +23,8 @@ class ServiceContainer:
         self.event_bus = event_bus
         self.encryption = encryption
         self.scheduler = scheduler
+        self.live_feed_manager: Optional["LiveFeedManager"] = None
+        self.live_feed_aggregator: Optional["LiveFeedAggregator"] = None
 
 
 _container: ServiceContainer | None = None
