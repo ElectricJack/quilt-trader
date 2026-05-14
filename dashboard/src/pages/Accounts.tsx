@@ -2,11 +2,13 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { z } from "zod";
 import { Pencil, Trash2 } from "lucide-react";
+import type { UseFormReturn } from "react-hook-form";
 import {
   useAccounts,
   useCreateAccount,
   useUpdateAccount,
   useDeleteAccount,
+  useBrokerAssetTypes,
 } from "../api/hooks";
 import { api } from "../api/client";
 import type { Account } from "../types";
@@ -29,7 +31,7 @@ const createAccountSchema = z
     name: z.string().min(1, "Name is required"),
     broker_type: z.enum(["alpaca", "tradier"]),
     environment: z.enum(["paper", "live"]),
-    supported_asset_types: z.string().min(1, "At least one asset type is required"),
+    supported_asset_types: z.array(z.string()).min(1, "Select at least one asset type"),
     pdt_mode: z.string().min(1, "PDT mode is required"),
     alpaca_api_key: z.string().optional(),
     alpaca_secret_key: z.string().optional(),
@@ -55,7 +57,7 @@ type CreateAccountValues = z.infer<typeof createAccountSchema>;
 const editAccountSchema = z.object({
   name: z.string().min(1, "Name is required"),
   environment: z.enum(["paper", "live"]),
-  supported_asset_types: z.string().min(1, "At least one asset type is required"),
+  supported_asset_types: z.array(z.string()).min(1, "Select at least one asset type"),
   pdt_mode: z.string().min(1, "PDT mode is required"),
   // Optional credential rotation; empty means "leave unchanged".
   alpaca_api_key: z.string().optional(),
@@ -91,6 +93,302 @@ function buildCredentials(values: {
     };
   }
   return null;
+}
+
+// ─── U1: Asset-type checkbox sub-components ───────────────────────────────────
+
+function AssetTypeCheckboxes({
+  brokerType,
+  value,
+  onChange,
+  error,
+}: {
+  brokerType: string;
+  value: string[];
+  onChange: (v: string[]) => void;
+  error?: string;
+}) {
+  const { data: assetTypes = [], isLoading } = useBrokerAssetTypes(brokerType);
+
+  const toggle = (type: string) => {
+    if (value.includes(type)) {
+      onChange(value.filter((v) => v !== type));
+    } else {
+      onChange([...value, type]);
+    }
+  };
+
+  return (
+    <FormField label="Supported Asset Types" error={error}>
+      {isLoading ? (
+        <p className="text-xs text-gray-400">Loading asset types…</p>
+      ) : assetTypes.length === 0 ? (
+        <p className="text-xs text-gray-400">No asset types available.</p>
+      ) : (
+        <div className="flex flex-wrap gap-3">
+          {assetTypes.map((type) => (
+            <label key={type} className="flex items-center gap-1.5 cursor-pointer text-sm text-gray-300">
+              <input
+                type="checkbox"
+                className="accent-indigo-500"
+                checked={value.includes(type)}
+                onChange={() => toggle(type)}
+              />
+              {type}
+            </label>
+          ))}
+        </div>
+      )}
+    </FormField>
+  );
+}
+
+function AddAccountFormBody({
+  form,
+  testingConnection,
+  handleTestConnection,
+}: {
+  form: UseFormReturn<CreateAccountValues>;
+  testingConnection: boolean;
+  handleTestConnection: (values: CreateAccountValues) => Promise<void>;
+}) {
+  const broker = form.watch("broker_type");
+  const env = form.watch("environment");
+  const selectedTypes = form.watch("supported_asset_types");
+
+  return (
+    <>
+      <FormField label="Name" error={form.formState.errors.name?.message}>
+        <input
+          className={INPUT_CLASS}
+          placeholder="My Trading Account"
+          {...form.register("name")}
+        />
+      </FormField>
+
+      <FormField label="Broker" error={form.formState.errors.broker_type?.message}>
+        <select className={INPUT_CLASS} {...form.register("broker_type")}>
+          {BROKER_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </FormField>
+
+      <FormField label="Environment" error={form.formState.errors.environment?.message}>
+        <div className="flex gap-3">
+          {(["paper", "live"] as const).map((v) => (
+            <label
+              key={v}
+              className={`flex-1 px-3 py-2 rounded border cursor-pointer text-sm text-center transition-colors ${
+                env === v
+                  ? v === "live"
+                    ? "bg-red-900/40 border-red-700 text-red-200"
+                    : "bg-blue-900/40 border-blue-700 text-blue-200"
+                  : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600"
+              }`}
+            >
+              <input type="radio" value={v} className="hidden" {...form.register("environment")} />
+              {v === "live" ? "Live" : "Paper"}
+            </label>
+          ))}
+        </div>
+      </FormField>
+
+      {broker === "alpaca" && (
+        <>
+          <FormField
+            label="Alpaca API Key"
+            error={form.formState.errors.alpaca_api_key?.message}
+          >
+            <input
+              className={INPUT_CLASS}
+              autoComplete="off"
+              placeholder="PKxxxxxxxxxxxxxxxx"
+              {...form.register("alpaca_api_key")}
+            />
+          </FormField>
+          <FormField
+            label="Alpaca Secret Key"
+            error={form.formState.errors.alpaca_secret_key?.message}
+          >
+            <input
+              type="password"
+              className={INPUT_CLASS}
+              autoComplete="off"
+              {...form.register("alpaca_secret_key")}
+            />
+          </FormField>
+        </>
+      )}
+
+      {broker === "tradier" && (
+        <>
+          <FormField
+            label="Tradier Access Token"
+            error={form.formState.errors.tradier_access_token?.message}
+          >
+            <input
+              type="password"
+              className={INPUT_CLASS}
+              autoComplete="off"
+              {...form.register("tradier_access_token")}
+            />
+          </FormField>
+          <FormField
+            label="Tradier Account ID"
+            error={form.formState.errors.tradier_account_id?.message}
+          >
+            <input
+              className={INPUT_CLASS}
+              autoComplete="off"
+              placeholder="VA1234567"
+              {...form.register("tradier_account_id")}
+            />
+          </FormField>
+        </>
+      )}
+
+      <AssetTypeCheckboxes
+        brokerType={broker}
+        value={selectedTypes}
+        onChange={(v) => form.setValue("supported_asset_types", v, { shouldValidate: true })}
+        error={form.formState.errors.supported_asset_types?.message as string | undefined}
+      />
+
+      <FormField label="PDT Mode" error={form.formState.errors.pdt_mode?.message}>
+        <select className={INPUT_CLASS} {...form.register("pdt_mode")}>
+          <option value="off">Off</option>
+          <option value="warn">Warn</option>
+          <option value="block">Block</option>
+        </select>
+      </FormField>
+
+      <div className="pt-2">
+        <button
+          type="button"
+          disabled={testingConnection}
+          onClick={form.handleSubmit(handleTestConnection)}
+          className="px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 disabled:opacity-60 transition-colors"
+        >
+          {testingConnection ? "Testing…" : "Test Connection"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function EditAccountFormBody({
+  form,
+  editTarget,
+}: {
+  form: UseFormReturn<EditAccountValues>;
+  editTarget: Account;
+}) {
+  const env = form.watch("environment");
+  const broker = editTarget.broker_type;
+  const selectedTypes = form.watch("supported_asset_types");
+
+  return (
+    <>
+      <FormField label="Name" error={form.formState.errors.name?.message}>
+        <input className={INPUT_CLASS} {...form.register("name")} />
+      </FormField>
+
+      <FormField label="Broker">
+        <input
+          className={`${INPUT_CLASS} opacity-60 cursor-not-allowed`}
+          value={broker ?? ""}
+          disabled
+          readOnly
+        />
+      </FormField>
+
+      <FormField label="Environment" error={form.formState.errors.environment?.message}>
+        <div className="flex gap-3">
+          {(["paper", "live"] as const).map((v) => (
+            <label
+              key={v}
+              className={`flex-1 px-3 py-2 rounded border cursor-pointer text-sm text-center transition-colors ${
+                env === v
+                  ? v === "live"
+                    ? "bg-red-900/40 border-red-700 text-red-200"
+                    : "bg-blue-900/40 border-blue-700 text-blue-200"
+                  : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600"
+              }`}
+            >
+              <input type="radio" value={v} className="hidden" {...form.register("environment")} />
+              {v === "live" ? "Live" : "Paper"}
+            </label>
+          ))}
+        </div>
+      </FormField>
+
+      <AssetTypeCheckboxes
+        brokerType={broker}
+        value={selectedTypes}
+        onChange={(v) => form.setValue("supported_asset_types", v, { shouldValidate: true })}
+        error={form.formState.errors.supported_asset_types?.message as string | undefined}
+      />
+
+      <FormField label="PDT Mode" error={form.formState.errors.pdt_mode?.message}>
+        <select className={INPUT_CLASS} {...form.register("pdt_mode")}>
+          <option value="off">Off</option>
+          <option value="warn">Warn</option>
+          <option value="block">Block</option>
+        </select>
+      </FormField>
+
+      <div className="border-t border-gray-800 pt-3 mt-2">
+        <p className="text-xs text-gray-500 mb-2">
+          Rotate credentials (leave blank to keep current values)
+        </p>
+        {broker === "alpaca" && (
+          <>
+            <FormField label="New API Key">
+              <input
+                className={INPUT_CLASS}
+                autoComplete="off"
+                placeholder="leave blank to keep"
+                {...form.register("alpaca_api_key")}
+              />
+            </FormField>
+            <FormField label="New Secret Key">
+              <input
+                type="password"
+                className={INPUT_CLASS}
+                autoComplete="off"
+                placeholder="leave blank to keep"
+                {...form.register("alpaca_secret_key")}
+              />
+            </FormField>
+          </>
+        )}
+        {broker === "tradier" && (
+          <>
+            <FormField label="New Access Token">
+              <input
+                type="password"
+                className={INPUT_CLASS}
+                autoComplete="off"
+                placeholder="leave blank to keep"
+                {...form.register("tradier_access_token")}
+              />
+            </FormField>
+            <FormField label="New Account ID">
+              <input
+                className={INPUT_CLASS}
+                autoComplete="off"
+                placeholder="leave blank to keep"
+                {...form.register("tradier_account_id")}
+              />
+            </FormField>
+          </>
+        )}
+      </div>
+    </>
+  );
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -228,15 +526,11 @@ export function Accounts() {
 
   async function handleCreate(values: CreateAccountValues) {
     const credentials = buildCredentials(values) ?? {};
-    const assetTypes = values.supported_asset_types
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
     await createAccount.mutateAsync({
       name: values.name,
       broker_type: values.broker_type,
       environment: values.environment,
-      supported_asset_types: assetTypes,
+      supported_asset_types: values.supported_asset_types,
       pdt_mode: values.pdt_mode,
       credentials,
     });
@@ -246,10 +540,6 @@ export function Accounts() {
 
   async function handleEdit(values: EditAccountValues) {
     if (!editTarget) return;
-    const assetTypes = values.supported_asset_types
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
     const credentials = buildCredentials({
       broker_type: editTarget.broker_type,
       alpaca_api_key: values.alpaca_api_key,
@@ -262,7 +552,7 @@ export function Accounts() {
       body: {
         name: values.name,
         environment: values.environment,
-        supported_asset_types: assetTypes,
+        supported_asset_types: values.supported_asset_types,
         pdt_mode: values.pdt_mode,
         ...(credentials ? { credentials } : {}),
       },
@@ -320,7 +610,7 @@ export function Accounts() {
           name: "",
           broker_type: "alpaca",
           environment: "paper",
-          supported_asset_types: "",
+          supported_asset_types: [],
           pdt_mode: "off",
           alpaca_api_key: "",
           alpaca_secret_key: "",
@@ -331,135 +621,13 @@ export function Accounts() {
         submitLabel="Create Account"
         isSubmitting={createAccount.isPending}
       >
-        {(form) => {
-          const broker = form.watch("broker_type");
-          const env = form.watch("environment");
-          return (
-            <>
-              <FormField label="Name" error={form.formState.errors.name?.message}>
-                <input
-                  className={INPUT_CLASS}
-                  placeholder="My Trading Account"
-                  {...form.register("name")}
-                />
-              </FormField>
-
-              <FormField label="Broker" error={form.formState.errors.broker_type?.message}>
-                <select className={INPUT_CLASS} {...form.register("broker_type")}>
-                  {BROKER_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </FormField>
-
-              <FormField label="Environment" error={form.formState.errors.environment?.message}>
-                <div className="flex gap-3">
-                  {(["paper", "live"] as const).map((v) => (
-                    <label
-                      key={v}
-                      className={`flex-1 px-3 py-2 rounded border cursor-pointer text-sm text-center transition-colors ${
-                        env === v
-                          ? v === "live"
-                            ? "bg-red-900/40 border-red-700 text-red-200"
-                            : "bg-blue-900/40 border-blue-700 text-blue-200"
-                          : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600"
-                      }`}
-                    >
-                      <input type="radio" value={v} className="hidden" {...form.register("environment")} />
-                      {v === "live" ? "Live" : "Paper"}
-                    </label>
-                  ))}
-                </div>
-              </FormField>
-
-              {broker === "alpaca" && (
-                <>
-                  <FormField
-                    label="Alpaca API Key"
-                    error={form.formState.errors.alpaca_api_key?.message}
-                  >
-                    <input
-                      className={INPUT_CLASS}
-                      autoComplete="off"
-                      placeholder="PKxxxxxxxxxxxxxxxx"
-                      {...form.register("alpaca_api_key")}
-                    />
-                  </FormField>
-                  <FormField
-                    label="Alpaca Secret Key"
-                    error={form.formState.errors.alpaca_secret_key?.message}
-                  >
-                    <input
-                      type="password"
-                      className={INPUT_CLASS}
-                      autoComplete="off"
-                      {...form.register("alpaca_secret_key")}
-                    />
-                  </FormField>
-                </>
-              )}
-
-              {broker === "tradier" && (
-                <>
-                  <FormField
-                    label="Tradier Access Token"
-                    error={form.formState.errors.tradier_access_token?.message}
-                  >
-                    <input
-                      type="password"
-                      className={INPUT_CLASS}
-                      autoComplete="off"
-                      {...form.register("tradier_access_token")}
-                    />
-                  </FormField>
-                  <FormField
-                    label="Tradier Account ID"
-                    error={form.formState.errors.tradier_account_id?.message}
-                  >
-                    <input
-                      className={INPUT_CLASS}
-                      autoComplete="off"
-                      placeholder="VA1234567"
-                      {...form.register("tradier_account_id")}
-                    />
-                  </FormField>
-                </>
-              )}
-
-              <FormField
-                label="Supported Asset Types"
-                error={form.formState.errors.supported_asset_types?.message}
-              >
-                <input
-                  className={INPUT_CLASS}
-                  placeholder="equities, options, crypto"
-                  {...form.register("supported_asset_types")}
-                />
-              </FormField>
-
-              <FormField label="PDT Mode" error={form.formState.errors.pdt_mode?.message}>
-                <select className={INPUT_CLASS} {...form.register("pdt_mode")}>
-                  <option value="off">Off</option>
-                  <option value="warn">Warn</option>
-                  <option value="block">Block</option>
-                </select>
-              </FormField>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  disabled={testingConnection}
-                  onClick={form.handleSubmit(handleTestConnection)}
-                  className="px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 disabled:opacity-60 transition-colors"
-                >
-                  {testingConnection ? "Testing…" : "Test Connection"}
-                </button>
-              </div>
-            </>
-          );
-        }}
+        {(form) => (
+          <AddAccountFormBody
+            form={form}
+            testingConnection={testingConnection}
+            handleTestConnection={handleTestConnection}
+          />
+        )}
       </FormModal>
 
       {/* Edit Account Modal */}
@@ -473,7 +641,7 @@ export function Accounts() {
             ? {
                 name: editTarget.name,
                 environment: editTarget.environment,
-                supported_asset_types: (editTarget.supported_asset_types ?? []).join(", "),
+                supported_asset_types: editTarget.supported_asset_types ?? [],
                 pdt_mode: editTarget.pdt_mode,
                 alpaca_api_key: "",
                 alpaca_secret_key: "",
@@ -483,7 +651,7 @@ export function Accounts() {
             : {
                 name: "",
                 environment: "paper",
-                supported_asset_types: "",
+                supported_asset_types: [],
                 pdt_mode: "off",
                 alpaca_api_key: "",
                 alpaca_secret_key: "",
@@ -495,109 +663,11 @@ export function Accounts() {
         submitLabel="Save Changes"
         isSubmitting={updateAccount.isPending}
       >
-        {(form) => {
-          const env = form.watch("environment");
-          const broker = editTarget?.broker_type;
-          return (
-            <>
-              <FormField label="Name" error={form.formState.errors.name?.message}>
-                <input className={INPUT_CLASS} {...form.register("name")} />
-              </FormField>
-
-              <FormField label="Broker">
-                <input
-                  className={`${INPUT_CLASS} opacity-60 cursor-not-allowed`}
-                  value={broker ?? ""}
-                  disabled
-                  readOnly
-                />
-              </FormField>
-
-              <FormField label="Environment" error={form.formState.errors.environment?.message}>
-                <div className="flex gap-3">
-                  {(["paper", "live"] as const).map((v) => (
-                    <label
-                      key={v}
-                      className={`flex-1 px-3 py-2 rounded border cursor-pointer text-sm text-center transition-colors ${
-                        env === v
-                          ? v === "live"
-                            ? "bg-red-900/40 border-red-700 text-red-200"
-                            : "bg-blue-900/40 border-blue-700 text-blue-200"
-                          : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600"
-                      }`}
-                    >
-                      <input type="radio" value={v} className="hidden" {...form.register("environment")} />
-                      {v === "live" ? "Live" : "Paper"}
-                    </label>
-                  ))}
-                </div>
-              </FormField>
-
-              <FormField
-                label="Supported Asset Types"
-                error={form.formState.errors.supported_asset_types?.message}
-              >
-                <input className={INPUT_CLASS} {...form.register("supported_asset_types")} />
-              </FormField>
-
-              <FormField label="PDT Mode" error={form.formState.errors.pdt_mode?.message}>
-                <select className={INPUT_CLASS} {...form.register("pdt_mode")}>
-                  <option value="off">Off</option>
-                  <option value="warn">Warn</option>
-                  <option value="block">Block</option>
-                </select>
-              </FormField>
-
-              <div className="border-t border-gray-800 pt-3 mt-2">
-                <p className="text-xs text-gray-500 mb-2">
-                  Rotate credentials (leave blank to keep current values)
-                </p>
-                {broker === "alpaca" && (
-                  <>
-                    <FormField label="New API Key">
-                      <input
-                        className={INPUT_CLASS}
-                        autoComplete="off"
-                        placeholder="leave blank to keep"
-                        {...form.register("alpaca_api_key")}
-                      />
-                    </FormField>
-                    <FormField label="New Secret Key">
-                      <input
-                        type="password"
-                        className={INPUT_CLASS}
-                        autoComplete="off"
-                        placeholder="leave blank to keep"
-                        {...form.register("alpaca_secret_key")}
-                      />
-                    </FormField>
-                  </>
-                )}
-                {broker === "tradier" && (
-                  <>
-                    <FormField label="New Access Token">
-                      <input
-                        type="password"
-                        className={INPUT_CLASS}
-                        autoComplete="off"
-                        placeholder="leave blank to keep"
-                        {...form.register("tradier_access_token")}
-                      />
-                    </FormField>
-                    <FormField label="New Account ID">
-                      <input
-                        className={INPUT_CLASS}
-                        autoComplete="off"
-                        placeholder="leave blank to keep"
-                        {...form.register("tradier_account_id")}
-                      />
-                    </FormField>
-                  </>
-                )}
-              </div>
-            </>
-          );
-        }}
+        {(form) =>
+          editTarget ? (
+            <EditAccountFormBody form={form} editTarget={editTarget} />
+          ) : null
+        }
       </FormModal>
 
       {/* Delete Confirm */}

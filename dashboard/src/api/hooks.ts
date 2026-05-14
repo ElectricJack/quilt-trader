@@ -778,3 +778,27 @@ export function useMarketDataSource(
     staleTime: 30_000,
   });
 }
+
+// ── U6: options chain + submit ──
+
+export function useOptionExpiries(accountId: string, underlying: string | null) {
+  return useQuery({
+    queryKey: ["option-expiries", accountId, underlying] as const,
+    queryFn: () => api.getOptionExpiries(accountId, underlying!),
+    enabled: !!accountId && !!underlying,
+    staleTime: 60_000,
+  });
+}
+
+export function useOptionChain(
+  accountId: string,
+  underlying: string | null,
+  expiry: string | null
+) {
+  return useQuery({
+    queryKey: ["option-chain", accountId, underlying, expiry] as const,
+    queryFn: () => api.getOptionChain(accountId, underlying!, expiry!),
+    enabled: !!accountId && !!underlying && !!expiry,
+    staleTime: 30_000,
+  });
+}
