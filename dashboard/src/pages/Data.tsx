@@ -15,12 +15,17 @@ import type { MarketDataDownload } from "../types";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
+const DATA_TYPES = ["bars", "quotes", "trades"] as const;
+type DataType = (typeof DATA_TYPES)[number];
+
 const downloadSchema = z.object({
   symbols: z.string().min(1, "Required"),
   date_range_start: z.string().min(1, "Required"),
   date_range_end: z.string().min(1, "Required"),
   provider: z.string().min(1, "Required"),
-  data_type: z.string().min(1, "Required"),
+  data_types: z
+    .array(z.enum(DATA_TYPES))
+    .min(1, "Select at least one data type"),
   timeframe: z.string().min(1, "Required"),
 });
 
@@ -170,26 +175,42 @@ export function Data() {
   const providers = available ? Object.entries(available) : [];
 
   async function handleSubmit(values: DownloadFormValues) {
-    try {
-      const symbols = values.symbols
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      await createDownload({
-        symbols,
-        date_range_start: values.date_range_start,
-        date_range_end: values.date_range_end,
-        provider: values.provider,
-        data_type: values.data_type,
-        timeframe: values.timeframe,
-      });
-      setModalOpen(false);
-      addAlert({ message: "Download started.", severity: "success" });
-    } catch (err) {
+    const symbols = values.symbols
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const results = await Promise.allSettled(
+      values.data_types.map((dt) =>
+        createDownload({
+          symbols,
+          date_range_start: values.date_range_start,
+          date_range_end: values.date_range_end,
+          provider: values.provider,
+          data_type: dt,
+          timeframe: values.timeframe,
+        })
+      )
+    );
+    const successes = results.filter((r) => r.status === "fulfilled").length;
+    const failures = results.length - successes;
+    setModalOpen(false);
+    if (failures === 0) {
       addAlert({
-        message: err instanceof Error ? err.message : "Failed to start download.",
+        message: `Queued ${successes} download${successes === 1 ? "" : "s"} (${values.data_types.join(", ")} for ${symbols.join(", ")}).`,
+        severity: "success",
+      });
+    } else {
+      const firstError = results.find(
+        (r): r is PromiseRejectedResult => r.status === "rejected"
+      )?.reason;
+      addAlert({
+        message: `Queued ${successes}, failed ${failures}. ${
+          firstError instanceof Error ? firstError.message : "Check console."
+        }`,
         severity: "error",
       });
+      if (firstError) console.error("Download submission failures:", results);
     }
   }
 
@@ -310,7 +331,7 @@ export function Data() {
           date_range_start: "",
           date_range_end: "",
           provider: "",
-          data_type: "",
+          data_types: [] as DataType[],
           timeframe: "",
         }}
         onSubmit={handleSubmit}
@@ -357,13 +378,26 @@ export function Data() {
               </select>
             </FormField>
 
-            <FormField label="Data Type" error={form.formState.errors.data_type?.message}>
-              <select {...form.register("data_type")} className={INPUT_CLS}>
-                <option value="">Select data type…</option>
-                <option value="bars">bars</option>
-                <option value="quotes">quotes</option>
-                <option value="trades">trades</option>
-              </select>
+            <FormField
+              label="Data Types"
+              error={form.formState.errors.data_types?.message as string | undefined}
+            >
+              <div className="flex gap-4 text-sm">
+                {DATA_TYPES.map((t) => (
+                  <label
+                    key={t}
+                    className="inline-flex items-center gap-2 cursor-pointer text-gray-200"
+                  >
+                    <input
+                      type="checkbox"
+                      value={t}
+                      {...form.register("data_types")}
+                      className="accent-indigo-500"
+                    />
+                    <span className="capitalize">{t}</span>
+                  </label>
+                ))}
+              </div>
             </FormField>
 
             <FormField label="Timeframe" error={form.formState.errors.timeframe?.message}>
