@@ -1,0 +1,40 @@
+name: momentum-scalper
+type: algorithm
+version: 1.0.0
+description: Intraday momentum scalping strategy
+entry_point: algorithm.py
+class_name: MomentumScalper
+
+requirements:
+  asset_types:
+    - equities
+    - options
+  options_level: 3
+  account_features:
+    - margin
+    - short_selling
+  brokers:
+    - alpaca
+    - tradier
+  data_dependencies:
+    - name: alpha-picks-scraper
+      repo: ElectricJack/alpha-picks-scraper
+
+config:
+  parameters:
+    - name: risk_per_trade
+      type: float
+      default: 0.02
+      description: Maximum portfolio percentage risked per trade
+      min: 0.001
+      max: 0.10
+    - name: max_positions
+      type: int
+      default: 5
+      description: Maximum concurrent positions
+
+notifications:
+  custom_events:
+    - name: unusual_volume
+      description: Triggered when volume exceeds 3x average
+      severity: info

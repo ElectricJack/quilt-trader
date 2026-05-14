@@ -1,0 +1,9 @@
+name: simple-algo
+type: algorithm
+version: 0.1.0
+entry_point: algo.py
+class_name: SimpleAlgo
+
+requirements:
+  asset_types:
+    - equities

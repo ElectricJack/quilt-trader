@@ -1,0 +1,5 @@
+name: alpha-picks-scraper
+type: scraper
+version: 1.0.0
+description: Scrapes alpha stock picks
+schedule: "*/30 * * * *"

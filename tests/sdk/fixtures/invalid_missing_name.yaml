@@ -1,0 +1,7 @@
+type: algorithm
+version: 1.0.0
+entry_point: algo.py
+class_name: Algo
+requirements:
+  asset_types:
+    - equities
