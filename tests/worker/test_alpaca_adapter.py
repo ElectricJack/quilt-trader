@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from worker.alpaca_adapter import AlpacaAdapter
-from worker.broker_adapter import OrderResult
+from worker.broker_adapter import MultilegLegSpec, OrderResult
 
 
 class TestAlpacaAdapter:
@@ -151,3 +151,120 @@ class TestAlpacaAdapter:
                 symbol="TSLA", side="sell", quantity=5.0, order_type="market"
             )
             assert result.filled_price == 0.0
+
+
+# ---- Multi-leg orders + options chain (Work Unit A1) ----
+
+def _opt_leg(side, right, strike, expiry="2026-06-20"):
+    return MultilegLegSpec(symbol="SPY", asset_type="options", side=side,
+                           quantity=1, expiry=expiry, strike=strike, right=right)
+
+
+def test_supports_multileg_same_underlying_options():
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    legs = [_opt_leg("buy", "call", 560), _opt_leg("sell", "call", 570)]
+    assert adapter.supports_multileg_orders(legs) is True
+
+
+def test_supports_multileg_false_for_mixed_underlyings():
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    leg1 = _opt_leg("buy", "call", 560)
+    leg2 = MultilegLegSpec(symbol="QQQ", asset_type="options", side="sell",
+                           quantity=1, expiry="2026-06-20", strike=450, right="call")
+    assert adapter.supports_multileg_orders([leg1, leg2]) is False
+
+
+def test_supports_multileg_false_for_non_options():
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    leg = MultilegLegSpec(symbol="SPY", asset_type="equities", side="buy", quantity=100)
+    assert adapter.supports_multileg_orders([leg, leg]) is False
+
+
+def test_compose_symbol_call_occ():
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    leg = _opt_leg("buy", "call", 560.0, expiry="2026-06-20")
+    assert adapter.compose_symbol(leg) == "SPY260620C00560000"
+
+
+def test_compose_symbol_put_occ():
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    leg = _opt_leg("sell", "put", 565.50, expiry="2026-06-20")
+    assert adapter.compose_symbol(leg) == "SPY260620P00565500"
+
+
+def test_compose_symbol_equities_passthrough():
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    leg = MultilegLegSpec(symbol="SPY", asset_type="equities", side="buy", quantity=100)
+    assert adapter.compose_symbol(leg) == "SPY"
+
+
+def test_submit_multileg_order_calls_alpaca_with_mleg_class():
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    mock_client = MagicMock()
+    mock_order = MagicMock()
+    mock_order.id = "parent-1"
+    mock_order.legs = [
+        MagicMock(id="leg-1", filled_avg_price="8.30", status="filled"),
+        MagicMock(id="leg-2", filled_avg_price="4.20", status="filled"),
+    ]
+    mock_client.submit_order.return_value = mock_order
+    legs = [_opt_leg("buy", "call", 560), _opt_leg("sell", "call", 570)]
+    with patch.object(adapter, "_ensure_clients"):
+        adapter._trading_client = mock_client
+        result = adapter.submit_multileg_order(legs, order_type="limit", limit_price=4.0)
+    submitted = mock_client.submit_order.call_args.args[0]
+    # Inspect the request object — exact shape depends on alpaca-py version
+    assert getattr(submitted, "order_class", None) is not None
+    assert result.broker_order_id == "parent-1"
+    assert result.atomic is True
+    assert len(result.legs) == 2
+    assert result.legs[0].status == "filled"
+    assert result.legs[0].filled_price == 8.30
+
+
+def test_list_option_expiries_returns_sorted_dates():
+    from datetime import date
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    mock_data = MagicMock()
+    mock_data.get_option_contracts.return_value = MagicMock(option_contracts=[
+        MagicMock(expiration_date=date(2026, 6, 20)),
+        MagicMock(expiration_date=date(2026, 5, 16)),
+        MagicMock(expiration_date=date(2026, 6, 20)),  # dup
+    ])
+    with patch.object(adapter, "_ensure_clients"):
+        adapter._data_client = mock_data
+        result = adapter.list_option_expiries("SPY")
+    assert result == [date(2026, 5, 16), date(2026, 6, 20)]
+
+
+def test_get_option_chain_maps_snapshot_to_contracts():
+    from datetime import date, datetime, timezone
+    adapter = AlpacaAdapter(api_key="k", secret_key="s")
+    mock_data = MagicMock()
+    # Stub: snapshot with one call
+    snap = MagicMock()
+    snap.snapshots = {
+        "SPY260620C00560000": MagicMock(
+            latest_quote=MagicMock(bid_price=8.2, ask_price=8.4, timestamp=datetime(2026, 5, 14, 15, 30, tzinfo=timezone.utc)),
+            latest_trade=MagicMock(price=8.3),
+            implied_volatility=0.30,
+            greeks=MagicMock(delta=0.55, gamma=0.020, theta=-14.1, vega=48.0),
+            open_interest=2345, daily_bar=MagicMock(volume=789),
+        ),
+    }
+    mock_data.get_option_chain.return_value = snap
+    # Spot lookup uses the trading data client too
+    mock_data.get_stock_latest_trade.return_value = {"SPY": MagicMock(price=565.0)}
+    with patch.object(adapter, "_ensure_clients"):
+        adapter._data_client = mock_data
+        chain = adapter.get_option_chain("SPY", date(2026, 6, 20))
+    assert chain.underlying == "SPY"
+    assert chain.spot == 565.0
+    assert chain.expiry == date(2026, 6, 20)
+    assert len(chain.contracts) == 1
+    c = chain.contracts[0]
+    assert c.strike == 560.0
+    assert c.right == "call"
+    assert c.bid == 8.2 and c.ask == 8.4
+    assert c.iv == 0.30
+    assert c.delta == 0.55
