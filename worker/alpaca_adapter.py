@@ -1,4 +1,5 @@
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -8,6 +9,7 @@ import httpx
 from worker.broker_adapter import (
     BrokerAdapter,
     BrokerTransaction,
+    MarketDataStreamHandle,
     MultilegLegResult,
     MultilegLegSpec,
     MultilegOrderResult,
@@ -327,6 +329,76 @@ class AlpacaAdapter(BrokerAdapter):
             underlying=underlying, spot=spot, expiry=expiry,
             contracts=contracts, as_of=as_of,
         )
+
+
+    # ---- Live market-data stream (Spec B) ----
+    def start_market_data_stream(
+        self,
+        symbols: list[str],
+        on_trade,
+        on_quote,
+    ) -> "MarketDataStreamHandle":
+        from alpaca.data.live import StockDataStream
+
+        stream = StockDataStream(self._api_key, self._secret_key)
+
+        async def _trade_handler(data):
+            try:
+                tick = {
+                    "symbol": getattr(data, "symbol", None),
+                    "timestamp": getattr(data, "timestamp", None) or datetime.now(timezone.utc),
+                    "price": float(getattr(data, "price", 0.0) or 0.0),
+                    "size": float(getattr(data, "size", 0.0) or 0.0),
+                }
+                on_trade(tick)
+            except Exception:  # noqa: BLE001
+                logger.exception("alpaca trade handler error")
+
+        async def _quote_handler(data):
+            try:
+                tick = {
+                    "symbol": getattr(data, "symbol", None),
+                    "timestamp": getattr(data, "timestamp", None) or datetime.now(timezone.utc),
+                    "bid": float(getattr(data, "bid_price", 0.0) or 0.0),
+                    "ask": float(getattr(data, "ask_price", 0.0) or 0.0),
+                    "bid_size": float(getattr(data, "bid_size", 0.0) or 0.0),
+                    "ask_size": float(getattr(data, "ask_size", 0.0) or 0.0),
+                }
+                on_quote(tick)
+            except Exception:  # noqa: BLE001
+                logger.exception("alpaca quote handler error")
+
+        stream.subscribe_trades(_trade_handler, *symbols)
+        stream.subscribe_quotes(_quote_handler, *symbols)
+
+        return _AlpacaStreamHandle(stream)
+
+
+class _AlpacaStreamHandle(MarketDataStreamHandle):
+    """Runs an alpaca-py ``StockDataStream`` in a daemon thread."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+        self._thread = threading.Thread(
+            target=self._run, name="alpaca-stream", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self._stream.run()
+        except Exception:  # noqa: BLE001
+            logger.exception("alpaca stream thread crashed")
+
+    def close(self) -> None:
+        try:
+            self._stream.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("alpaca stream stop() failed")
+        # Best-effort thread join — alpaca-py's stop() is async and may not
+        # cleanly shut down synchronously; we don't block forever.
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
 
 
 class _AlpacaDataClient:

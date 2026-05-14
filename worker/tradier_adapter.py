@@ -1,4 +1,6 @@
+import json
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -7,6 +9,7 @@ import httpx
 from worker.broker_adapter import (
     BrokerAdapter,
     BrokerTransaction,
+    MarketDataStreamHandle,
     MultilegLegResult,
     MultilegOrderResult,
     OptionChainSnapshot,
@@ -319,6 +322,154 @@ class TradierAdapter(BrokerAdapter):
                             out.append(txn)
             cursor = window_end + timedelta(days=1)
         return out
+
+
+    # ---- Live market-data stream (Spec B) ----
+    def start_market_data_stream(
+        self,
+        symbols: list[str],
+        on_trade,
+        on_quote,
+    ) -> "MarketDataStreamHandle":
+        import requests
+
+        # Tradier's market events stream requires a short-lived session id
+        # obtained via POST /v1/markets/events/session, then a long-running
+        # GET /v1/markets/events?sessionid=...&symbols=...&filter=trade,quote.
+        # Note: streaming uses the production base URL even from sandbox keys.
+        stream_base = _LIVE_BASE if not self._sandbox else _LIVE_BASE
+        sess_resp = requests.post(
+            f"{stream_base}/markets/events/session",
+            headers={
+                "Authorization": f"Bearer {self._access_token}",
+                "Accept": "application/json",
+            },
+            timeout=10,
+        )
+        sess_resp.raise_for_status()
+        sess = sess_resp.json().get("stream", {})
+        session_id = sess.get("sessionid")
+        if not session_id:
+            raise RuntimeError("Tradier market events session: no sessionid returned")
+        url = sess.get("url") or f"{stream_base}/markets/events"
+
+        return _TradierStreamHandle(
+            url=url,
+            session_id=session_id,
+            access_token=self._access_token,
+            symbols=symbols,
+            on_trade=on_trade,
+            on_quote=on_quote,
+        )
+
+
+class _TradierStreamHandle(MarketDataStreamHandle):
+    """Long-poll chunked HTTP stream of Tradier market events."""
+
+    def __init__(
+        self,
+        url: str,
+        session_id: str,
+        access_token: str,
+        symbols: list[str],
+        on_trade,
+        on_quote,
+    ) -> None:
+        self._url = url
+        self._session_id = session_id
+        self._access_token = access_token
+        self._symbols = symbols
+        self._on_trade = on_trade
+        self._on_quote = on_quote
+        self._stop = threading.Event()
+        self._response: Optional[object] = None
+        self._thread = threading.Thread(
+            target=self._run, name="tradier-stream", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        import requests
+
+        try:
+            params = {
+                "sessionid": self._session_id,
+                "symbols": ",".join(self._symbols),
+                "filter": "trade,quote",
+                "linebreak": "true",
+            }
+            with requests.get(
+                self._url,
+                params=params,
+                headers={
+                    "Authorization": f"Bearer {self._access_token}",
+                    "Accept": "application/json",
+                },
+                stream=True,
+                timeout=None,
+            ) as resp:
+                self._response = resp
+                resp.raise_for_status()
+                for raw in resp.iter_lines(decode_unicode=True):
+                    if self._stop.is_set():
+                        break
+                    if not raw:
+                        continue
+                    try:
+                        msg = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    self._dispatch(msg)
+        except Exception:  # noqa: BLE001
+            if not self._stop.is_set():
+                logger.exception("tradier stream thread crashed")
+
+    def _dispatch(self, msg: dict) -> None:
+        kind = msg.get("type")
+        ts_raw = msg.get("date") or msg.get("timestamp")
+        try:
+            if isinstance(ts_raw, str):
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            elif isinstance(ts_raw, (int, float)):
+                ts = datetime.fromtimestamp(float(ts_raw) / 1000.0, tz=timezone.utc)
+            else:
+                ts = datetime.now(timezone.utc)
+        except (ValueError, TypeError):
+            ts = datetime.now(timezone.utc)
+
+        if kind == "trade":
+            try:
+                self._on_trade({
+                    "symbol": msg.get("symbol"),
+                    "timestamp": ts,
+                    "price": float(msg.get("price") or 0.0),
+                    "size": float(msg.get("size") or 0.0),
+                })
+            except Exception:  # noqa: BLE001
+                logger.exception("tradier trade handler error")
+        elif kind == "quote":
+            try:
+                self._on_quote({
+                    "symbol": msg.get("symbol"),
+                    "timestamp": ts,
+                    "bid": float(msg.get("bid") or 0.0),
+                    "ask": float(msg.get("ask") or 0.0),
+                    "bid_size": float(msg.get("bidsz") or 0.0),
+                    "ask_size": float(msg.get("asksz") or 0.0),
+                })
+            except Exception:  # noqa: BLE001
+                logger.exception("tradier quote handler error")
+
+    def close(self) -> None:
+        self._stop.set()
+        try:
+            resp = self._response
+            if resp is not None:
+                resp.close()
+        except Exception:  # noqa: BLE001
+            pass
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
 
 
 def _parse_tradier_dt(raw: dict) -> datetime:

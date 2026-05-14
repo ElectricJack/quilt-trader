@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from coordinator.api.dependencies import get_db
+from coordinator.api.dependencies import get_container, get_db
 from coordinator.database.models import LiveSubscription
 
 router = APIRouter(prefix="/api/live-subscriptions", tags=["live-subscriptions"])
@@ -89,12 +89,13 @@ async def list_subs(db: AsyncSession = Depends(get_db)):
 
 @router.post("", status_code=201)
 async def create_sub(body: SubscriptionCreate, db: AsyncSession = Depends(get_db)):
+    symbol_upper = body.symbol.upper()
     sub = LiveSubscription(
         broker=body.broker,
-        symbol=body.symbol.upper(),
+        symbol=symbol_upper,
         tick_retention_hours=body.tick_retention_hours,
-        status="stopped",
-        dependent_count=0,
+        status="running",
+        dependent_count=1,  # manual "Subscribe" UI press is its own dependent
     )
     db.add(sub)
     try:
@@ -105,6 +106,22 @@ async def create_sub(body: SubscriptionCreate, db: AsyncSession = Depends(get_db
             status_code=409,
             detail=f"Subscription already exists for {body.broker}/{body.symbol}",
         )
+
+    # Register with the in-memory LiveFeedManager and kick off the aggregator task.
+    try:
+        container = get_container()
+    except AssertionError:
+        container = None
+    if container is not None:
+        if container.live_feed_manager is not None:
+            container.live_feed_manager.ensure_running(
+                body.broker, symbol_upper, "manual"
+            )
+        if container.live_feed_aggregator is not None:
+            await container.live_feed_aggregator.start_subscription(
+                body.broker, symbol_upper
+            )
+
     return _to_response(sub)
 
 
@@ -179,8 +196,22 @@ async def unsubscribe(sub_id: str, db: AsyncSession = Depends(get_db)):
     ).scalar_one_or_none()
     if sub is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    # Decrement only the manual dependent — implementation in I1 wires the manager;
-    # for now we just decrement the counter to signal the manual release.
+
+    # Release the manual dependent from the in-memory manager (the DB count is
+    # a mirror of the manager's dependent set).
+    try:
+        container = get_container()
+    except AssertionError:
+        container = None
+    if container is not None and container.live_feed_manager is not None:
+        manager = container.live_feed_manager
+        stopped = manager.release(sub.broker, sub.symbol, "manual")
+        if stopped and container.live_feed_aggregator is not None:
+            await container.live_feed_aggregator.stop_subscription(
+                sub.broker, sub.symbol
+            )
+            sub.status = "stopped"
+
     sub.dependent_count = max(0, sub.dependent_count - 1)
     await db.flush()
     return _to_response(sub)
@@ -200,6 +231,14 @@ async def delete_sub(sub_id: str, db: AsyncSession = Depends(get_db)):
             status_code=409,
             detail=f"Subscription has {sub.dependent_count} active dependents",
         )
+    # Stop the aggregator task if still running.
+    try:
+        container = get_container()
+    except AssertionError:
+        container = None
+    if container is not None and container.live_feed_aggregator is not None:
+        await container.live_feed_aggregator.stop_subscription(sub.broker, sub.symbol)
+
     await db.delete(sub)
     # ticks directory cleanup is done by the aggregator's retention sweeper
     # to avoid filesystem ownership in this route handler.

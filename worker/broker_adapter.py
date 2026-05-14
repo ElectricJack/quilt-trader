@@ -132,6 +132,38 @@ class BrokerAdapter(ABC):
         """Return the full chain for one expiry."""
         raise NotImplementedError
 
+    # ---- Live market-data stream (Spec B) ----
+    def start_market_data_stream(
+        self,
+        symbols: list[str],
+        on_trade,
+        on_quote,
+    ) -> "MarketDataStreamHandle":
+        """Open a market-data WebSocket / HTTP stream for ``symbols``.
+
+        ``on_trade(tick: dict)`` is invoked per trade tick. ``on_quote(tick: dict)``
+        is invoked per quote tick. Each ``tick`` dict has at least:
+        ``{"symbol": str, "timestamp": datetime, "price": float, "size": float}``
+        for trades and
+        ``{"symbol": str, "timestamp": datetime, "bid": float, "ask": float,
+        "bid_size": float, "ask_size": float}`` for quotes.
+
+        Returns an object with a ``close()`` method that shuts the stream down
+        and joins any worker threads / cancels async tasks.
+        """
+        raise NotImplementedError
+
+
+class MarketDataStreamHandle:
+    """Returned by ``BrokerAdapter.start_market_data_stream``.
+
+    Adapters subclass or duck-type this — the only contract is a no-arg
+    ``close()`` method that releases the underlying connection.
+    """
+
+    def close(self) -> None:  # pragma: no cover - interface
+        raise NotImplementedError
+
 
 class MockBrokerAdapter(BrokerAdapter):
     def __init__(self) -> None:
