@@ -164,8 +164,11 @@ class DownloadManager:
                     msg = f"{sym}: page {page_idx + 1}, {total_bars:,} bars fetched"
                     await _update_progress_message(msg)
 
+                async def on_status(msg: str, sym: str = symbol) -> None:
+                    await _update_progress_message(f"{sym}: {msg}")
+
                 await _update_progress_message(f"{symbol}: starting…")
-                bars = await provider.fetch_bars(symbol, timeframe, start, end, on_page=on_page)
+                bars = await provider.fetch_bars(symbol, timeframe, start, end, on_page=on_page, on_status=on_status)
                 if bars:
                     df = pd.DataFrame(bars)
                     self._data_service.save_market_data(provider_name, symbol, timeframe, df)

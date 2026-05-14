@@ -7,6 +7,9 @@ from typing import Any, Awaitable, Callable
 PageCallback = Callable[[int, int], Awaitable[None]]
 # (page_index_zero_based, cumulative_bars_so_far) -> awaitable
 
+StatusCallback = Callable[[str], Awaitable[None]]
+# (message) -> awaitable
+
 logger = logging.getLogger(__name__)
 
 TIMEFRAME_MAP = {
@@ -32,17 +35,74 @@ class PolygonProvider:
             return TIMEFRAME_MAP[timeframe]
         raise ValueError(f"Unsupported timeframe: {timeframe}")
 
-    async def _request_with_retry(self, url: str, params: dict, *, max_retries: int = 5) -> Any:
+    async def _safe_status(self, on_status: StatusCallback | None, msg: str) -> None:
+        if on_status is None:
+            return
+        try:
+            await on_status(msg)
+        except Exception:
+            logger.exception("on_status callback raised")
+
+    async def _sleep_with_status(self, total_s: float, reason: str, on_status: StatusCallback | None) -> None:
+        """Sleep total_s seconds, emitting a countdown status each second."""
+        remaining = total_s
+        while remaining > 0:
+            await self._safe_status(on_status, f"{reason} ({int(remaining)}s left)")
+            step = min(1.0, remaining)
+            await asyncio.sleep(step)
+            remaining -= step
+
+    async def _get_with_heartbeat(self, url: str, params: dict, on_status: StatusCallback | None) -> Any:
+        if on_status is None:
+            return await self._http.get(url, params=params)
+
+        start = time.monotonic()
+        cancel = asyncio.Event()
+
+        async def heartbeat():
+            # Wait 1.0s before first tick so we don't spam for fast requests
+            try:
+                await asyncio.wait_for(cancel.wait(), timeout=1.0)
+                return
+            except asyncio.TimeoutError:
+                pass
+            while not cancel.is_set():
+                elapsed = int(time.monotonic() - start)
+                await self._safe_status(on_status, f"Fetching… ({elapsed}s)")
+                try:
+                    await asyncio.wait_for(cancel.wait(), timeout=1.0)
+                    return
+                except asyncio.TimeoutError:
+                    continue
+
+        hb_task = asyncio.create_task(heartbeat())
+        try:
+            return await self._http.get(url, params=params)
+        finally:
+            cancel.set()
+            try:
+                await hb_task
+            except Exception:
+                pass
+
+    async def _request_with_retry(
+        self,
+        url: str,
+        params: dict,
+        *,
+        max_retries: int = 5,
+        on_status: StatusCallback | None = None,
+    ) -> Any:
         """GET with respect for HTTP 429 Retry-After and basic exponential backoff for 5xx."""
         for attempt in range(max_retries):
             if self._min_interval > 0:
                 now = time.monotonic()
                 wait = self._min_interval - (now - self._last_request_ts)
                 if wait > 0:
-                    await asyncio.sleep(wait)
+                    await self._sleep_with_status(wait, "Pacing", on_status)
                 self._last_request_ts = time.monotonic()
 
-            response = await self._http.get(url, params=params)
+            response = await self._get_with_heartbeat(url, params, on_status)
 
             if response.status_code == 429:
                 # Honor Retry-After header; default to 13 s (free-tier is 5 calls/min ≈ 12 s)
@@ -55,7 +115,7 @@ class PolygonProvider:
                     "Polygon 429 rate limit; sleeping %ds before retry %d/%d",
                     retry_after, attempt + 1, max_retries,
                 )
-                await asyncio.sleep(retry_after)
+                await self._sleep_with_status(retry_after, "Rate limited; retrying", on_status)
                 continue
 
             if 500 <= response.status_code < 600:
@@ -80,6 +140,7 @@ class PolygonProvider:
         start: date,
         end: date,
         on_page: PageCallback | None = None,
+        on_status: StatusCallback | None = None,
     ) -> list[dict]:
         multiplier, span = self._timeframe_params(timeframe)
         url = (
@@ -91,7 +152,8 @@ class PolygonProvider:
         all_results: list[dict] = []
         page_index = 0
         while True:
-            response = await self._request_with_retry(url, params)
+            await self._safe_status(on_status, f"Starting page {page_index + 1}")
+            response = await self._request_with_retry(url, params, on_status=on_status)
             data = response.json()
             results = data.get("results") or []
             all_results.extend(results)

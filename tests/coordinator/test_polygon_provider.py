@@ -100,12 +100,12 @@ async def test_pagination_follows_next_url():
 
 @pytest.mark.asyncio
 async def test_rate_limit_retry_succeeds(monkeypatch):
-    """First call returns 429 (Retry-After: 0), second returns 200. Succeeds with correct bars."""
+    """First call returns 429 (Retry-After: 1), second returns 200. Succeeds with correct bars."""
     sleep_mock = AsyncMock()
-    monkeypatch.setattr("asyncio.sleep", sleep_mock)
+    monkeypatch.setattr("coordinator.services.data_providers.polygon.asyncio.sleep", sleep_mock)
 
     http = AsyncMock()
-    resp_429 = _make_response(429, {}, headers={"Retry-After": "0"})
+    resp_429 = _make_response(429, {}, headers={"Retry-After": "1"})
     resp_200 = _make_response(200, {"results": [PAGE_1_BAR]})
     http.get.side_effect = [resp_429, resp_200]
 
@@ -114,7 +114,7 @@ async def test_rate_limit_retry_succeeds(monkeypatch):
 
     assert len(bars) == 1
     assert http.get.call_count == 2
-    # asyncio.sleep was called at least once for the 429 back-off
+    # asyncio.sleep was called at least once for the 429 back-off (via _sleep_with_status)
     sleep_mock.assert_awaited()
 
 
@@ -176,3 +176,51 @@ async def test_pagination_emits_on_page_callback():
 
     assert len(bars) == 2
     assert callback_calls == [(0, 1), (1, 2)]
+
+
+@pytest.mark.asyncio
+async def test_pacing_emits_status_each_second():
+    """Pacing sleep emits at least 2 'Pacing' countdown messages for a 2s interval."""
+    http = AsyncMock()
+    http.get.return_value = _make_response(200, {"results": [PAGE_1_BAR]})
+
+    status_messages: list[str] = []
+
+    async def on_status(msg: str) -> None:
+        status_messages.append(msg)
+
+    provider = PolygonProvider(api_key="test-key", http_client=http, min_request_interval_s=2.0)
+
+    # First call sets _last_request_ts; second call triggers the pacing wait
+    await provider._request_with_retry("https://example.com", {"apiKey": "test-key"}, on_status=on_status)
+    status_messages.clear()  # discard any "Fetching…" heartbeats from the first call
+    await provider._request_with_retry("https://example.com", {"apiKey": "test-key"}, on_status=on_status)
+
+    pacing_msgs = [m for m in status_messages if "Pacing" in m]
+    assert len(pacing_msgs) >= 2, f"Expected >= 2 Pacing messages, got: {pacing_msgs}"
+    # Messages should contain countdown values
+    assert any("s left" in m for m in pacing_msgs)
+
+
+@pytest.mark.asyncio
+async def test_429_retry_emits_status_each_second():
+    """429 with Retry-After: 2 emits at least 2 'Rate limited' countdown messages."""
+    http = AsyncMock()
+    resp_429 = _make_response(429, {}, headers={"Retry-After": "2"})
+    resp_200 = _make_response(200, {"results": [PAGE_1_BAR]})
+    http.get.side_effect = [resp_429, resp_200]
+
+    status_messages: list[str] = []
+
+    async def on_status(msg: str) -> None:
+        status_messages.append(msg)
+
+    provider = PolygonProvider(api_key="test-key", http_client=http)
+    bars = await provider.fetch_bars(
+        "AAPL", "1min", date(2025, 1, 1), date(2025, 1, 2), on_status=on_status
+    )
+
+    assert len(bars) == 1
+    rate_limit_msgs = [m for m in status_messages if "Rate limited" in m]
+    assert len(rate_limit_msgs) >= 2, f"Expected >= 2 Rate limited messages, got: {rate_limit_msgs}"
+    assert any("s left" in m for m in rate_limit_msgs)
