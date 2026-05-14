@@ -23,7 +23,7 @@ class TestWorkerAgent:
     @pytest.mark.asyncio
     async def test_handlers_registered(self):
         ws = AsyncMock()
-        agent = WorkerAgent(worker_name="test", websocket=ws)
+        agent = WorkerAgent(worker_id="test-id", worker_name="test", websocket=ws)
         assert "start_instance" in agent.router._handlers
         assert "stop_instance" in agent.router._handlers
         assert "heartbeat_ack" in agent.router._handlers
@@ -32,7 +32,7 @@ class TestWorkerAgent:
     async def test_start_instance(self):
         ws = AsyncMock()
         ws.send = AsyncMock()
-        agent = WorkerAgent(worker_name="test", websocket=ws)
+        agent = WorkerAgent(worker_id="test-id", worker_name="test", websocket=ws)
         await agent.router.dispatch({
             "type": "start_instance",
             "instance_id": "inst-1",
@@ -44,7 +44,7 @@ class TestWorkerAgent:
     async def test_stop_instance(self):
         ws = AsyncMock()
         ws.send = AsyncMock()
-        agent = WorkerAgent(worker_name="test", websocket=ws)
+        agent = WorkerAgent(worker_id="test-id", worker_name="test", websocket=ws)
         agent._running_instances["inst-1"] = {"status": "running"}
         await agent.router.dispatch({
             "type": "stop_instance",
@@ -56,7 +56,7 @@ class TestWorkerAgent:
     async def test_start_instance_sends_event(self):
         ws = AsyncMock()
         ws.send = AsyncMock()
-        agent = WorkerAgent(worker_name="test", websocket=ws)
+        agent = WorkerAgent(worker_id="test-id", worker_name="test", websocket=ws)
         await agent.router.dispatch({
             "type": "start_instance",
             "instance_id": "inst-2",
@@ -71,7 +71,7 @@ class TestWorkerAgent:
     async def test_stop_instance_sends_event(self):
         ws = AsyncMock()
         ws.send = AsyncMock()
-        agent = WorkerAgent(worker_name="test", websocket=ws)
+        agent = WorkerAgent(worker_id="test-id", worker_name="test", websocket=ws)
         agent._running_instances["inst-3"] = {"status": "running"}
         await agent.router.dispatch({
             "type": "stop_instance",
@@ -86,7 +86,7 @@ class TestWorkerAgent:
     async def test_stop_instance_with_runner(self):
         ws = AsyncMock()
         ws.send = AsyncMock()
-        agent = WorkerAgent(worker_name="test", websocket=ws)
+        agent = WorkerAgent(worker_id="test-id", worker_name="test", websocket=ws)
         from worker.runner import AlgorithmRunner
         mock_runner = MagicMock(spec=AlgorithmRunner)
         mock_runner.stop.return_value = {"final": "state"}
@@ -106,7 +106,7 @@ class TestWorkerAgent:
     @pytest.mark.asyncio
     async def test_heartbeat_ack_no_op(self):
         ws = AsyncMock()
-        agent = WorkerAgent(worker_name="test", websocket=ws)
+        agent = WorkerAgent(worker_id="test-id", worker_name="test", websocket=ws)
         # Should complete without error and without sending anything
         await agent.router.dispatch({"type": "heartbeat_ack"})
         ws.send.assert_not_called()
@@ -114,7 +114,7 @@ class TestWorkerAgent:
     @pytest.mark.asyncio
     async def test_start_instance_stores_persisted_state(self):
         ws = AsyncMock()
-        agent = WorkerAgent(worker_name="test", websocket=ws)
+        agent = WorkerAgent(worker_id="test-id", worker_name="test", websocket=ws)
         await agent.router.dispatch({
             "type": "start_instance",
             "instance_id": "inst-5",
