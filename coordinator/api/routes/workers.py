@@ -2,11 +2,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
-from coordinator.database.models import Worker
+from coordinator.database.models import AlgorithmInstance, Worker
 
 router = APIRouter(prefix="/api/workers", tags=["workers"])
 
@@ -89,4 +89,21 @@ async def delete_worker(worker_id: str, db: AsyncSession = Depends(get_db)):
     worker = result.scalar_one_or_none()
     if worker is None:
         raise HTTPException(status_code=404, detail="Worker not found")
+
+    # AlgorithmInstance.worker_id is NOT NULL, so a worker with assigned
+    # instances cannot be deleted without first moving or deleting them.
+    instance_count = (await db.execute(
+        select(func.count(AlgorithmInstance.id))
+        .where(AlgorithmInstance.worker_id == worker_id)
+    )).scalar_one()
+    if instance_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot delete worker: {instance_count} algorithm "
+                f"instance{'s' if instance_count != 1 else ''} still "
+                "assigned. Move or delete them first."
+            ),
+        )
+
     await db.delete(worker)
