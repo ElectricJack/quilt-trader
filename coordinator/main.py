@@ -1,13 +1,18 @@
+import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 
 from coordinator.database.connection import create_engine, create_session_factory
-from coordinator.database.models import Base
+from coordinator.database.models import Base, Setting
 from coordinator.services.event_bus import EventBus
 from coordinator.services.encryption import EncryptionService
 from coordinator.api.dependencies import ServiceContainer, set_container
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -54,10 +59,75 @@ def create_app(
         from coordinator.api.routes.scrapers import set_registry
         set_registry(scraper_registry)
 
+        # Download manager — read provider credentials from settings and wire up
+        http_client = httpx.AsyncClient(timeout=30.0)
+        providers: dict = {}
+
+        async with session_factory() as session:
+            polygon_row = (
+                await session.execute(
+                    select(Setting).where(Setting.key == "polygon_api_key")
+                )
+            ).scalar_one_or_none()
+            polygon_key: str | None = None
+            if polygon_row is not None:
+                try:
+                    polygon_key = encryption.decrypt(polygon_row.value)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to decrypt polygon_api_key: %s", e)
+
+            theta_user_row = (
+                await session.execute(
+                    select(Setting).where(Setting.key == "theta_data_username")
+                )
+            ).scalar_one_or_none()
+            theta_pass_row = (
+                await session.execute(
+                    select(Setting).where(Setting.key == "theta_data_password")
+                )
+            ).scalar_one_or_none()
+            theta_username: str | None = None
+            theta_password: str | None = None
+            if theta_user_row is not None and theta_pass_row is not None:
+                try:
+                    theta_username = encryption.decrypt(theta_user_row.value)
+                    theta_password = encryption.decrypt(theta_pass_row.value)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to decrypt theta credentials: %s", e)
+
+        if polygon_key:
+            from coordinator.services.data_providers.polygon import PolygonProvider
+            providers["polygon"] = PolygonProvider(api_key=polygon_key, http_client=http_client)
+            logger.info("PolygonProvider wired into DownloadManager")
+        else:
+            logger.warning(
+                "polygon_api_key not configured; PolygonProvider will be unavailable. "
+                "Set it in Settings to enable downloads."
+            )
+
+        if theta_username and theta_password:
+            from coordinator.services.data_providers.theta import ThetaDataProvider
+            providers["theta"] = ThetaDataProvider(
+                username=theta_username, password=theta_password, http_client=http_client
+            )
+            logger.info("ThetaDataProvider wired into DownloadManager")
+        else:
+            logger.info("Theta credentials not configured; ThetaDataProvider will be unavailable.")
+
+        from coordinator.services.download_manager import DownloadManager
+        download_manager = DownloadManager(
+            session_factory=session_factory,
+            data_service=data_svc,
+            providers=providers,
+        )
+        from coordinator.api.routes.data import set_download_manager
+        set_download_manager(download_manager)
+
         container = ServiceContainer(session_factory, event_bus, encryption, scheduler)
         set_container(container)
         yield
 
+        await http_client.aclose()
         scheduler.shutdown()
         await engine.dispose()
 
