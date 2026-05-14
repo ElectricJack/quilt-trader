@@ -6,7 +6,7 @@ date: 2026-05-14
 
 # Options Strategy Builder & Visualizer — Design
 
-A dedicated tool for **evaluating and learning about options spreads, then submitting them as orders on a specific account**. Inspired by optionstrat.com but scoped tighter: no saved strategies, no separate workspace — every session ends in either "submit as order" or "discard." The builder is bound to an account so its chain, pricing, and submission target are unambiguous.
+A dedicated tool for **evaluating and learning about options spreads, then submitting them as orders on a specific account**. Inspired by optionstrat.com but scoped tighter: no named-strategy library, no separate workspace. The builder is bound to an account so its chain, pricing, and submission target are unambiguous. State persists per-account across page closes (so you can submit one, tweak, resubmit; or step away and come back).
 
 ## Goals
 
@@ -18,7 +18,7 @@ A dedicated tool for **evaluating and learning about options spreads, then submi
 
 ## Non-Goals
 
-- Saved strategies / strategy library. State is session-only; close the page = lose it.
+- Saved strategies / strategy library (multiple named strategies you manage and switch between). The builder remembers **one in-progress strategy per account**, but anything richer — naming, cataloging, deleting from a list — is a follow-up.
 - Algorithm-style automated execution. This is manual order entry with rich pre-trade analysis.
 - Probability-of-profit shading on the chart. (Tracked as a follow-up — see §6.)
 - Drag-on-chart strike editing. (Tracked as a follow-up.)
@@ -120,6 +120,48 @@ This isn't persisted — it's React state on the Strategies page. On Submit, it'
 | Custom            | starts empty; user adds legs manually                 |
 
 Templates are pure functions: `templateName -> (chain, spot, expiry) -> OptionLeg[]`. The picker calls one and the result replaces the current legs. Editing legs afterward is unrestricted (no enforcement that you "stay" inside a template).
+
+### Per-account state persistence
+
+The builder remembers its in-progress state per account, scoped to the browser. Use case: submit a vertical spread, glance at the resulting position, come back and tweak strikes to submit a second variant; or close the tab to research overnight and resume tomorrow.
+
+**Storage:** `localStorage` key `quilt.strategyBuilder.{accountId}`. Per-account isolation prevents one account's strategy from bleeding into another's view.
+
+**What's persisted (structural state only):**
+
+```typescript
+type PersistedBuilderState = {
+  version: 1;
+  underlying: string | null;
+  template: string | null;             // last picked template name
+  legs: Array<{
+    side: "buy" | "sell";
+    right: "call" | "put";
+    strike: number;
+    expiry: string;
+    quantity: number;
+  }>;
+  scrubDateOffsetMs: number | null;    // slider position relative to earliest expiry; null = "today"
+  savedAt: number;                     // epoch ms
+};
+```
+
+**Not persisted:** bid / ask / IV / Greeks on each leg. Those are live market data and stale immediately — they're re-fetched from the chain on hydrate. A leg can be hydrated with `bid: undefined, ask: undefined` and rendered with an "as of last refresh" indicator until the chain populates them.
+
+**Lifecycle:**
+
+- **Save** — debounced to ~500ms on every state change in the builder. The `version` field lets us migrate the shape later if needed.
+- **Hydrate** — on `Strategies.tsx` mount: read the key, validate against the current shape, populate legs/underlying/expiry/template state. Then trigger a chain fetch to re-attach live pricing. If validation fails (corrupt entry, stale schema) silently fall back to empty state.
+- **Auto-prune** — entries older than 30 days are ignored on hydrate (their `savedAt` is too old to be meaningful; user has likely moved on). Removed from storage on the next save.
+- **Stale-expiry handling** — on hydrate, drop any leg whose `expiry` is in the past. If all legs drop, fall back to empty state. Display a one-time toast: "Removed N expired legs from your saved strategy."
+- **Manual reset** — a "Reset builder" button in the page header clears the key and resets to empty state. Confirmation dialog ("Discard current strategy?") because the state can represent real research effort.
+- **After-submit behavior** — successful submission does NOT clear the state. The legs stay so the user can immediately tweak and resubmit. (Submission feedback in the result modal makes it clear the order went through; the state is the "draft you might iterate on" — different concept.)
+
+**Why localStorage and not the server:**
+
+- One dashboard, one machine for this user. Cross-device sync isn't a requirement.
+- Avoids a new DB table, migration, API endpoints, and reconcile logic — all of which would expand the spec's surface area without adding capability the user asked for.
+- If we later want cross-device sync or a multi-strategy library, the persisted shape above is a clean unit to lift into a server-backed model.
 
 ### Backwards-compat note
 
@@ -288,6 +330,7 @@ None. Strategies aren't persisted.
 - **`coordinator/api/routes/options_chain.py` tests**: mock broker adapter returning fixed chain, assert API shape; 423 when account locked; 422 when account doesn't support options.
 - **Template generators**: `templates.test.ts` — given a chain + spot + expiry, each template emits the documented shape (right number of legs, correct sides, correct strike relationships).
 - **Frontend component test for Strategies page**: drives the full flow with a fake account + fake chain, asserts the chart redraws when the slider moves and that "Submit Order" sends the right request body.
+- **Persistence test**: builds a strategy, unmounts and remounts the page, asserts state hydrates correctly. Separate test for stale-expiry pruning (a leg with an expiry in the past is dropped on hydrate with a toast).
 - **Manual smoke** against a real Tradier paper account: open the Strategies tab, build a vertical spread, submit, verify the spread shows up as one atomic broker order with a parent ID.
 
 ### Performance budget
@@ -311,7 +354,7 @@ Each step lands in its own PR. Step 7 explicitly depends on Spec A; steps 1-6 + 
 
 ## 9. Tracked follow-ups (intentionally out of scope)
 
-- **Saved strategies / strategy library.** Persist named strategies with their leg state and surface as a picker.
+- **Saved strategies / strategy library.** A multi-strategy manager — name, list, switch between, delete. Builds on the persistence shape from §3 but adds the management UI and (likely) server-side storage for cross-device sync.
 - **Probability-of-profit shading** on the chart (background bands from IV-implied price distribution).
 - **Drag-on-chart strike editing.** Move strike markers via mouse drag; snap to chain.
 - **What-if IV adjustment.** Slider to test "what if IV moves ±5% before expiry?" — needs the math to take IV per leg as a free parameter.
