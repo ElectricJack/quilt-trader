@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { z } from "zod";
-import { Trash2, Play, Eye } from "lucide-react";
+import { Trash2, Play, Eye, X } from "lucide-react";
 import {
   useAvailableData,
   useDownloads,
@@ -21,6 +21,14 @@ import { StatusBadge } from "../components/StatusBadge";
 import { DatasetPreviewModal } from "../components/DatasetPreviewModal";
 import { CustomDataPreviewModal } from "../components/CustomDataPreviewModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { LiveSubscriptionsSection } from "../components/LiveSubscriptionsSection";
+import {
+  CompareView,
+  encodeCompareDataset,
+  decodeCompareDataset,
+  type CompareDataset,
+  type CompareMode,
+} from "../components/CompareView";
 import { useUIStore } from "../stores/ui";
 import type { MarketDataDownload, AvailableMarketData } from "../types";
 import type { DataSourceRow } from "../api/client";
@@ -250,6 +258,41 @@ function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProp
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
+// ─── Compare-state URL helpers ────────────────────────────────────────────────
+
+function readCompareFromUrl(): { datasets: CompareDataset[]; mode: CompareMode; open: boolean } {
+  if (typeof window === "undefined") {
+    return { datasets: [], mode: "overlay", open: false };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const compareRaw = params.get("compare");
+  const modeRaw = params.get("mode");
+  const datasets: CompareDataset[] = compareRaw
+    ? compareRaw
+        .split(",")
+        .map(decodeCompareDataset)
+        .filter((d): d is CompareDataset => d != null)
+    : [];
+  const mode: CompareMode =
+    modeRaw === "stacked" || modeRaw === "diff" ? modeRaw : "overlay";
+  return { datasets, mode, open: datasets.length > 0 };
+}
+
+function writeCompareToUrl(datasets: CompareDataset[], mode: CompareMode, open: boolean): void {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  if (open && datasets.length > 0) {
+    params.set("compare", datasets.map(encodeCompareDataset).join(","));
+    params.set("mode", mode);
+  } else {
+    params.delete("compare");
+    params.delete("mode");
+  }
+  const qs = params.toString();
+  const next = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+  window.history.replaceState({}, "", next);
+}
+
 export function Data() {
   const [modalOpen, setModalOpen] = useState(false);
   const [preview, setPreview] = useState<{ provider: string; symbol: string; timeframe: string } | null>(null);
@@ -259,6 +302,40 @@ export function Data() {
   const [scraperToDelete, setScraperToDelete] = useState<string | null>(null);
   const [customPreview, setCustomPreview] = useState<DataSourceRow | null>(null);
   const [downloadDefaults, setDownloadDefaults] = useState<DownloadFormValues>(loadDownloadDefaults);
+
+  // ── Multi-select & compare state ──────────────────────────────────────────
+  // Initialise from URL so deep-linking works.
+  const initialCompare = useMemo(readCompareFromUrl, []);
+  const [selected, setSelected] = useState<CompareDataset[]>(initialCompare.datasets);
+  const [compareOpen, setCompareOpen] = useState(initialCompare.open);
+  const [compareMode, setCompareMode] = useState<CompareMode>(initialCompare.mode);
+
+  // Persist URL whenever compare state changes.
+  useEffect(() => {
+    writeCompareToUrl(selected, compareMode, compareOpen);
+  }, [selected, compareMode, compareOpen]);
+
+  const selectionKey = useCallback(
+    (d: { provider: string; symbol: string; timeframe: string }) =>
+      `${d.provider}:${d.symbol}:${d.timeframe}`,
+    []
+  );
+  const selectedKeys = useMemo(
+    () => new Set(selected.map(selectionKey)),
+    [selected, selectionKey]
+  );
+  const toggleSelected = useCallback(
+    (d: CompareDataset) => {
+      const k = selectionKey(d);
+      setSelected((prev) =>
+        prev.some((p) => selectionKey(p) === k)
+          ? prev.filter((p) => selectionKey(p) !== k)
+          : [...prev, d]
+      );
+    },
+    [selectionKey]
+  );
+  const clearSelection = useCallback(() => setSelected([]), []);
 
   const { data: available, isLoading: availableLoading } = useAvailableData();
   const { data: downloads, isLoading: downloadsLoading, refetch } = useDownloads();
@@ -442,6 +519,9 @@ export function Data() {
         </div>
       </div>
 
+      {/* Live Subscriptions */}
+      <LiveSubscriptionsSection />
+
       {/* Scrapers & their outputs */}
       <section>
         <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
@@ -587,9 +667,33 @@ export function Data() {
 
       {/* Available Data */}
       <section>
-        <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
-          Available Data
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-gray-400 uppercase">
+            Available Data
+          </h2>
+          {selected.length > 0 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={clearSelection}
+                className="text-xs text-gray-400 hover:text-gray-200 transition-colors"
+              >
+                Clear ({selected.length})
+              </button>
+              <button
+                onClick={() => setCompareOpen(true)}
+                disabled={selected.length < 2}
+                className="px-3 py-1.5 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title={
+                  selected.length < 2
+                    ? "Select at least 2 datasets to compare"
+                    : `Compare ${selected.length} datasets`
+                }
+              >
+                Compare selected ({selected.length})
+              </button>
+            </div>
+          )}
+        </div>
         {availableLoading ? (
           <p className="text-gray-400 text-sm">Loading…</p>
         ) : Object.keys(grouped).length === 0 ? (
@@ -610,23 +714,86 @@ export function Data() {
                   </span>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {items.map((it) => (
-                    <button
-                      key={`${it.symbol}-${it.timeframe}`}
-                      onClick={() => setPreview({ provider: it.provider, symbol: it.symbol, timeframe: it.timeframe })}
-                      title={`${formatSize(it.size_bytes)} · ${it.file_path}`}
-                      className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono text-gray-300 hover:bg-gray-700 hover:border-indigo-600 cursor-pointer transition-colors"
-                    >
-                      <strong>{it.symbol}</strong>
-                      <span className="text-gray-500 ml-1">{it.timeframe}</span>
-                    </button>
-                  ))}
+                  {items.map((it) => {
+                    const ds: CompareDataset = {
+                      provider: it.provider,
+                      symbol: it.symbol,
+                      timeframe: it.timeframe,
+                    };
+                    const isSelected = selectedKeys.has(selectionKey(ds));
+                    return (
+                      <div
+                        key={`${it.symbol}-${it.timeframe}`}
+                        className={`flex items-center gap-1.5 bg-gray-800 border rounded px-2 py-1 text-xs font-mono text-gray-300 transition-colors ${
+                          isSelected
+                            ? "border-indigo-500 bg-indigo-900/30"
+                            : "border-gray-700 hover:border-indigo-600"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelected(ds)}
+                          className="accent-indigo-500"
+                          title="Select for compare"
+                        />
+                        <button
+                          onClick={() =>
+                            setPreview({
+                              provider: it.provider,
+                              symbol: it.symbol,
+                              timeframe: it.timeframe,
+                            })
+                          }
+                          title={`${formatSize(it.size_bytes)} · ${it.file_path}`}
+                          className="text-left hover:text-white cursor-pointer"
+                        >
+                          <strong>{it.symbol}</strong>
+                          <span className="text-gray-500 ml-1">{it.timeframe}</span>
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}
           </div>
         )}
       </section>
+
+      {/* Compare modal */}
+      {compareOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex flex-col"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="flex items-center justify-between px-6 py-3 bg-gray-900 border-b border-gray-800">
+            <div className="flex items-center gap-3 min-w-0">
+              <h3 className="text-base font-semibold text-white">
+                Compare Datasets
+              </h3>
+              <span className="text-xs text-gray-400">
+                {selected.length} selected
+              </span>
+            </div>
+            <button
+              onClick={() => setCompareOpen(false)}
+              className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors"
+              title="Close"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto p-6">
+            <CompareView
+              datasets={selected}
+              mode={compareMode}
+              onModeChange={setCompareMode}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Dataset Preview modal (market data) */}
       <DatasetPreviewModal
