@@ -4,7 +4,6 @@ import { Pencil, Trash2 } from "lucide-react";
 import { z } from "zod";
 import {
   useWorkers,
-  useCreateWorker,
   useUpdateWorker,
   useDeleteWorker,
 } from "../api/hooks";
@@ -12,15 +11,16 @@ import { StatusBadge } from "../components/StatusBadge";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { WorkerInstallCommand } from "../components/WorkerInstallCommand";
+import { WorkerInstallDialog } from "../components/WorkerInstallDialog";
 import { useUIStore } from "../stores/ui";
 import type { Worker } from "../types";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
+// tailscale_ip is now optional — workers self-report it via heartbeats (Spec A §4)
 const workerSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  tailscale_ip: z.string().min(1, "Tailscale IP is required"),
+  tailscale_ip: z.string().optional(),
   max_algorithms: z.number().int().min(1, "Must be at least 1"),
 });
 
@@ -53,12 +53,11 @@ export function Workers() {
   const addAlert = useUIStore((s) => s.addAlert);
 
   const { data: workers, isLoading } = useWorkers();
-  const createWorker = useCreateWorker();
   const updateWorker = useUpdateWorker();
   const deleteWorker = useDeleteWorker();
 
-  // Register modal
-  const [registerOpen, setRegisterOpen] = useState(false);
+  // Install dialog (replaces old register modal + inline command panel)
+  const [installOpen, setInstallOpen] = useState(false);
 
   // Edit modal
   const [editTarget, setEditTarget] = useState<Worker | null>(null);
@@ -66,21 +65,7 @@ export function Workers() {
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Worker | null>(null);
 
-  // Just-registered worker — shows the install one-liner inline until dismissed.
-  const [justRegistered, setJustRegistered] = useState<Worker | null>(null);
-
   // ── Handlers ────────────────────────────────────────────────────────────────
-
-  async function handleRegister(values: WorkerFormValues) {
-    try {
-      const created = await createWorker.mutateAsync(values);
-      addAlert({ message: "Worker registered.", severity: "success" });
-      setRegisterOpen(false);
-      setJustRegistered(created as Worker);
-    } catch {
-      addAlert({ message: "Failed to register worker.", severity: "error" });
-    }
-  }
 
   async function handleEdit(values: WorkerFormValues) {
     if (!editTarget) return;
@@ -119,30 +104,12 @@ export function Workers() {
           )}
         </h1>
         <button
-          onClick={() => setRegisterOpen(true)}
+          onClick={() => setInstallOpen(true)}
           className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded"
         >
-          Register Worker
+          Add Worker
         </button>
       </div>
-
-      {/* Install command for the most recently registered worker */}
-      {justRegistered && (
-        <div className="space-y-2">
-          <WorkerInstallCommand
-            workerId={justRegistered.id}
-            workerName={justRegistered.name}
-          />
-          <div className="flex justify-end">
-            <button
-              onClick={() => setJustRegistered(null)}
-              className="text-xs text-gray-400 hover:text-gray-200"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Worker list */}
       {isLoading ? (
@@ -214,51 +181,6 @@ export function Workers() {
         </div>
       )}
 
-      {/* Register modal */}
-      <FormModal
-        open={registerOpen}
-        onClose={() => setRegisterOpen(false)}
-        title="Register Worker"
-        schema={workerSchema}
-        defaultValues={{ name: "", tailscale_ip: "", max_algorithms: 2 }}
-        onSubmit={handleRegister}
-        submitLabel="Register"
-        isSubmitting={createWorker.isPending}
-      >
-        {(form) => (
-          <>
-            <FormField label="Name" error={form.formState.errors.name?.message}>
-              <input
-                {...form.register("name")}
-                className={INPUT_CLS}
-                placeholder="e.g. worker-1"
-              />
-            </FormField>
-            <FormField
-              label="Tailscale IP"
-              error={form.formState.errors.tailscale_ip?.message}
-            >
-              <input
-                {...form.register("tailscale_ip")}
-                className={INPUT_CLS}
-                placeholder="e.g. 100.64.0.1"
-              />
-            </FormField>
-            <FormField
-              label="Max Algorithms"
-              error={form.formState.errors.max_algorithms?.message}
-            >
-              <input
-                type="number"
-                {...form.register("max_algorithms", { valueAsNumber: true })}
-                className={INPUT_CLS}
-                placeholder="2"
-              />
-            </FormField>
-          </>
-        )}
-      </FormModal>
-
       {/* Edit modal */}
       <FormModal
         open={!!editTarget}
@@ -269,10 +191,10 @@ export function Workers() {
           editTarget
             ? {
                 name: editTarget.name,
-                tailscale_ip: editTarget.tailscale_ip,
+                tailscale_ip: editTarget.tailscale_ip ?? undefined,
                 max_algorithms: editTarget.max_algorithms,
               }
-            : { name: "", tailscale_ip: "", max_algorithms: 2 }
+            : { name: "", tailscale_ip: undefined, max_algorithms: 2 }
         }
         onSubmit={handleEdit}
         submitLabel="Save"
@@ -286,13 +208,12 @@ export function Workers() {
                 className={INPUT_CLS}
               />
             </FormField>
-            <FormField
-              label="Tailscale IP"
-              error={form.formState.errors.tailscale_ip?.message}
-            >
+            <FormField label="Tailscale IP (self-reported by worker)">
               <input
-                {...form.register("tailscale_ip")}
-                className={INPUT_CLS}
+                value={editTarget?.tailscale_ip ?? ""}
+                readOnly
+                className={`${INPUT_CLS} opacity-60 cursor-not-allowed`}
+                placeholder="Reported automatically via heartbeat"
               />
             </FormField>
             <FormField
@@ -317,6 +238,12 @@ export function Workers() {
         confirmLabel="Delete"
         onConfirm={handleDelete}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      {/* Install dialog — multi-step: form → waiting → connected */}
+      <WorkerInstallDialog
+        open={installOpen}
+        onClose={() => setInstallOpen(false)}
       />
     </div>
   );
