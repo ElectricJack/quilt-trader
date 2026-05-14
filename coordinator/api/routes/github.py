@@ -28,7 +28,7 @@ async def _get_pat(db: AsyncSession) -> str:
 async def list_repos(db: AsyncSession = Depends(get_db)):
     pat = await _get_pat(db)
     service = GitHubService(pat=pat)
-    repos = service.list_quilt_repos()
+    repos = service.list_repos()
     return [
         {
             "name": r.name,

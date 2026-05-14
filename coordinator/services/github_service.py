@@ -22,21 +22,25 @@ class GitHubService:
             from github import Github
             self._github = Github(pat)
 
-    def list_quilt_repos(self) -> list[RepoInfo]:
+    def list_repos(self) -> list[RepoInfo]:
+        """Return all repositories visible to the authenticated user.
+
+        Previously this filtered to only repos containing a `quilt.yaml`
+        manifest, but that filter is expensive (one extra API call per
+        repo) and hid valid repos from the install picker. The install
+        endpoint already validates manifests by cloning + parsing, so
+        we let the user pick from the full list here.
+        """
         user = self._github.get_user()
         results = []
         for repo in user.get_repos():
-            try:
-                repo.get_contents("quilt.yaml")
-                results.append(RepoInfo(
-                    name=repo.name,
-                    full_name=repo.full_name,
-                    description=repo.description or "",
-                    clone_url=repo.clone_url,
-                    html_url=repo.html_url,
-                ))
-            except Exception:
-                continue
+            results.append(RepoInfo(
+                name=repo.name,
+                full_name=repo.full_name,
+                description=repo.description or "",
+                clone_url=repo.clone_url,
+                html_url=repo.html_url,
+            ))
         return results
 
     def get_clone_url(self, full_name: str) -> str:

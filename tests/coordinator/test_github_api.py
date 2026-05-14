@@ -15,20 +15,29 @@ async def test_list_repos_with_pat(client):
     await client.put("/api/settings/github-pat", json={"value": "ghp_test123"})
     with patch("coordinator.api.routes.github.GitHubService") as mock_cls:
         mock_service = MagicMock()
-        mock_service.list_quilt_repos.return_value = [
+        mock_service.list_repos.return_value = [
             RepoInfo(
                 name="algo-1",
                 full_name="user/algo-1",
                 description="Test algo",
                 clone_url="https://github.com/user/algo-1.git",
                 html_url="https://github.com/user/algo-1",
-            )
+            ),
+            RepoInfo(
+                name="not-quilt",
+                full_name="user/not-quilt",
+                description="A repo without manifest",
+                clone_url="https://github.com/user/not-quilt.git",
+                html_url="https://github.com/user/not-quilt",
+            ),
         ]
         mock_cls.return_value = mock_service
         response = await client.get("/api/github/repos")
         assert response.status_code == 200
-        assert len(response.json()) == 1
-        assert response.json()[0]["name"] == "algo-1"
+        body = response.json()
+        # All repos are returned; manifest filtering happens at install time.
+        assert len(body) == 2
+        assert {r["name"] for r in body} == {"algo-1", "not-quilt"}
 
 
 @pytest.mark.asyncio
