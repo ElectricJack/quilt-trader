@@ -3,7 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
@@ -12,6 +12,10 @@ from coordinator.database.models import (
     Algorithm,
     AlgorithmInstance,
     AlgorithmRun,
+    BacktestComparison,
+    DecisionLog,
+    PDTTracking,
+    Position,
     TradeLog,
 )
 
@@ -164,6 +168,60 @@ async def delete_algorithm(algorithm_id: str, db: AsyncSession = Depends(get_db)
     algo = result.scalar_one_or_none()
     if algo is None:
         raise HTTPException(status_code=404, detail="Algorithm not found")
+
+    # Collect instance IDs so we can cascade through runs/decisions/comparisons/trades/positions.
+    instance_rows = await db.execute(
+        select(AlgorithmInstance.id).where(AlgorithmInstance.algorithm_id == algorithm_id)
+    )
+    instance_ids = [row[0] for row in instance_rows.all()]
+
+    if instance_ids:
+        # Null out active_run_id on instances to break the circular FK before deleting runs.
+        await db.execute(
+            update(AlgorithmInstance)
+            .where(AlgorithmInstance.id.in_(instance_ids))
+            .values(active_run_id=None)
+        )
+        await db.execute(
+            delete(AlgorithmRun).where(AlgorithmRun.instance_id.in_(instance_ids))
+        )
+        await db.execute(
+            delete(DecisionLog).where(DecisionLog.instance_id.in_(instance_ids))
+        )
+        await db.execute(
+            delete(BacktestComparison).where(BacktestComparison.instance_id.in_(instance_ids))
+        )
+        # pdt_tracking references trade_log.id — clear referencing rows before deleting trades.
+        trade_id_rows = await db.execute(
+            select(TradeLog.id).where(TradeLog.instance_id.in_(instance_ids))
+        )
+        trade_ids = [row[0] for row in trade_id_rows.all()]
+        if trade_ids:
+            await db.execute(
+                delete(PDTTracking).where(PDTTracking.trade_id.in_(trade_ids))
+            )
+        await db.execute(
+            delete(TradeLog).where(TradeLog.instance_id.in_(instance_ids))
+        )
+        await db.execute(
+            delete(Position).where(Position.instance_id.in_(instance_ids))
+        )
+        # Clear Account.locked_by where it points to any of these instances.
+        await db.execute(
+            update(Account)
+            .where(Account.locked_by.in_(instance_ids))
+            .values(locked_by=None)
+        )
+        await db.flush()
+        await db.execute(
+            delete(AlgorithmInstance).where(AlgorithmInstance.algorithm_id == algorithm_id)
+        )
+
+    # Also delete any BacktestComparison rows tied directly to this algorithm.
+    await db.execute(
+        delete(BacktestComparison).where(BacktestComparison.algorithm_id == algorithm_id)
+    )
+
     await db.delete(algo)
 
 

@@ -78,6 +78,170 @@ async def test_delete_algorithm(client):
 
 
 @pytest.mark.asyncio
+async def test_delete_algorithm_with_dependents(client, db_session):
+    """DELETE /api/algorithms/:id should cascade-delete instances, runs,
+    decision_log, backtest_comparisons, positions, trades, and pdt_tracking."""
+    from datetime import datetime, timezone
+    from coordinator.database.models import (
+        Account,
+        Algorithm,
+        AlgorithmInstance,
+        AlgorithmRun,
+        BacktestComparison,
+        DecisionLog,
+        PDTTracking,
+        Position,
+        TradeLog,
+        Worker,
+    )
+    from sqlalchemy import select
+
+    # Seed supporting rows.
+    algo = Algorithm(
+        repo_url="https://github.com/example/cascade-algo",
+        name="CascadeAlgo",
+        install_status="installed",
+    )
+    other_algo = Algorithm(
+        repo_url="https://github.com/example/other",
+        name="OtherAlgo",
+        install_status="installed",
+    )
+    worker = Worker(name="w-cascade", tailscale_ip="100.64.0.50", status="online")
+    db_session.add_all([algo, other_algo, worker])
+    await db_session.flush()
+
+    acct = Account(
+        name="Algo Cascade",
+        broker_type="alpaca",
+        supported_asset_types=["equities"],
+        pdt_mode="off",
+        credentials="{}",
+    )
+    db_session.add(acct)
+    await db_session.flush()
+
+    instance = AlgorithmInstance(
+        algorithm_id=algo.id,
+        account_id=acct.id,
+        worker_id=worker.id,
+        status="running",
+    )
+    db_session.add(instance)
+    await db_session.flush()
+
+    # Lock the account to this instance to exercise the locked_by clear path.
+    acct.locked_by = instance.id
+
+    run = AlgorithmRun(instance_id=instance.id, run_number=1, status="completed")
+    db_session.add(run)
+    await db_session.flush()
+
+    instance.active_run_id = run.id
+
+    decision = DecisionLog(
+        instance_id=instance.id,
+        mode="live",
+        tick_data={},
+        signals_produced=[],
+    )
+    backtest = BacktestComparison(
+        instance_id=instance.id,
+        algorithm_id=algo.id,
+        time_range_start=datetime.now(timezone.utc),
+        time_range_end=datetime.now(timezone.utc),
+        total_ticks=10,
+        matching_ticks=10,
+        match_percentage=100.0,
+    )
+    position = Position(
+        instance_id=instance.id,
+        account_id=acct.id,
+        legs=[],
+        status="open",
+        net_cost=1500.0,
+    )
+    trade = TradeLog(
+        account_id=acct.id,
+        instance_id=instance.id,
+        source="algo",
+        symbol="AAPL",
+        side="buy",
+        quantity=10.0,
+        filled_price=150.0,
+    )
+    db_session.add_all([decision, backtest, position, trade])
+    await db_session.flush()
+
+    pdt = PDTTracking(
+        account_id=acct.id,
+        trade_id=trade.id,
+        symbol="AAPL",
+        open_timestamp=datetime.now(timezone.utc),
+        close_timestamp=datetime.now(timezone.utc),
+        day_trade_date=datetime.now(timezone.utc).date(),
+    )
+    db_session.add(pdt)
+    await db_session.commit()
+
+    algo_id = algo.id
+    other_algo_id = other_algo.id
+    account_id = acct.id
+    instance_id = instance.id
+    trade_id = trade.id
+
+    response = await client.delete(f"/api/algorithms/{algo_id}")
+    assert response.status_code == 204
+
+    # The algorithm is gone.
+    get_resp = await client.get(f"/api/algorithms/{algo_id}")
+    assert get_resp.status_code == 404
+
+    # All dependents are gone.
+    assert (await db_session.execute(
+        select(AlgorithmInstance).where(AlgorithmInstance.id == instance_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(AlgorithmRun).where(AlgorithmRun.instance_id == instance_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(DecisionLog).where(DecisionLog.instance_id == instance_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(BacktestComparison).where(BacktestComparison.algorithm_id == algo_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(Position).where(Position.instance_id == instance_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(TradeLog).where(TradeLog.id == trade_id)
+    )).scalar_one_or_none() is None
+
+    assert (await db_session.execute(
+        select(PDTTracking).where(PDTTracking.trade_id == trade_id)
+    )).scalar_one_or_none() is None
+
+    # The account survives, but its locked_by has been cleared.
+    # Expire the session cache so we see the API session's writes.
+    db_session.expire_all()
+    acct_after = (await db_session.execute(
+        select(Account).where(Account.id == account_id)
+    )).scalar_one_or_none()
+    assert acct_after is not None
+    assert acct_after.locked_by is None
+
+    # The unrelated algorithm survives.
+    assert (await db_session.execute(
+        select(Algorithm).where(Algorithm.id == other_algo_id)
+    )).scalar_one_or_none() is not None
+
+
+@pytest.mark.asyncio
 async def test_create_instance(client, seed_entities):
     algo_resp = await client.post("/api/algorithms", json={
         "repo_url": "https://github.com/test/inst-algo",
