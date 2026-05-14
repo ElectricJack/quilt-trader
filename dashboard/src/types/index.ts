@@ -196,6 +196,14 @@ export interface BacktestComparison {
   created_at: string | null;
 }
 
+export interface AvailableMarketData {
+  provider: string;
+  symbol: string;
+  timeframe: string;
+  file_path: string;
+  size_bytes: number;
+}
+
 export interface DataAvailability {
   provider: string;
   symbols: string[];

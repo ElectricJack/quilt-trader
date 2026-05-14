@@ -11,7 +11,7 @@ import { FormField } from "../components/FormField";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { StatusBadge } from "../components/StatusBadge";
 import { useUIStore } from "../stores/ui";
-import type { MarketDataDownload } from "../types";
+import type { MarketDataDownload, AvailableMarketData } from "../types";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -172,7 +172,25 @@ export function Data() {
     return () => clearInterval(id);
   }, [activeDownloads.length, refetch]);
 
-  const providers = available ? Object.entries(available) : [];
+  const grouped = useMemo(() => {
+    const out: Record<string, AvailableMarketData[]> = {};
+    for (const item of available ?? []) {
+      (out[item.provider] ??= []).push(item);
+    }
+    for (const key of Object.keys(out)) {
+      out[key].sort(
+        (a, b) =>
+          a.symbol.localeCompare(b.symbol) || a.timeframe.localeCompare(b.timeframe)
+      );
+    }
+    return out;
+  }, [available]);
+
+  function formatSize(b: number): string {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / 1024 / 1024).toFixed(2)} MB`;
+  }
 
   async function handleSubmit(values: DownloadFormValues) {
     const symbols = values.symbols
@@ -283,11 +301,11 @@ export function Data() {
         </h2>
         {availableLoading ? (
           <p className="text-gray-400 text-sm">Loading…</p>
-        ) : providers.length === 0 ? (
+        ) : Object.keys(grouped).length === 0 ? (
           <p className="text-gray-500 text-sm">No data sources available.</p>
         ) : (
           <div className="space-y-4">
-            {providers.map(([provider, symbols]) => (
+            {Object.entries(grouped).map(([provider, items]) => (
               <div
                 key={provider}
                 className="bg-gray-900 border border-gray-800 rounded p-4"
@@ -297,23 +315,21 @@ export function Data() {
                     {provider}
                   </h3>
                   <span className="text-xs text-gray-500">
-                    {symbols.length} symbol{symbols.length !== 1 ? "s" : ""}
+                    {items.length} dataset{items.length !== 1 ? "s" : ""}
                   </span>
                 </div>
-                {symbols.length === 0 ? (
-                  <p className="text-sm text-gray-500">No symbols available.</p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {symbols.map((symbol) => (
-                      <span
-                        key={symbol}
-                        className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-300 font-mono"
-                      >
-                        {symbol}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <div className="flex flex-wrap gap-2">
+                  {items.map((it) => (
+                    <span
+                      key={`${it.symbol}-${it.timeframe}`}
+                      title={`${formatSize(it.size_bytes)} · ${it.file_path}`}
+                      className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono text-gray-300"
+                    >
+                      <strong>{it.symbol}</strong>
+                      <span className="text-gray-500 ml-1">{it.timeframe}</span>
+                    </span>
+                  ))}
+                </div>
               </div>
             ))}
           </div>

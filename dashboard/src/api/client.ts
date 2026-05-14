@@ -13,6 +13,7 @@ import type {
   CashFlow,
   BacktestComparison,
   MarketDataDownload,
+  AvailableMarketData,
   PortfolioEquityResponse,
   PortfolioKpis,
   AllocationResponse,
@@ -253,8 +254,8 @@ export const api = {
   },
 
   // Data
-  listAvailableData(): Promise<Record<string, string[]>> {
-    return request<Record<string, string[]>>("/api/data/available");
+  listAvailableData(): Promise<AvailableMarketData[]> {
+    return request<AvailableMarketData[]>("/api/data/available");
   },
   listDownloads(): Promise<MarketDataDownload[]> {
     return request<MarketDataDownload[]>("/api/data/downloads");
