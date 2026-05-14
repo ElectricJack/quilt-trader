@@ -71,18 +71,32 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
     elif msg_type == "heartbeat":
         worker_id = data.get("worker_id")
         await websocket.send_json({"type": "heartbeat_ack"})
-        if worker_id:
-            try:
-                container = get_container()
-                async with container.session_factory() as session:
-                    result = await session.execute(select(Worker).where(Worker.id == worker_id))
-                    worker = result.scalar_one_or_none()
-                    if worker:
-                        worker.last_heartbeat = datetime.now(timezone.utc)
-                        worker.status = "online"
-                        await session.commit()
-            except Exception:
-                logger.exception("Failed to update heartbeat for worker %s", worker_id)
+        if not worker_id:
+            return
+        try:
+            container = get_container()
+            async with container.session_factory() as session:
+                result = await session.execute(select(Worker).where(Worker.id == worker_id))
+                worker = result.scalar_one_or_none()
+                if worker is None:
+                    return
+                prior_status = worker.status
+                worker.last_heartbeat = datetime.now(timezone.utc)
+                worker.status = "online"
+                if data.get("tailscale_ip"):
+                    worker.tailscale_ip = data["tailscale_ip"]
+                await session.commit()
+
+                if prior_status != "online":
+                    await manager.broadcast_to_dashboards({
+                        "type": "worker_connected",
+                        "worker_id": worker.id,
+                        "name": worker.name,
+                        "tailscale_ip": worker.tailscale_ip,
+                        "install_status": worker.install_status,
+                    })
+        except Exception:
+            logger.exception("Failed to update heartbeat for worker %s", worker_id)
 
     elif msg_type == "state_checkpoint":
         instance_id = data.get("instance_id")
