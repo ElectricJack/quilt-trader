@@ -4,7 +4,15 @@ from typing import Optional
 
 import httpx
 
-from worker.broker_adapter import BrokerAdapter, BrokerTransaction, OrderResult
+from worker.broker_adapter import (
+    BrokerAdapter,
+    BrokerTransaction,
+    MultilegLegResult,
+    MultilegOrderResult,
+    OptionChainSnapshot,
+    OptionContract,
+    OrderResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +23,16 @@ _SANDBOX_BASE = "https://sandbox.tradier.com/v1"
 class TradierAdapter(BrokerAdapter):
     """Broker adapter for Tradier via REST API."""
 
-    def __init__(self, access_token: str, account_id: str, sandbox: bool = True) -> None:
+    def __init__(
+        self,
+        access_token: str,
+        account_id: str,
+        sandbox: bool = True,
+        paper: Optional[bool] = None,
+    ) -> None:
+        # `paper` is an alias for `sandbox` for parity with other adapters.
+        if paper is not None:
+            sandbox = paper
         self._access_token = access_token
         self._account_id = account_id
         self._sandbox = sandbox
@@ -144,6 +161,130 @@ class TradierAdapter(BrokerAdapter):
             filled_price=0.0,
             fees=0.0,
             broker_order_id=broker_order_id or None,
+        )
+
+    # ---- Multi-leg orders (Spec A) ----
+    def supports_multileg_orders(self, legs):
+        if len(legs) < 2:
+            return False
+        if not all(l.asset_type == "options" for l in legs):
+            return False
+        return len({l.symbol for l in legs}) == 1
+
+    def compose_symbol(self, leg):
+        if leg.asset_type != "options":
+            return leg.symbol
+        if not (leg.expiry and leg.strike is not None and leg.right):
+            raise ValueError(f"Options leg missing expiry/strike/right: {leg}")
+        y, m, d = leg.expiry.split("-")
+        right_ch = "C" if leg.right == "call" else "P"
+        strike_int = round(leg.strike * 1000)
+        return f"{leg.symbol}{y[2:]}{m}{d}{right_ch}{strike_int:08d}"
+
+    def submit_multileg_order(self, legs, order_type, limit_price):
+        import requests
+        url = f"{self._base_url}/accounts/{self._account_id}/orders"
+        # Tradier's "type" for net price: debit if net cost > 0, credit if < 0.
+        net_sign = sum(1 if l.side == "buy" else -1 for l in legs)
+        tradier_type = "debit" if net_sign >= 0 else "credit"
+        data = {
+            "class": "multileg",
+            "symbol": legs[0].symbol,
+            "type": tradier_type if order_type == "limit" else "market",
+            "duration": "day",
+        }
+        if order_type == "limit":
+            if limit_price is None:
+                raise ValueError("limit_price required for limit order")
+            data["price"] = f"{limit_price:.2f}"
+        for i, leg in enumerate(legs):
+            data[f"option_symbol[{i}]"] = self.compose_symbol(leg)
+            side_map = {("buy",): "buy_to_open", ("sell",): "sell_to_open"}
+            data[f"side[{i}]"] = side_map[(leg.side,)]
+            data[f"quantity[{i}]"] = str(int(leg.quantity))
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+        resp = requests.post(url, data=data, headers=headers, timeout=15)
+        resp.raise_for_status()
+        body = resp.json().get("order", {})
+        order_id = str(body.get("id", ""))
+        # Tradier returns one parent ID; per-leg fills appear later via order-status polling.
+        leg_results = [
+            MultilegLegResult(
+                index=i,
+                status="pending",
+                broker_order_id=order_id,
+            )
+            for i in range(len(legs))
+        ]
+        return MultilegOrderResult(
+            broker_order_id=order_id,
+            legs=leg_results,
+            atomic=True,
+        )
+
+    # ---- Options chain (Spec C) ----
+    def list_option_expiries(self, underlying):
+        from datetime import date
+        import requests
+        url = f"{self._base_url}/markets/options/expirations"
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+        resp = requests.get(url, params={"symbol": underlying}, headers=headers, timeout=10)
+        resp.raise_for_status()
+        body = resp.json().get("expirations") or {}
+        raw_dates = body.get("date") or []
+        if isinstance(raw_dates, str):
+            raw_dates = [raw_dates]
+        return sorted(date.fromisoformat(d) for d in raw_dates)
+
+    def get_option_chain(self, underlying, expiry):
+        import requests
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Accept": "application/json",
+        }
+        # Spot
+        spot_resp = requests.get(
+            f"{self._base_url}/markets/quotes",
+            params={"symbols": underlying}, headers=headers, timeout=10,
+        )
+        spot_resp.raise_for_status()
+        spot = float(spot_resp.json()["quotes"]["quote"]["last"])
+        # Chain
+        chain_resp = requests.get(
+            f"{self._base_url}/markets/options/chains",
+            params={"symbol": underlying, "expiration": expiry.isoformat(),
+                    "greeks": "true"},
+            headers=headers, timeout=15,
+        )
+        chain_resp.raise_for_status()
+        opts = chain_resp.json().get("options") or {}
+        raw_opts = opts.get("option") or []
+        if isinstance(raw_opts, dict):
+            raw_opts = [raw_opts]
+        contracts = []
+        for o in raw_opts:
+            g = o.get("greeks") or {}
+            contracts.append(OptionContract(
+                strike=float(o["strike"]),
+                right="call" if o.get("option_type") == "call" else "put",
+                occ_symbol=o["symbol"],
+                bid=o.get("bid"), ask=o.get("ask"), last=o.get("last"),
+                iv=g.get("mid_iv"),
+                delta=g.get("delta"), gamma=g.get("gamma"),
+                theta=g.get("theta"), vega=g.get("vega"),
+                open_interest=o.get("open_interest"),
+                volume=o.get("volume"),
+            ))
+        contracts.sort(key=lambda c: (c.strike, c.right))
+        return OptionChainSnapshot(
+            underlying=underlying, spot=spot, expiry=expiry,
+            contracts=contracts, as_of=None,
         )
 
     def get_transactions(self, since: datetime) -> list[BrokerTransaction]:

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from worker.tradier_adapter import TradierAdapter
-from worker.broker_adapter import OrderResult
+from worker.broker_adapter import MultilegLegSpec, OrderResult
 
 
 def _mock_response(json_payload: dict) -> MagicMock:
@@ -11,6 +11,233 @@ def _mock_response(json_payload: dict) -> MagicMock:
     resp.json.return_value = json_payload
     resp.raise_for_status.return_value = None
     return resp
+
+
+def _opt_leg(side, right, strike, expiry="2026-06-20"):
+    return MultilegLegSpec(symbol="SPY", asset_type="options", side=side,
+                           quantity=1, expiry=expiry, strike=strike, right=right)
+
+
+class TestTradierMultilegSupport:
+    def test_supports_multileg_same_underlying_options(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        legs = [_opt_leg("buy", "call", 560), _opt_leg("sell", "call", 570)]
+        assert adapter.supports_multileg_orders(legs) is True
+
+    def test_supports_multileg_false_for_mixed_underlyings(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        leg1 = _opt_leg("buy", "call", 560)
+        leg2 = MultilegLegSpec(symbol="QQQ", asset_type="options", side="sell",
+                               quantity=1, expiry="2026-06-20", strike=450, right="call")
+        assert adapter.supports_multileg_orders([leg1, leg2]) is False
+
+    def test_supports_multileg_false_for_non_options(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        leg = MultilegLegSpec(symbol="SPY", asset_type="equities", side="buy", quantity=100)
+        assert adapter.supports_multileg_orders([leg, leg]) is False
+
+    def test_supports_multileg_false_for_single_leg(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        leg = _opt_leg("buy", "call", 560)
+        assert adapter.supports_multileg_orders([leg]) is False
+
+
+class TestTradierComposeSymbol:
+    def test_compose_symbol_call_occ(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        leg = _opt_leg("buy", "call", 560.0, expiry="2026-06-20")
+        assert adapter.compose_symbol(leg) == "SPY260620C00560000"
+
+    def test_compose_symbol_put_occ(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        leg = _opt_leg("sell", "put", 565.50, expiry="2026-06-20")
+        assert adapter.compose_symbol(leg) == "SPY260620P00565500"
+
+    def test_compose_symbol_equities_passthrough(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        leg = MultilegLegSpec(symbol="SPY", asset_type="equities", side="buy", quantity=100)
+        assert adapter.compose_symbol(leg) == "SPY"
+
+
+class TestTradierSubmitMultilegOrder:
+    def test_submit_multileg_order_posts_class_multileg(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"order": {"id": 12345, "status": "ok"}}
+        mock_resp.raise_for_status = lambda: None
+        legs = [_opt_leg("buy", "call", 560), _opt_leg("sell", "call", 570)]
+        with patch("requests.post", return_value=mock_resp) as p:
+            result = adapter.submit_multileg_order(legs, order_type="limit", limit_price=4.0)
+        posted_data = p.call_args.kwargs["data"]
+        assert posted_data["class"] == "multileg"
+        assert posted_data["symbol"] == "SPY"
+        assert posted_data["type"] == "debit"            # limit becomes debit/credit per net price
+        assert posted_data["price"] == "4.00"
+        # Per-leg fields
+        assert posted_data["option_symbol[0]"] == "SPY260620C00560000"
+        assert posted_data["side[0]"] == "buy_to_open"
+        assert posted_data["quantity[0]"] == "1"
+        assert posted_data["option_symbol[1]"] == "SPY260620C00570000"
+        assert posted_data["side[1]"] == "sell_to_open"
+        assert result.broker_order_id == "12345"
+        assert result.atomic is True
+
+    def test_submit_multileg_credit_when_more_sells(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"order": {"id": 99}}
+        mock_resp.raise_for_status = lambda: None
+        # Two sells, one buy -> net negative -> credit.
+        legs = [
+            _opt_leg("sell", "call", 560),
+            _opt_leg("sell", "call", 570),
+            _opt_leg("buy", "call", 580),
+        ]
+        with patch("requests.post", return_value=mock_resp) as p:
+            adapter.submit_multileg_order(legs, order_type="limit", limit_price=2.5)
+        posted_data = p.call_args.kwargs["data"]
+        assert posted_data["type"] == "credit"
+
+    def test_submit_multileg_market_order_omits_price(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"order": {"id": 77}}
+        mock_resp.raise_for_status = lambda: None
+        legs = [_opt_leg("buy", "call", 560), _opt_leg("sell", "call", 570)]
+        with patch("requests.post", return_value=mock_resp) as p:
+            adapter.submit_multileg_order(legs, order_type="market", limit_price=None)
+        posted_data = p.call_args.kwargs["data"]
+        assert posted_data["type"] == "market"
+        assert "price" not in posted_data
+
+
+class TestTradierOptionsChain:
+    def test_list_option_expiries_returns_sorted_dates(self):
+        from datetime import date
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "expirations": {"date": ["2026-06-20", "2026-05-16"]},
+        }
+        mock_resp.raise_for_status = lambda: None
+        with patch("requests.get", return_value=mock_resp):
+            out = adapter.list_option_expiries("SPY")
+        assert out == [date(2026, 5, 16), date(2026, 6, 20)]
+
+    def test_list_option_expiries_handles_single_string(self):
+        from datetime import date
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        mock_resp = MagicMock()
+        # Tradier sometimes returns a bare string for a single expiry.
+        mock_resp.json.return_value = {"expirations": {"date": "2026-05-16"}}
+        mock_resp.raise_for_status = lambda: None
+        with patch("requests.get", return_value=mock_resp):
+            out = adapter.list_option_expiries("SPY")
+        assert out == [date(2026, 5, 16)]
+
+    def test_list_option_expiries_handles_empty(self):
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"expirations": None}
+        mock_resp.raise_for_status = lambda: None
+        with patch("requests.get", return_value=mock_resp):
+            out = adapter.list_option_expiries("SPY")
+        assert out == []
+
+    def test_get_option_chain_maps_strikes_and_greeks(self):
+        from datetime import date
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        chain_resp = MagicMock()
+        chain_resp.json.return_value = {
+            "options": {
+                "option": [
+                    {
+                        "symbol": "SPY260620C00560000", "strike": 560.0, "option_type": "call",
+                        "bid": 8.2, "ask": 8.4, "last": 8.3,
+                        "greeks": {"mid_iv": 0.30, "delta": 0.55, "gamma": 0.020,
+                                   "theta": -14.1, "vega": 48.0},
+                        "open_interest": 2345, "volume": 789,
+                    },
+                    {
+                        "symbol": "SPY260620P00560000", "strike": 560.0, "option_type": "put",
+                        "bid": 1.1, "ask": 1.3, "last": 1.2,
+                        "greeks": {"mid_iv": 0.32, "delta": -0.45, "gamma": 0.020,
+                                   "theta": -12.0, "vega": 48.0},
+                        "open_interest": 1100, "volume": 200,
+                    },
+                ]
+            }
+        }
+        chain_resp.raise_for_status = lambda: None
+        spot_resp = MagicMock()
+        spot_resp.json.return_value = {"quotes": {"quote": {"last": 565.0}}}
+        spot_resp.raise_for_status = lambda: None
+        with patch("requests.get", side_effect=[spot_resp, chain_resp]):
+            chain = adapter.get_option_chain("SPY", date(2026, 6, 20))
+        assert chain.spot == 565.0
+        assert chain.underlying == "SPY"
+        assert chain.expiry == date(2026, 6, 20)
+        assert len(chain.contracts) == 2
+        assert chain.contracts[0].right == "call"
+        assert chain.contracts[1].right == "put"
+        assert chain.contracts[0].iv == 0.30
+        assert chain.contracts[0].delta == 0.55
+        assert chain.contracts[0].open_interest == 2345
+        assert chain.contracts[0].volume == 789
+
+    def test_get_option_chain_handles_single_option_dict(self):
+        from datetime import date
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        chain_resp = MagicMock()
+        chain_resp.json.return_value = {
+            "options": {
+                "option": {
+                    "symbol": "SPY260620C00560000", "strike": 560.0, "option_type": "call",
+                    "bid": 8.2, "ask": 8.4, "last": 8.3,
+                    "greeks": {"mid_iv": 0.30, "delta": 0.55, "gamma": 0.020,
+                               "theta": -14.1, "vega": 48.0},
+                    "open_interest": 2345, "volume": 789,
+                }
+            }
+        }
+        chain_resp.raise_for_status = lambda: None
+        spot_resp = MagicMock()
+        spot_resp.json.return_value = {"quotes": {"quote": {"last": 565.0}}}
+        spot_resp.raise_for_status = lambda: None
+        with patch("requests.get", side_effect=[spot_resp, chain_resp]):
+            chain = adapter.get_option_chain("SPY", date(2026, 6, 20))
+        assert len(chain.contracts) == 1
+        assert chain.contracts[0].strike == 560.0
+
+    def test_get_option_chain_sorts_contracts(self):
+        from datetime import date
+        adapter = TradierAdapter(access_token="t", account_id="VA1", paper=True)
+        chain_resp = MagicMock()
+        chain_resp.json.return_value = {
+            "options": {
+                "option": [
+                    {"symbol": "X", "strike": 570.0, "option_type": "put",
+                     "bid": None, "ask": None, "last": None, "greeks": {},
+                     "open_interest": None, "volume": None},
+                    {"symbol": "Y", "strike": 560.0, "option_type": "put",
+                     "bid": None, "ask": None, "last": None, "greeks": {},
+                     "open_interest": None, "volume": None},
+                    {"symbol": "Z", "strike": 560.0, "option_type": "call",
+                     "bid": None, "ask": None, "last": None, "greeks": {},
+                     "open_interest": None, "volume": None},
+                ]
+            }
+        }
+        chain_resp.raise_for_status = lambda: None
+        spot_resp = MagicMock()
+        spot_resp.json.return_value = {"quotes": {"quote": {"last": 565.0}}}
+        spot_resp.raise_for_status = lambda: None
+        with patch("requests.get", side_effect=[spot_resp, chain_resp]):
+            chain = adapter.get_option_chain("SPY", date(2026, 6, 20))
+        # Sorted by (strike, right): 560/call, 560/put, 570/put
+        assert (chain.contracts[0].strike, chain.contracts[0].right) == (560.0, "call")
+        assert (chain.contracts[1].strike, chain.contracts[1].right) == (560.0, "put")
+        assert (chain.contracts[2].strike, chain.contracts[2].right) == (570.0, "put")
 
 
 class TestTradierAdapter:
