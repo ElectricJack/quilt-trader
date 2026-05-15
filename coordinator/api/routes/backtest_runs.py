@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -250,3 +252,48 @@ async def delete_run(run_id: str, db: AsyncSession = Depends(get_db)):
     except Exception:
         logger.exception("Failed to remove run dir %s", run_dir)
     await db.delete(r)
+
+
+@router.get("/{run_id}/equity")
+async def get_equity_window(
+    run_id: str,
+    from_: datetime = Query(..., alias="from"),
+    to: datetime = Query(...),
+    resolution: str = Query("auto", regex="^(1min|1hour|1day|auto)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()
+    if r is None:
+        raise HTTPException(404, detail="Backtest run not found")
+
+    run_dir = Path("data/backtests") / run_id
+    chosen = resolution
+    if resolution == "auto":
+        # Pick the highest resolution available that produces ≤5000 points in the window.
+        days = max(1, (to - from_).days)
+        if days < 3 and (run_dir / "equity_1min.parquet").exists():
+            chosen = "1min"
+        elif days < 60 and (run_dir / "equity_1hour.parquet").exists():
+            chosen = "1hour"
+        else:
+            chosen = "1day"
+
+    pq_path = run_dir / f"equity_{chosen}.parquet"
+    if not pq_path.exists():
+        raise HTTPException(404, detail=f"No {chosen} parquet for this run")
+    import pyarrow.parquet as _pq
+    df = _pq.read_table(pq_path).to_pandas()
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    if df["timestamp"].dt.tz is not None:
+        df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+    from_naive = pd.Timestamp(from_).tz_localize(None) if pd.Timestamp(from_).tz is not None else pd.Timestamp(from_)
+    to_naive = pd.Timestamp(to).tz_localize(None) if pd.Timestamp(to).tz is not None else pd.Timestamp(to)
+    mask = (df["timestamp"] >= from_naive) & (df["timestamp"] <= to_naive)
+    sliced = df.loc[mask]
+    return {
+        "resolution": chosen,
+        "items": [
+            {"ts": row["timestamp"].isoformat(), "portfolio_value": float(row["portfolio_value"]), "cash": float(row.get("cash", 0.0))}
+            for _, row in sliced.iterrows()
+        ],
+    }
