@@ -4,7 +4,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Download, Trash2 } from "lucide-react";
 import {
   useBacktestRun,
-  useBacktestEquityCurve,
+  // TODO(T22): useBacktestEquityCurve removed; page will be rewritten in Task 22
   useBacktestTrades,
   useDeleteBacktestRun,
 } from "../api/hooks";
@@ -57,9 +57,9 @@ export function BacktestRunDetail() {
   const { data: run } = useBacktestRun(id, { refetchInterval: 2000 });
   const isRunInflight = inflight(run?.status);
   const liveRefetch = isRunInflight ? 2000 : undefined;
-  const { data: equity } = useBacktestEquityCurve(id, {
-    refetchInterval: liveRefetch,
-  });
+  // TODO(T22): equity data will come from useBacktestReport in the rewritten page
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const equity = undefined as { items: Array<{ timestamp: string; portfolio_value: number; cash?: number }>; benchmark: Array<{ timestamp: string; value: number }> } | undefined;
   const { data: tradesData } = useBacktestTrades(id, 500, 0, {
     refetchInterval: liveRefetch,
   });

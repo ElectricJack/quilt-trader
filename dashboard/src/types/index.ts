@@ -374,3 +374,70 @@ export interface MarketDataBar {
 export interface MarketDataResponse {
   data: MarketDataBar[];
 }
+
+// ── Backtest Report ──
+
+export interface BacktestKeyMetrics {
+  total_return: number;
+  cagr: number;
+  volatility: number;
+  sharpe_ratio: number;
+  sortino_ratio: number;
+  max_drawdown: number;
+  romad: number;
+  longest_drawdown_days: number;
+  // Tail risk
+  daily_var?: number;
+  daily_cvar?: number;
+  skew?: number;
+  kurtosis?: number;
+  // Period returns
+  ytd?: number; "1y"?: number; "3y"?: number;
+  // Distribution
+  best_day?: number; worst_day?: number;
+  best_month?: number; worst_month?: number;
+  // Win rates
+  time_in_market?: number; win_days?: number; win_month?: number;
+  // vs benchmark (strategy only)
+  beta?: number; alpha?: number; correlation?: number;
+  [key: string]: number | undefined;
+}
+
+export interface BacktestRollingPoint {
+  timestamp: string;
+  sharpe: number | null;
+  sortino: number | null;
+  vol: number | null;
+  beta: number | null;
+}
+
+export interface BacktestReport {
+  id: string;
+  algorithm_id: string;
+  status: string;
+  date_range_start: string | null;
+  date_range_end: string | null;
+  initial_cash: number;
+  config_overrides: Record<string, unknown> | null;
+  benchmark_symbol: string | null;
+  benchmark_source: string | null;
+  key_metrics: { strategy: BacktestKeyMetrics; benchmark: BacktestKeyMetrics } | null;
+  equity_curve: { timestamp: string; portfolio_value: number; cash?: number }[] | null;
+  benchmark_equity_curve: { timestamp: string; value: number }[] | null;
+  drawdown_curve: { timestamp: string; drawdown_pct: number }[] | null;
+  rolling_metrics: { window_days: number; points: BacktestRollingPoint[] } | null;
+  monthly_returns_matrix: { years: number[]; cells: [number, number, number][] } | null;
+  eoy_returns: {
+    year: number; strategy_pct: number; benchmark_pct: number | null;
+    multiplier: number | null; won: boolean;
+  }[] | null;
+  drawdown_periods: {
+    start: string; trough: string; recovered: string | null;
+    depth: number; days: number;
+  }[] | null;
+}
+
+export interface BacktestEquityWindow {
+  resolution: "1min" | "1hour" | "1day";
+  items: { ts: string; portfolio_value: number; cash: number }[];
+}

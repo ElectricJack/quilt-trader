@@ -23,6 +23,8 @@ import type {
   TradeRow,
   AlertItem,
   AccountSnapshotLatestItem,
+  BacktestReport,
+  BacktestEquityWindow,
 } from "../types";
 
 // ─── Request body types ────────────────────────────────────────────────────────
@@ -680,11 +682,17 @@ export const api = {
   getBacktestRun(id: string): Promise<BacktestRunRecord> {
     return request<BacktestRunRecord>(`/api/backtest-runs/${id}`);
   },
-  getBacktestEquityCurve(id: string): Promise<{
-    items: Array<{ timestamp: string; portfolio_value: number; cash?: number }>;
-    benchmark: Array<{ timestamp: string; value: number }>;
-  }> {
-    return request(`/api/backtest-runs/${id}/equity-curve`);
+  getBacktestReport(id: string): Promise<BacktestReport> {
+    return request<BacktestReport>(`/api/backtest-runs/${id}/report`);
+  },
+  getBacktestEquityWindow(
+    id: string, params: { from: string; to: string; resolution?: "1min" | "1hour" | "1day" | "auto" },
+  ): Promise<BacktestEquityWindow> {
+    const qs = new URLSearchParams();
+    qs.set("from", params.from);
+    qs.set("to", params.to);
+    qs.set("resolution", params.resolution ?? "auto");
+    return request<BacktestEquityWindow>(`/api/backtest-runs/${id}/equity?${qs.toString()}`);
   },
   getBacktestTrades(id: string, params?: { limit?: number; offset?: number }): Promise<{ items: unknown[] }> {
     const qs = new URLSearchParams();
