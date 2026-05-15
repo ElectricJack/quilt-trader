@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import traceback
 from datetime import datetime, timezone
@@ -259,12 +260,35 @@ class BacktestRunner:
 
             observer = _RunObserver()
             cancel = CancelToken()
-            BacktestEngine().run(
-                algorithm=algorithm, ctx=ctx, clock_series=clock_series,
-                clock_timeframe=clock_tf, clock_source=clock_source, clock_symbol=clock_symbol,
-                slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
-                initial_cash=initial_cash, observer=observer, cancel_token=cancel,
-            )
+
+            # Engine.run() is CPU/IO-bound and synchronous; if we called it
+            # directly we'd block the event loop for the entire backtest,
+            # which freezes the API and prevents the dashboard from polling
+            # for progress. Offload to the default thread executor and run a
+            # sibling task that pumps observer.progress to the DB every few
+            # seconds so the dashboard can show a live progress bar.
+            loop = asyncio.get_running_loop()
+            pump = asyncio.create_task(self._progress_pump(run_id, observer))
+            try:
+                await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        BacktestEngine().run,
+                        algorithm=algorithm, ctx=ctx, clock_series=clock_series,
+                        clock_timeframe=clock_tf, clock_source=clock_source,
+                        clock_symbol=clock_symbol,
+                        slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
+                        initial_cash=initial_cash, observer=observer,
+                        cancel_token=cancel,
+                        progress_callback=lambda p: setattr(observer, "progress", p),
+                    ),
+                )
+            finally:
+                pump.cancel()
+                try:
+                    await pump
+                except asyncio.CancelledError:
+                    pass
             if observer.error:
                 raise observer.error
 
@@ -358,6 +382,29 @@ class BacktestRunner:
                 r.error_message = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
                 r.completed_at = datetime.now(timezone.utc)
                 await session.commit()
+
+    async def _progress_pump(
+        self, run_id: str, observer: "_RunObserver", interval_s: float = 2.0,
+    ) -> None:
+        """Periodically copy observer.progress (set by engine progress_callback)
+        into BacktestRun.progress_pct so the dashboard can render a live bar.
+        Cancelled when the engine returns.
+        """
+        from coordinator.database.models import BacktestRun
+
+        while True:
+            await asyncio.sleep(interval_s)
+            try:
+                async with self._sf() as session:
+                    r = (await session.execute(
+                        select(BacktestRun).where(BacktestRun.id == run_id)
+                    )).scalar_one_or_none()
+                    if r is None:
+                        return
+                    r.progress_pct = float(observer.progress)
+                    await session.commit()
+            except Exception:
+                logger.exception("Progress pump iteration failed for %s", run_id)
 
     async def _wait_for_download(self, download_id: str, poll_s: float = 1.0) -> None:
         while True:

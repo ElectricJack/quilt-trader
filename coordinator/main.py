@@ -142,6 +142,7 @@ def create_app(
             logger.info("Recovered %d orphaned download row(s) from previous run", n_recovered)
 
         container = ServiceContainer(session_factory, event_bus, encryption, scheduler)
+        container.data_service = data_svc
 
         from coordinator.services.live_feed_manager import LiveFeedManager
         from coordinator.services.live_feed_aggregator import LiveFeedAggregator
