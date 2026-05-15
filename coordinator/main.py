@@ -149,6 +149,19 @@ def create_app(
         container.live_feed_aggregator = LiveFeedAggregator(session_factory)
         await container.live_feed_aggregator.start()
 
+        try:
+            from coordinator.services.backtest_runner import BacktestRunner
+            container.backtest_runner = BacktestRunner(
+                session_factory=session_factory,
+                download_manager=download_manager,
+                data_service=data_svc,
+            )
+        except ImportError:
+            logger.warning(
+                "coordinator.services.backtest_runner not available yet (C1 pending); "
+                "backtest run endpoints will return 500 if the runner is invoked."
+            )
+
         set_container(container)
         yield
 
@@ -220,6 +233,9 @@ def create_app(
 
     from coordinator.api.routes import options_chain as options_chain_routes
     app.include_router(options_chain_routes.router)
+
+    from coordinator.api.routes import backtest_runs as backtest_runs_routes
+    app.include_router(backtest_runs_routes.router)
 
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")

@@ -9,6 +9,7 @@ from coordinator.services.encryption import EncryptionService
 if TYPE_CHECKING:
     from coordinator.services.live_feed_manager import LiveFeedManager
     from coordinator.services.live_feed_aggregator import LiveFeedAggregator
+    from coordinator.services.backtest_runner import BacktestRunner
 
 
 class ServiceContainer:
@@ -25,6 +26,7 @@ class ServiceContainer:
         self.scheduler = scheduler
         self.live_feed_manager: Optional["LiveFeedManager"] = None
         self.live_feed_aggregator: Optional["LiveFeedAggregator"] = None
+        self.backtest_runner: Optional["BacktestRunner"] = None
 
 
 _container: ServiceContainer | None = None
