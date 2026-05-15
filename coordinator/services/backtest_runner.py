@@ -242,6 +242,49 @@ class BacktestRunner:
             else:
                 metrics = {}
 
+            # Generate tearsheet (best-effort — failure doesn't fail the run)
+            from coordinator.services.backtest_tearsheet import generate_tearsheet
+            tearsheet_path = None
+            try:
+                pv_series = pd.Series(
+                    [p["portfolio_value"] for p in observer.equity_curve],
+                    index=pd.to_datetime([p["timestamp"] for p in observer.equity_curve]),
+                )
+                bench_pv = None
+                async with self._sf() as session:
+                    run = (await session.execute(
+                        select(BacktestRun).where(BacktestRun.id == run_id)
+                    )).scalar_one()
+                    _benchmark_symbol = run.benchmark_symbol
+                    _benchmark_source = run.benchmark_source
+                    _initial_cash = run.initial_cash
+                    _date_range_start = run.date_range_start
+                    _date_range_end = run.date_range_end
+                if _benchmark_symbol and _benchmark_source:
+                    bench_df = self._ds.load_market_data(_benchmark_source, _benchmark_symbol, "1day")
+                    if bench_df is not None and not bench_df.empty:
+                        mask = (
+                            (bench_df["timestamp"] >= pd.Timestamp(_date_range_start)) &
+                            (bench_df["timestamp"] <= pd.Timestamp(_date_range_end))
+                        )
+                        bench = bench_df[mask].copy()
+                        if not bench.empty:
+                            bench["pv_proxy"] = bench["close"] / bench["close"].iloc[0] * _initial_cash
+                            bench_pv = pd.Series(
+                                bench["pv_proxy"].values,
+                                index=bench["timestamp"].values,
+                                name=_benchmark_symbol,
+                            )
+                out_path = f"data/backtests/{run_id}/tearsheet.html"
+                tearsheet_path = generate_tearsheet(
+                    pv_series, bench_pv,
+                    title=f"{algo_name} backtest",
+                    output=out_path,
+                    risk_free_rate=0.04,
+                )
+            except Exception as exc:
+                logger.warning("Tearsheet step failed; backtest result is still valid: %s", exc)
+
             async with self._sf() as session:
                 r = (await session.execute(
                     select(BacktestRun).where(BacktestRun.id == run_id)
@@ -256,6 +299,8 @@ class BacktestRunner:
                         v = pd.Timestamp(v).to_pydatetime() if not isinstance(v, datetime) else v
                     if hasattr(r, k):
                         setattr(r, k, v)
+                if tearsheet_path:
+                    r.tearsheet_path = tearsheet_path
                 r.status = "completed"
                 r.completed_at = datetime.now(timezone.utc)
                 r.progress_message = "Backtest complete"
