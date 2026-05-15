@@ -193,6 +193,33 @@ class BacktestEngine:
                     cash=cash, positions=positions, rng=rng, sim_time=bar["timestamp"].to_pydatetime(),
                 )
                 if fill is not None:
+                    # Buying-power check for buys: paper equities/crypto have no
+                    # margin, so a buy that would push cash negative is rejected.
+                    # Sells / shorts on existing positions are allowed; opening a
+                    # short with no position is also rejected (no margin in v1).
+                    if fill.side == "buy":
+                        notional_plus_fees = fill.fill_price * fill.quantity + fill.fees
+                        if notional_plus_fees > cash + 1e-6:
+                            observer.on_signal_rejected(
+                                sim_time,
+                                Signal(legs=[po.leg]),
+                                f"insufficient_buying_power: order needs "
+                                f"${notional_plus_fees:,.2f} but cash is ${cash:,.2f}",
+                            )
+                            continue
+                    elif fill.side == "sell":
+                        # Block accidental short via over-selling beyond current position.
+                        key = (fill.symbol,)
+                        held = positions.get(key)
+                        held_qty = held.quantity if held else 0.0
+                        if fill.quantity > held_qty + 1e-9:
+                            observer.on_signal_rejected(
+                                sim_time,
+                                Signal(legs=[po.leg]),
+                                f"insufficient_position: sell {fill.quantity} but "
+                                f"holding {held_qty}",
+                            )
+                            continue
                     cash = self._apply_fill(cash, positions, fill)
                     all_fills.append(fill)
                     observer.on_fill(fill)

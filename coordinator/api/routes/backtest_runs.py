@@ -140,11 +140,14 @@ async def get_equity_curve(run_id: str, db: AsyncSession = Depends(get_db)):
     # Compute the benchmark curve on demand from the cached parquet so a stale
     # equity_curve never blocks the page. Normalize to initial_cash so the
     # benchmark and strategy share the same starting value.
+    # NOTE: use `is not None` for initial_cash because 0 is a valid (if odd)
+    # input and we still want to compute the benchmark curve in that case.
     if (
         r.benchmark_symbol
         and r.benchmark_source
         and r.equity_curve
-        and r.initial_cash
+        and r.initial_cash is not None
+        and r.initial_cash > 0
     ):
         try:
             import pandas as pd
