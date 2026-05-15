@@ -199,11 +199,79 @@ def longest_streak(trades: list[dict], *, win: bool) -> int:
     return longest
 
 
+def _safe_qs(fn, *args, default=None, **kwargs):
+    """Call a qs.stats function; return default on any failure or NaN/Inf."""
+    try:
+        v = float(fn(*args, **kwargs))
+        if math.isnan(v) or math.isinf(v):
+            return default
+        return v
+    except Exception:
+        return default
+
+
+def _avg_drawdown_stats(df: pd.DataFrame) -> dict:
+    """Average drawdown depth and duration across all drawdown periods."""
+    s = _returns_series(df)
+    if s.empty:
+        return {"depth": 0.0, "days": 0.0}
+    try:
+        details = qs.stats.drawdown_details(qs.stats.to_drawdown_series(s))
+        if details is None or len(details) == 0:
+            return {"depth": 0.0, "days": 0.0}
+        depth = float(details["max drawdown"].abs().mean()) / 100.0
+        days = float(details["days"].mean())
+        return {"depth": depth, "days": days}
+    except Exception:
+        return {"depth": 0.0, "days": 0.0}
+
+
+def _period_return(daily_df: pd.DataFrame, *, days: int | None = None,
+                   ytd: bool = False, annualize_after_days: int | None = None) -> float | None:
+    """Return cumulative (or annualized) return over the trailing window.
+
+    - ytd: from Jan 1 of the final year through the end.
+    - days: trailing N calendar days through the end.
+    - annualize_after_days: if the realized window >= this many days, return CAGR;
+      otherwise return cumulative.
+    """
+    if daily_df.empty:
+        return None
+    pv = daily_df.set_index("timestamp")["portfolio_value"].sort_index()
+    if pv.empty:
+        return None
+    end = pv.index[-1]
+    if ytd:
+        start_idx = pv.index[pv.index >= pd.Timestamp(end.year, 1, 1)]
+        if len(start_idx) == 0:
+            return None
+        start_pv = float(pv.loc[start_idx[0]])
+    else:
+        if days is None:
+            return None
+        cutoff = end - pd.Timedelta(days=days)
+        window = pv.loc[pv.index >= cutoff]
+        if len(window) < 2:
+            return None
+        start_pv = float(window.iloc[0])
+    end_pv = float(pv.iloc[-1])
+    if start_pv <= 0:
+        return None
+    cum = end_pv / start_pv - 1.0
+    if annualize_after_days is not None and days is not None and days >= annualize_after_days:
+        years = days / 365.25
+        if years > 0:
+            return (end_pv / start_pv) ** (1 / years) - 1.0
+    return cum
+
+
 def compute_all(
     df: pd.DataFrame, trades: list[dict], *,
     initial_cash: float, risk_free_rate: float = 0.04,
 ) -> dict[str, Any]:
     md = max_drawdown(df)
+    s = _returns_series(df)
+    avg_dd = _avg_drawdown_stats(df)
     return {
         "total_return": total_return(df, initial_cash),
         "cagr": cagr(df),
@@ -214,6 +282,22 @@ def compute_all(
         "max_drawdown": md["drawdown"],
         "max_drawdown_date": md["date"],
         "romad": romad(df),
+        # Extended distribution / risk metrics from qs.stats
+        "omega": _safe_qs(qs.stats.omega, s, default=0.0) if not s.empty else 0.0,
+        "ulcer_index": _safe_qs(qs.stats.ulcer_index, s, default=0.0) if not s.empty else 0.0,
+        "daily_var": _safe_qs(qs.stats.value_at_risk, s, default=0.0) if not s.empty else 0.0,
+        "daily_cvar": _safe_qs(qs.stats.cvar, s, default=0.0) if not s.empty else 0.0,
+        "skew": _safe_qs(qs.stats.skew, s, default=0.0) if not s.empty else 0.0,
+        "kurtosis": _safe_qs(qs.stats.kurtosis, s, default=0.0) if not s.empty else 0.0,
+        "best_day": _safe_qs(qs.stats.best, s, default=0.0) if not s.empty else 0.0,
+        "worst_day": _safe_qs(qs.stats.worst, s, default=0.0) if not s.empty else 0.0,
+        "best_month": _safe_qs(qs.stats.best, s, "M", default=0.0) if not s.empty else 0.0,
+        "worst_month": _safe_qs(qs.stats.worst, s, "M", default=0.0) if not s.empty else 0.0,
+        "time_in_market": _safe_qs(qs.stats.exposure, s, default=0.0) if not s.empty else 0.0,
+        "win_days": _safe_qs(qs.stats.win_rate, s, default=0.0) if not s.empty else 0.0,
+        "win_month": _safe_qs(qs.stats.win_rate, s, "M", default=0.0) if not s.empty else 0.0,
+        "avg_drawdown": avg_dd["depth"],
+        "avg_drawdown_days": avg_dd["days"],
         "trade_count": len(round_trip_trades(trades)),
         "win_rate": win_rate(trades),
         "profit_factor": profit_factor(trades),

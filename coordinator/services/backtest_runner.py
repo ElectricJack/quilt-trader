@@ -72,11 +72,23 @@ def _df_timestamps_naive(df: pd.DataFrame) -> pd.Series:
 
 
 def _has_coverage(data_service, source, symbol, timeframe, start, end) -> bool:
+    """Return True if cached market data covers [start, end] at date granularity.
+
+    Compares calendar dates rather than full timestamps because cached daily
+    bars are typically stamped at 00:00 while user-supplied date_range_end
+    may carry a time-of-day component (e.g. 16:00 ET). A datetime-precise
+    comparison would flip an otherwise-covered range to "not covered" and
+    trigger an unnecessary re-download on every run.
+    """
     df = data_service.load_market_data(source, symbol, timeframe)
     if df is None or df.empty:
         return False
     ts = _df_timestamps_naive(df)
-    return ts.min() <= _to_naive_utc(start) and ts.max() >= _to_naive_utc(end)
+    cached_first = ts.min().date()
+    cached_last = ts.max().date()
+    requested_first = _to_naive_utc(start).date()
+    requested_last = _to_naive_utc(end).date()
+    return cached_first <= requested_first and cached_last >= requested_last
 
 
 def _load_bar_series(data_service, source, symbol, timeframe) -> pd.DataFrame:

@@ -151,6 +151,42 @@ def _safe(series: Optional[pd.Series], idx) -> Optional[float]:
     return float(v)
 
 
+def _add_period_returns(metrics: dict, daily_df: pd.DataFrame) -> dict:
+    """Add ytd / 1y / 3y to a metrics dict (computed from the equity curve)."""
+    from coordinator.services.backtest_metrics_qs import _period_return
+    metrics["ytd"] = _period_return(daily_df, ytd=True)
+    metrics["1y"] = _period_return(daily_df, days=365)
+    metrics["3y"] = _period_return(daily_df, days=365 * 3, annualize_after_days=365 * 3)
+    return metrics
+
+
+def _add_benchmark_metrics(
+    metrics: dict, strat_returns: pd.Series, bench_returns: Optional[pd.Series],
+) -> dict:
+    """Add beta / alpha / correlation against the benchmark to a metrics dict."""
+    if bench_returns is None or bench_returns.empty:
+        metrics["beta"] = None
+        metrics["alpha"] = None
+        metrics["correlation"] = None
+        return metrics
+    joined = pd.concat([strat_returns, bench_returns], axis=1, join="inner").dropna()
+    joined.columns = ["s", "b"]
+    if len(joined) < 2:
+        metrics["beta"] = None
+        metrics["alpha"] = None
+        metrics["correlation"] = None
+        return metrics
+    var_b = float(joined["b"].var())
+    cov_sb = float(joined["s"].cov(joined["b"]))
+    beta = cov_sb / var_b if var_b > 0 else None
+    alpha = float(joined["s"].mean() - (beta or 0.0) * joined["b"].mean()) * 252  # ann.
+    corr = float(joined["s"].corr(joined["b"]))
+    metrics["beta"] = beta
+    metrics["alpha"] = alpha
+    metrics["correlation"] = corr if not np.isnan(corr) else None
+    return metrics
+
+
 def build_key_metrics(
     daily_df: pd.DataFrame,
     benchmark_daily_df: Optional[pd.DataFrame],
@@ -158,12 +194,18 @@ def build_key_metrics(
     risk_free_rate: float = 0.04,
 ) -> dict:
     strat = compute_all(_with_return(daily_df), trades=[], initial_cash=initial_cash, risk_free_rate=risk_free_rate)
-    bench = {}
+    strat_returns = _returns_from_pv(daily_df)
+    bench: dict = {}
+    bench_returns: Optional[pd.Series] = None
     if benchmark_daily_df is not None and not benchmark_daily_df.empty:
         bench_pv = benchmark_daily_df.set_index("timestamp")["portfolio_value"]
         bench_init = float(bench_pv.iloc[0])
         bench = compute_all(_with_return(benchmark_daily_df), trades=[], initial_cash=bench_init, risk_free_rate=risk_free_rate)
-    # Drop date objects; JSON-safe
+        bench_returns = _returns_from_pv(benchmark_daily_df)
+        _add_period_returns(bench, benchmark_daily_df)
+    _add_period_returns(strat, daily_df)
+    _add_benchmark_metrics(strat, strat_returns, bench_returns)
+    # Drop date objects + drawdown_periods (own column); JSON-safe.
     strat = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in strat.items() if k != "drawdown_periods"}
     bench = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in bench.items() if k != "drawdown_periods"}
     return {"strategy": strat, "benchmark": bench}
@@ -232,6 +274,25 @@ async def finalize_run(
         # Top-10 drawdowns
         from coordinator.services.backtest_metrics_qs import top_n_drawdowns
         r.drawdown_periods = top_n_drawdowns(_with_return(daily_df), n=10)
+
+        # Mirror the headline strategy metrics into the flat columns so the
+        # /backtests list view (which reads BacktestRunRecord, not /report)
+        # shows return/sharpe/trades for new runs.
+        km = r.key_metrics["strategy"]
+        r.total_return = km.get("total_return")
+        r.cagr = km.get("cagr")
+        r.volatility = km.get("volatility")
+        r.sharpe_ratio = km.get("sharpe_ratio")
+        r.sortino_ratio = km.get("sortino_ratio")
+        r.calmar_ratio = km.get("calmar_ratio")
+        r.max_drawdown = km.get("max_drawdown")
+        mdd_date = km.get("max_drawdown_date")
+        r.max_drawdown_date = (
+            datetime.fromisoformat(mdd_date) if isinstance(mdd_date, str) else mdd_date
+        )
+        r.romad = km.get("romad")
+        r.longest_drawdown_days = km.get("longest_drawdown_days")
+        r.trade_count = km.get("trade_count")
 
         await session.commit()
 

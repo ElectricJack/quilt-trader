@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, type IChartApi, type ISeriesApi } from "lightweight-charts";
 import type { BacktestReport, BacktestRollingPoint } from "../../types";
+import { useChartResize } from "./useChartResize";
 
 type Series = "sharpe" | "sortino" | "vol" | "beta";
 const SERIES_META: Record<Series, { color: string; label: string }> = {
@@ -23,6 +24,7 @@ export function RollingMetricsSlot({ report }: Props) {
   useEffect(() => {
     if (!ref.current || !report.rolling_metrics) return;
     const chart = createChart(ref.current, {
+      width: ref.current.clientWidth,
       height: 220,
       layout: { background: { type: ColorType.Solid, color: "#0f172a" }, textColor: "#9ca3af" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
@@ -31,6 +33,7 @@ export function RollingMetricsSlot({ report }: Props) {
     chart.timeScale().fitContent();
     return () => { chart.remove(); chartRef.current = null; seriesRef.current = {}; };
   }, [report.rolling_metrics]);
+  useChartResize(ref, chartRef.current);
 
   useEffect(() => {
     if (!chartRef.current || !report.rolling_metrics) return;

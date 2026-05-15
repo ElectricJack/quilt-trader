@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, type IChartApi } from "lightweight-charts";
 import type { BacktestReport } from "../../types";
+import { useChartResize } from "./useChartResize";
 
 interface Props { report: BacktestReport; }
 
@@ -27,13 +28,16 @@ export function DrawdownSlot({ report }: Props) {
 
 function Underwater({ curve }: { curve: BacktestReport["drawdown_curve"] }) {
   const ref = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
   useEffect(() => {
     if (!ref.current || !curve) return;
     const chart: IChartApi = createChart(ref.current, {
+      width: ref.current.clientWidth,
       height: 220,
       layout: { background: { type: ColorType.Solid, color: "#0f172a" }, textColor: "#9ca3af" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
     });
+    chartRef.current = chart;
     const series = chart.addAreaSeries({
       lineColor: "#ef4444", topColor: "rgba(239,68,68,0.3)", bottomColor: "rgba(239,68,68,0.0)",
     });
@@ -42,8 +46,9 @@ function Underwater({ curve }: { curve: BacktestReport["drawdown_curve"] }) {
       value: p.drawdown_pct * 100,
     })));
     chart.timeScale().fitContent();
-    return () => chart.remove();
+    return () => { chart.remove(); chartRef.current = null; };
   }, [curve]);
+  useChartResize(ref, chartRef.current);
   return <div ref={ref} className="w-full" />;
 }
 
