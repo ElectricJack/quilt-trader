@@ -4,8 +4,8 @@
 2. Parses manifest data_dependencies.
 3. Checks each (source, symbol, timeframe) has parquet coverage; downloads missing.
 4. Builds BacktestTickContext, loads algorithm class.
-5. Runs BacktestEngine with a persistence-aware observer.
-6. Computes metrics, persists everything to the BacktestRun row.
+5. Runs BacktestEngine with a ChunkingObserver → ParquetWriterThread pipeline.
+6. Calls finalize_run to compute metrics and persist everything to the BacktestRun row.
 """
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from coordinator.services.backtest_config import SlippageModel, TradingFee
 from coordinator.services.backtest_engine_v2 import (
     BacktestEngine, CancelToken, EngineObserver, EngineSummary, FillRecord,
 )
-from coordinator.services.backtest_metrics_qs import compute_all
 from coordinator.services.backtest_tick_context import BacktestTickContext
 
 logger = logging.getLogger(__name__)
@@ -98,47 +97,6 @@ def _load_algorithm_class(pkg_dir_name: str, manifest) -> type:
     finally:
         sys.path = old
     return getattr(mod, manifest.class_name)
-
-
-class _RunObserver:
-    def __init__(self):
-        self.equity_curve: list[dict] = []
-        self.trades: list[dict] = []
-        self.error: Optional[Exception] = None
-        self.summary: Optional[EngineSummary] = None
-        self.progress = 0.0
-
-    def on_tick(self, sim_time, ctx_snapshot): pass
-    def on_signals_emitted(self, sim_time, signals): pass
-
-    def on_equity_point(self, sim_time, portfolio_value, cash, positions):
-        self.equity_curve.append({
-            "timestamp": sim_time.isoformat(),
-            "portfolio_value": portfolio_value,
-            "cash": cash,
-            "positions": positions,
-        })
-
-    def on_fill(self, fill: FillRecord):
-        self.trades.append({
-            "timestamp": fill.timestamp.isoformat(),
-            "symbol": fill.symbol,
-            "asset_type": fill.asset_type,
-            "side": fill.side,
-            "quantity": fill.quantity,
-            "requested_price": fill.requested_price,
-            "fill_price": fill.fill_price,
-            "slippage_dollars": fill.slippage_dollars,
-            "slippage_bps_applied": fill.slippage_bps_applied,
-            "fees": fill.fees,
-            "fee_breakdown": fill.fee_breakdown,
-            "signal_id": fill.signal_id,
-            "realized_pnl": fill.realized_pnl,
-        })
-
-    def on_signal_rejected(self, sim_time, signal, reason): pass
-    def on_complete(self, summary): self.summary = summary
-    def on_error(self, exc): self.error = exc
 
 
 class BacktestRunner:
@@ -258,15 +216,25 @@ class BacktestRunner:
             buy_fees = [TradingFee(**f) for f in (buy_fees_cfg or [])]
             sell_fees = [TradingFee(**f) for f in (sell_fees_cfg or [])]
 
-            observer = _RunObserver()
-            cancel = CancelToken()
+            from queue import Queue
+            from coordinator.services.backtest_writer import (
+                ChunkingObserver, ParquetWriterThread,
+            )
+            from coordinator.services.backtest_finalizer import finalize_run
 
-            # Engine.run() is CPU/IO-bound and synchronous; if we called it
-            # directly we'd block the event loop for the entire backtest,
-            # which freezes the API and prevents the dashboard from polling
-            # for progress. Offload to the default thread executor and run a
-            # sibling task that pumps observer.progress to the DB every few
-            # seconds so the dashboard can show a live progress bar.
+            run_dir = Path("data/backtests") / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            equity_native_path = run_dir / "equity_native.parquet"
+            trades_path = run_dir / "trades.parquet"
+
+            chunk_queue: Queue = Queue(maxsize=8)
+            observer = ChunkingObserver(queue=chunk_queue, clock_series=clock_series)
+            writer = ParquetWriterThread(
+                queue=chunk_queue, equity_path=equity_native_path, trades_path=trades_path,
+            )
+            writer.start()
+
+            cancel = CancelToken()
             loop = asyncio.get_running_loop()
             pump = asyncio.create_task(self._progress_pump(run_id, observer))
             try:
@@ -289,88 +257,44 @@ class BacktestRunner:
                     await pump
                 except asyncio.CancelledError:
                     pass
-            if observer.error:
-                raise observer.error
+                # Signal writer to drain & exit
+                chunk_queue.put(None)
+                writer.join(timeout=30)
 
-            # Stage 3: compute metrics, persist
-            df = pd.DataFrame(observer.equity_curve)
-            if not df.empty:
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-                df = df.set_index("timestamp")
-                df["return"] = df["portfolio_value"].pct_change().fillna(0)
-                # Resample to daily for metric computation
-                daily = df.resample("D").last().dropna()
-                daily["return"] = daily["portfolio_value"].pct_change().fillna(0)
-                metrics = compute_all(
-                    daily, observer.trades,
-                    initial_cash=initial_cash, risk_free_rate=0.04,
-                )
-            else:
-                metrics = {}
+            if observer.writer_error or writer.error:
+                raise (writer.error or observer.writer_error)
 
-            # Generate tearsheet (best-effort — failure doesn't fail the run)
-            from coordinator.services.backtest_tearsheet import generate_tearsheet
-            tearsheet_path = None
-            try:
-                pv_series = pd.Series(
-                    [p["portfolio_value"] for p in observer.equity_curve],
-                    index=pd.to_datetime([p["timestamp"] for p in observer.equity_curve]),
-                )
-                bench_pv = None
-                async with self._sf() as session:
-                    run = (await session.execute(
-                        select(BacktestRun).where(BacktestRun.id == run_id)
-                    )).scalar_one()
-                    _benchmark_symbol = run.benchmark_symbol
-                    _benchmark_source = run.benchmark_source
-                    _initial_cash = run.initial_cash
-                    _date_range_start = run.date_range_start
-                    _date_range_end = run.date_range_end
-                if _benchmark_symbol and _benchmark_source:
-                    bench_df = self._ds.load_market_data(_benchmark_source, _benchmark_symbol, "1day")
-                    if bench_df is not None and not bench_df.empty:
-                        mask = (
-                            (bench_df["timestamp"] >= pd.Timestamp(_date_range_start)) &
-                            (bench_df["timestamp"] <= pd.Timestamp(_date_range_end))
-                        )
-                        bench = bench_df[mask].copy()
-                        if not bench.empty:
-                            bench["pv_proxy"] = bench["close"] / bench["close"].iloc[0] * _initial_cash
-                            bench_pv = pd.Series(
-                                bench["pv_proxy"].values,
-                                index=bench["timestamp"].values,
-                                name=_benchmark_symbol,
-                            )
-                out_path = f"data/backtests/{run_id}/tearsheet.html"
-                tearsheet_path = generate_tearsheet(
-                    pv_series, bench_pv,
-                    title=f"{algo_name} backtest",
-                    output=out_path,
-                    risk_free_rate=0.04,
-                )
-            except Exception as exc:
-                logger.warning("Tearsheet step failed; backtest result is still valid: %s", exc)
-
+            # Load benchmark bars for finalize (if configured)
+            benchmark_bar_df = None
             async with self._sf() as session:
                 r = (await session.execute(
                     select(BacktestRun).where(BacktestRun.id == run_id)
                 )).scalar_one()
-                r.equity_curve = observer.equity_curve
-                r.trades = observer.trades
-                r.total_fees_paid = sum(t["fees"] for t in observer.trades)
-                r.total_slippage_dollars = sum(t["slippage_dollars"] for t in observer.trades)
-                # Apply metrics
-                for k, v in metrics.items():
-                    if k == "max_drawdown_date" and v is not None:
-                        v = pd.Timestamp(v).to_pydatetime() if not isinstance(v, datetime) else v
-                    if hasattr(r, k):
-                        setattr(r, k, v)
-                if tearsheet_path:
-                    r.tearsheet_path = tearsheet_path
+                bench_symbol = r.benchmark_symbol
+                bench_source = r.benchmark_source
+            if bench_symbol and bench_source:
+                bdf = self._ds.load_market_data(bench_source, bench_symbol, "1day")
+                if bdf is not None and not bdf.empty:
+                    benchmark_bar_df = bdf
+
+            # Finalize: resample, compute metrics, persist row.
+            # equity_native.parquet may not exist if the mock engine emitted no chunks.
+            if equity_native_path.exists():
+                await finalize_run(
+                    run_id=run_id, run_dir=run_dir,
+                    session_factory=self._sf, benchmark_bar_df=benchmark_bar_df,
+                )
+
+            # Mark complete + clear progress fields
+            async with self._sf() as session:
+                r = (await session.execute(
+                    select(BacktestRun).where(BacktestRun.id == run_id)
+                )).scalar_one()
                 r.status = "completed"
                 r.completed_at = datetime.now(timezone.utc)
                 r.progress_message = "Backtest complete"
                 r.progress_pct = 1.0
+                r.download_ids = download_ids
                 await session.commit()
         except Exception as exc:
             logger.exception("BacktestRunner failed for %s", run_id)
@@ -384,10 +308,11 @@ class BacktestRunner:
                 await session.commit()
 
     async def _progress_pump(
-        self, run_id: str, observer: "_RunObserver", interval_s: float = 2.0,
+        self, run_id: str, observer, interval_s: float = 2.0,
     ) -> None:
         """Periodically copy observer.progress (set by engine progress_callback)
         into BacktestRun.progress_pct so the dashboard can render a live bar.
+        Also persists the latest daily equity snapshot for live curve updates.
         Cancelled when the engine returns.
         """
         from coordinator.database.models import BacktestRun
@@ -402,6 +327,10 @@ class BacktestRunner:
                     if r is None:
                         return
                     r.progress_pct = float(observer.progress)
+                    if hasattr(observer, "daily_aggregate_snapshot"):
+                        snap = observer.daily_aggregate_snapshot()
+                        if snap:
+                            r.equity_curve = snap
                     await session.commit()
             except Exception:
                 logger.exception("Progress pump iteration failed for %s", run_id)
