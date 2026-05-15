@@ -71,7 +71,6 @@ def _to_response(r: BacktestRun) -> dict:
         "longest_winning_streak": r.longest_winning_streak,
         "longest_losing_streak": r.longest_losing_streak,
         "drawdown_periods": r.drawdown_periods,
-        "tearsheet_path": r.tearsheet_path,
         "started_at": r.started_at.isoformat() if r.started_at else None,
         "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         "created_at": r.created_at.isoformat() if r.created_at else None,

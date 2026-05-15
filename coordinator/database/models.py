@@ -385,9 +385,14 @@ class BacktestRun(Base):
     equity_curve: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     trades: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     drawdown_periods: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    key_metrics: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    rolling_metrics: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    monthly_returns_matrix: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    eoy_returns: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    benchmark_equity_curve: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    drawdown_curve: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
     # Side artifacts
-    tearsheet_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     download_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
