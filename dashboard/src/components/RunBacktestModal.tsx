@@ -29,11 +29,18 @@ export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = 
   const addAlert = useUIStore((s) => s.addAlert);
   const create = useCreateBacktestRun();
 
-  const today = new Date();
-  const oneYearAgo = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate());
+  // Build defaults from UTC components so we never accidentally jump a day
+  // by formatting local-time through toISOString. End defaults to "two days
+  // ago" so we stay outside the polygon free-tier settle window (current/
+  // realtime data 403s on free keys).
+  const _now = new Date();
+  const _utcDateStr = (d: Date) =>
+    `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  const _defaultEnd = new Date(Date.UTC(_now.getUTCFullYear(), _now.getUTCMonth(), _now.getUTCDate() - 2));
+  const _defaultStart = new Date(Date.UTC(_defaultEnd.getUTCFullYear() - 1, _defaultEnd.getUTCMonth(), _defaultEnd.getUTCDate()));
 
-  const [start, setStart] = useState(oneYearAgo.toISOString().slice(0, 10));
-  const [end, setEnd] = useState(today.toISOString().slice(0, 10));
+  const [start, setStart] = useState(_utcDateStr(_defaultStart));
+  const [end, setEnd] = useState(_utcDateStr(_defaultEnd));
   const [cash, setCash] = useState(100_000);
   const [preset, setPreset] = useState<keyof typeof FEE_PRESETS>("none");
   const [marketBps, setMarketBps] = useState(5.0);

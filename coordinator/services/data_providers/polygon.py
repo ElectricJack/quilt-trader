@@ -159,7 +159,28 @@ class PolygonProvider:
         page_index = 0
         while True:
             await self._safe_status(on_status, f"Starting page {page_index + 1}")
-            response = await self._request_with_retry(url, params, on_status=on_status)
+            try:
+                response = await self._request_with_retry(url, params, on_status=on_status)
+            except Exception as exc:
+                # Page 0 (initial request) failures must propagate — we have no data.
+                # Later-page failures (next_url paginating past the requested range, or
+                # into a tier-restricted current/future window) are tolerated: we keep
+                # the bars we already persisted and break out cleanly. Polygon's
+                # next_url sometimes points at single-day current ranges that the free
+                # tier 403s.
+                if page_index == 0:
+                    raise
+                logger.warning(
+                    "Polygon pagination stopped at page %d for %s due to %s: %s; "
+                    "%d bars already persisted",
+                    page_index, symbol, type(exc).__name__, exc, len(all_bars),
+                )
+                await self._safe_status(
+                    on_status,
+                    f"Stopped paginating at page {page_index + 1} ({type(exc).__name__}); "
+                    f"keeping {len(all_bars)} bars",
+                )
+                break
             data = response.json()
             results = data.get("results") or []
             page_bars = [
