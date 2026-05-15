@@ -210,17 +210,17 @@ async def get_tearsheet(run_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/{run_id}", status_code=204)
 async def delete_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    import shutil
     r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()
     if r is None:
         raise HTTPException(404, detail="Backtest run not found")
-    # If in-flight, the runner exposes a per-run CancelToken via the container — set it
     container = get_container()
     if hasattr(container, "cancel_backtest"):
         container.cancel_backtest(run_id)
-    # Best-effort cleanup of tearsheet file
-    if r.tearsheet_path:
-        try:
-            Path(r.tearsheet_path).unlink(missing_ok=True)
-        except OSError:
-            pass
+    # Remove the entire run output directory
+    run_dir = Path("data/backtests") / run_id
+    try:
+        shutil.rmtree(run_dir, ignore_errors=True)
+    except Exception:
+        logger.exception("Failed to remove run dir %s", run_dir)
     await db.delete(r)

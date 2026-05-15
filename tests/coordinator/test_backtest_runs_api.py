@@ -41,3 +41,27 @@ async def test_list_backtest_runs(client, db_session):
 async def test_get_404(client):
     r = await client.get("/api/backtest-runs/missing")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_run_removes_run_directory(client, db_session, tmp_path, monkeypatch):
+    """DELETE should rmtree data/backtests/{run_id}/."""
+    from coordinator.database.models import Algorithm, BacktestRun
+    monkeypatch.chdir(tmp_path)
+    algo = Algorithm(name="t", repo_url="https://github.com/x/y", install_status="installed")
+    db_session.add(algo); await db_session.flush()
+    run = BacktestRun(
+        algorithm_id=algo.id,
+        date_range_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        date_range_end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        initial_cash=100.0,
+    )
+    db_session.add(run); await db_session.commit()
+
+    run_dir = tmp_path / "data" / "backtests" / run.id
+    run_dir.mkdir(parents=True)
+    (run_dir / "equity_native.parquet").write_bytes(b"stub")
+
+    resp = await client.delete(f"/api/backtest-runs/{run.id}")
+    assert resp.status_code == 204
+    assert not run_dir.exists()
