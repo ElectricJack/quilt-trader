@@ -129,6 +129,32 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
     return _to_response(r)
 
 
+@router.get("/{run_id}/report")
+async def get_report(run_id: str, db: AsyncSession = Depends(get_db)):
+    r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()
+    if r is None:
+        raise HTTPException(404, detail="Backtest run not found")
+    return {
+        "id": r.id,
+        "algorithm_id": r.algorithm_id,
+        "status": r.status,
+        "date_range_start": r.date_range_start.isoformat() if r.date_range_start else None,
+        "date_range_end": r.date_range_end.isoformat() if r.date_range_end else None,
+        "initial_cash": r.initial_cash,
+        "config_overrides": r.config_overrides,
+        "benchmark_symbol": r.benchmark_symbol,
+        "benchmark_source": r.benchmark_source,
+        "key_metrics": r.key_metrics,
+        "equity_curve": r.equity_curve,
+        "benchmark_equity_curve": r.benchmark_equity_curve,
+        "drawdown_curve": r.drawdown_curve,
+        "rolling_metrics": r.rolling_metrics,
+        "monthly_returns_matrix": r.monthly_returns_matrix,
+        "eoy_returns": r.eoy_returns,
+        "drawdown_periods": r.drawdown_periods,
+    }
+
+
 @router.get("/{run_id}/equity-curve")
 async def get_equity_curve(run_id: str, db: AsyncSession = Depends(get_db)):
     r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()
