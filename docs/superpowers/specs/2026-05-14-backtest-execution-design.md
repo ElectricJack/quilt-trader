@@ -179,6 +179,20 @@ class BacktestEngine:
 
 Same engine, two callers. `BacktestRunner` is from Spec D; `ParallelBacktestFeeder` is wired into `BacktestSchedulerJob` (§11).
 
+### Tick-as-bar: forward-compatible event model
+
+The engine treats every event as a **bar** with `{timestamp, open, high, low, close, volume}`. A tick is the degenerate case: `open == high == low == close == last_price`, `volume == trade_size`. So the same iteration loop, the same `market_data()` filter, and the same fill simulation work identically whether the algorithm is clocked on 1day bars or 1tick events. v1 ships with bar-frequency strategies; ticks are forward-compatible without a rewrite.
+
+Concretely:
+
+- **Storage schema is uniform.** Both bar parquets and tick parquets carry the columns `timestamp, open, high, low, close, volume`. For ticks: `open == high == low == close == last_price`, `volume == trade_size`. No conditional logic in the engine.
+- **Timeframe vocabulary.** v1 supports `1min, 5min, 15min, 1hour, 1day` (matches the existing `polygon.py:TIMEFRAME_MAP`). The `1tick` timeframe is a planned addition — the type-string is reserved; `_timeframe_to_seconds("1tick") = 0` so the look-ahead filter `df["timestamp"] + 0 <= sim_time_now` reduces to `df["timestamp"] <= sim_time_now` (tick available the instant its timestamp ≤ now). No special-casing.
+- **Smallest-timeframe clocking generalizes.** If a future algorithm declares `data_dependencies` of `1tick + 1min`, the simulation clock is the tick stream; `on_tick` fires per tick; `market_data("SPY", "1min", ...)` still returns only fully-closed minute bars at the current sim-time. Same rule, no changes to the engine.
+- **Fill model at tick frequency.** "Next bar's open + slippage" remains meaningful: at tick frequency, the next tick's `open` (= the next tick's print price) is what you fill against, biased by `market_bps` of slippage. Conservative-by-default rules still apply: no same-tick fill, strict-cross for limits.
+- **Storage and downloads.** Spec B's live subscription aggregator already produces tick parquets (`data/market/{broker}_live/{symbol}/ticks/trades-{date}.parquet`). The download manager will need a `data_type=ticks` flow when polygon-tick history is wanted; that's the scope of the future tick-history spec, not v1.
+
+The key promise: the v1 engine is correctness-tested at bar frequency, and the same engine handles tick events when we extend timeframes downward. No fork in the simulation code.
+
 ### Clock and look-ahead enforcement
 
 The simulation maintains a single `sim_time_now: datetime`. At each step, `sim_time_now` is advanced to the close time of the next bar in the **smallest-timeframe** dependency, and `algorithm.on_tick(ctx)` is called.
@@ -224,28 +238,66 @@ state = algorithm.on_stop()  # we discard state for backtest, but call it for sy
 
 ### Fill simulation
 
+#### Conservative-by-default principle
+
+**The biggest source of backtest-to-live divergence is optimistic fill assumptions.** This engine is conservative by default and never produces a fill at the bar where the signal was emitted. Specifically:
+
+1. **No same-bar fills.** A signal emitted on bar `T` (where `on_tick` was called at the close time of `T`) can fill at the **earliest at bar `T+1`'s open**. There is no path through the engine that allows a signal-bar fill — the `pending_orders` queue is processed AFTER `on_tick` returns, against the NEXT iteration's bar. Tested explicitly in §9.3.
+2. **Market orders eat slippage.** Defaults to 5 bps adverse to fill direction (buys pay more, sells receive less). Never zero by default. The user can dial it down for idealized backtests but the system biases toward realism.
+3. **Limit orders require strict touch.** A buy limit only fills if the next bar's `low < limit_price` (price had to *strictly cross* below the limit). Equality is not enough — a bar that exactly touches the limit price doesn't fill, because in reality the order would queue behind any orders already at that price. Same conservative rule for sell limits (`next_bar.high > limit_price`).
+4. **Stop orders trigger then market-fill.** Stop only triggers if the next bar's range crosses the stop price, then becomes a market order filled at the next-next bar's open + slippage (TWO bars after signal). This deliberately doubles the latency for stops because real stops route to the broker, await trigger, then submit a market order — a process that's almost never single-bar-fast.
+5. **Bracket / OCO / multi-leg complexity:** v1 treats every leg in a `Signal` independently for fill purposes. If you submit a 2-leg spread, each leg fills (or doesn't) on its own next-bar timeline. **Real broker multi-leg tickets** (Spec A's `submit_multileg_order`) fill atomically, which is *more favorable* than the v1 backtest model. v1 over-penalizes spread fills, which is intentional — better to be pessimistic in backtest. A future spec can add atomic multi-leg fill simulation for spreads.
+
+These five rules collectively bias the backtest toward **understating performance** when live trading is even marginally better than expected. The aim is "no nasty surprises in live", not "pretty backtest numbers".
+
+#### Per-order-type fill rules
+
 For each `PendingOrder` resolving in the current bar:
 
 **Market order:**
-1. Fill price = `bar.open` (next bar after signal was emitted).
+1. Fill price = `bar.open` (next bar after signal was emitted — never the signal-bar itself).
 2. Apply slippage:
    - `slip = bar.open * (slippage_model.market_bps / 10000) * (+1 if buy else -1)`
    - `fill_price = bar.open + slip`
-   - If `use_bar_range`: instead, `fill_price = uniform(bar.low, bar.high)` (uses random.uniform with a seeded RNG so backtests are reproducible).
+   - If `use_bar_range`: instead, `fill_price = uniform(bar.low, bar.high)` (uses `random.Random(seed=run_id)` so backtests are reproducible).
    - If `volume_impact_bps_per_pct > 0` AND `bar.volume > 0`: `extra_bps = (qty / bar.volume * 100) * volume_impact_bps_per_pct`; apply on top of `market_bps`.
-3. Compute fees: sum applicable `buy_trading_fees` (taker rules) on buy, `sell_trading_fees` on sell.
+3. Compute fees: sum applicable `buy_trading_fees` (taker rules apply) on buys, `sell_trading_fees` on sells.
    - `fee = sum(tf.flat_fee + fill_price * qty * tf.percent_fee for tf in applicable_fees)`
-   - Special case: `tradier-options` preset's per-contract flat fee → flat_fee × qty when `asset_type == "options"`.
+   - Special case: `tradier-options` preset's per-contract flat fee → `flat_fee × qty` when `asset_type == "options"` (post-v1).
 4. Cash impact: `cash -= side_sign(side) * (fill_price * qty) + fee`.
+5. Record `requested_price = bar.open` (the un-slipped value), `slippage_dollars = abs(fill_price - requested_price) * qty`, `slippage_bps_applied`.
 
 **Limit order:**
-1. Filled if `bar.low <= limit_price <= bar.high` for buys, or `bar.low <= limit_price <= bar.high` for sells (limit can be filled either direction within range).
-2. Fill price = `limit_price` (limit ≠ next bar open — limit fills AT the limit if touched).
-3. Apply limit_bps slippage if non-zero (usually 0).
-4. Fees use maker rules from `TradingFee`.
+1. Filled if **strictly crossed**:
+   - **Buy limit** (signal_type `buy`): fills only if `next_bar.low < limit_price`. The limit must be *strictly* in the bar's interior or below — a bar that merely touches the limit at its low doesn't fill.
+   - **Sell limit** (signal_type `sell`): fills only if `next_bar.high > limit_price`.
+2. Fill price = `limit_price`. By definition, limit orders can't fill worse than their limit, but they can fail to fill entirely.
+3. Apply `limit_bps` slippage if non-zero (usually 0 — limit fills at limit).
+4. Fees use maker rules.
+5. Record `requested_price = limit_price`, `slippage_dollars = 0` (limit, no adverse slippage).
+
+**Stop order (market on trigger):**
+1. Trigger condition: stop_price falls within `[next_bar.low, next_bar.high]`. (Stop-loss: BUY stop triggered when price rises through; SELL stop triggered when price falls through.)
+2. On trigger: converts to a market order scheduled for `next_bar + 1` (one MORE bar after trigger, two bars total after signal). Apply market slippage at that next-next bar's open.
+3. If the bar where the stop would have triggered closes inside the range, but the stop wasn't crossed at any point... wait — we only have OHLC, not tick. Conservative assumption: trigger when `next_bar.low <= stop_price <= next_bar.high` (the bar's range encompasses the stop). This may over-trigger relative to live, but stops over-triggering in backtest is the safer direction.
+
+**Stop-limit order:**
+1. Trigger same as stop. On trigger, converts to a LIMIT order at `limit_price`, scheduled for `next_bar + 1`.
+2. Apply limit-order fill rules from there (strict cross required).
 
 **Order not filled in current bar:**
-- Default: remains pending up to a configurable timeout (default: end of trading day for day algorithms, or N bars for intraday). Cancelled if unfilled by deadline. For v1, **default is 1 bar** — keep it simple. If you want GTC behavior we can extend later.
+- Default: remains pending up to a configurable timeout (default: **1 bar** for v1 — fills next bar or expires). GTC / DAY semantics are a follow-up.
+- An unfilled order produces a `signal_rejected` event (with `reason="no_fill_within_timeout"`) so the algorithm's `on_signal_rejected` callback fires — matches live broker behavior.
+
+#### Tracked follow-ups (intentionally NOT in v1)
+
+- **Partial fills.** Modeled as a fraction of order quantity executed at fill price, with remainder expiring or remaining pending depending on `time_in_force`. Requires per-bar volume modeling for the partial split (e.g., max(qty, alpha × bar.volume) filled, remainder queued).
+- **Market impact modeling.** A live market order moves the price; our `volume_impact_bps_per_pct` is a crude first approximation. A proper model would use Almgren-Chriss or a square-root-of-volume impact function.
+- **Queue-position modeling for limits.** A real limit at the bid joins a queue and may take time to fill even when the price hovers there. v1's "must strictly cross" rule approximates this conservatively.
+- **Bid-ask spread modeling on every fill.** v1 uses bar OHLC; doesn't simulate bid-ask explicitly. Crypto and thin-volume equities behave worse than our model suggests.
+- **Stop slippage past the stop price** (gap-down scenarios where the live fill is far worse than the stop). v1 fills stops at next-next-bar's open + slippage, which approximates this but not perfectly.
+
+These are all tracked as future spec work. The v1 engine is intentionally simple-but-conservative; making it more realistic only ever makes backtest results *worse*, never better.
 
 ### Position tracking
 
@@ -432,16 +484,36 @@ Polling: while status is non-terminal, the page polls `/api/backtest-runs/{id}` 
 
 ---
 
-## 9. Look-ahead enforcement — test coverage
+## 9. Correctness — required tests
 
-This is a correctness-critical area. The plan must include dedicated tests:
+This area is correctness-critical. The plan must include the following dedicated tests; if any regress, the feature is broken at its core.
+
+### Look-ahead prevention
 
 1. **`test_market_data_filters_future_bars`**: build a `BacktestTickContext` with a 1day bar series spanning Jan 1-30; set `sim_time_now = 2026-01-15 14:30 UTC`; call `ctx.market_data("SPY", "1day", 100)`; assert the returned df's max timestamp is `2026-01-14` (the most recent fully-closed daily bar).
-2. **`test_multi_timeframe_no_lookahead`**: algorithm has SPY 1day + SPY 1min deps. At sim-time mid-day, asserting `ctx.market_data("SPY", "1day")` does NOT include today's bar even though today's 1min bars are partly accessible.
-3. **`test_pending_order_fills_next_bar_not_current`**: a signal emitted on bar T causes a fill at bar T+1's open, not at bar T's close.
-4. **`test_signal_with_future_strike_rejected`**: an algorithm trying to read forward via any other context method also can't (the abstract `TickContext` enforces it).
+2. **`test_multi_timeframe_no_lookahead`**: algorithm has SPY 1day + SPY 1min deps. At sim-time mid-day, asserting `ctx.market_data("SPY", "1day")` does NOT include today's bar even though today's 1min bars are accessible.
 
-If any of these regress, the feature is broken at its core.
+### Conservative fill model
+
+3. **`test_market_order_fills_at_next_bar_open_with_slippage_never_signal_bar`**: an algorithm emits a market BUY signal on `on_tick` at sim-time = close of bar T. The fill timestamp MUST equal bar T+1's timestamp, NEVER bar T's. The fill_price MUST equal `bar(T+1).open * (1 + market_bps/10000)`.
+4. **`test_no_path_to_same_bar_fill`**: regression guard — even if an algorithm tries to short-circuit (e.g., a hypothetical algorithm that returns a signal AND mutates engine state), the engine's pending_orders queue MUST process AFTER `on_tick` returns and AGAINST the next iteration. Build a malicious mock algorithm and verify it can't force a same-bar fill.
+5. **`test_limit_order_requires_strict_cross`**: a buy limit at $100. Test cases:
+   - `next_bar.low = 100.0` (exact touch) → NO FILL.
+   - `next_bar.low = 99.99` (strict cross) → FILLS at $100.00.
+   - `next_bar.low = 100.01` (no cross) → NO FILL.
+   Mirror tests for sell limits.
+6. **`test_stop_market_two_bar_delay`**: BUY stop at $100. At bar T+1 the range crosses $100 (low=99, high=101). The fill MUST happen at bar T+2's open, not bar T+1's open. (Two bars between signal and fill for stops; one for plain market.)
+7. **`test_stop_limit_strict_cross_after_trigger`**: BUY stop-limit triggered at $100 with limit $99.50. After trigger at T+1, the limit waits one more bar; at T+2, fill only if `next_bar.low < 99.50`. Otherwise expires.
+
+### Fee + slippage accounting
+
+8. **`test_fee_breakdown_per_trade`**: a single fill incurs the sum of all matching `TradingFee` rows (maker/taker rules respected). `trade.fee_breakdown` records per-fee contribution.
+9. **`test_slippage_recorded_in_dollars_and_bps`**: a market fill with 5 bps slippage records `slippage_dollars = abs(slipped - requested) * qty` and `slippage_bps_applied = 5.0`.
+10. **`test_total_fees_and_slippage_aggregates`**: sum of all per-trade fees and slippages equals the `total_fees_paid` and `total_slippage_dollars` metrics on the BacktestRun row.
+
+### Options forward-compat
+
+11. **`test_options_leg_in_signal_fails_run_cleanly`**: an algorithm emits a signal with an `asset_type="options"` leg. The engine must halt with `status="failed"` and a clear error message containing "options backtest not yet supported". No partial trade record, no silent equity-style fill.
 
 ---
 
