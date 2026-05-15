@@ -50,13 +50,33 @@ def _load_manifest(pkg_dir_name: str):
     return QuiltManifest.from_file(Path("data/packages") / pkg_dir_name / "quilt.yaml")
 
 
+def _to_naive_utc(ts) -> pd.Timestamp:
+    """Normalize a Timestamp/datetime to tz-naive UTC for comparison.
+
+    Parquet timestamps in data/market/ are stored tz-naive (UTC by convention),
+    but BacktestRun.date_range_start/end are tz-aware. Pandas refuses to
+    compare across tz-awareness. Strip tz everywhere we compare.
+    """
+    p = pd.Timestamp(ts)
+    if p.tz is not None:
+        p = p.tz_convert("UTC").tz_localize(None)
+    return p
+
+
+def _df_timestamps_naive(df: pd.DataFrame) -> pd.Series:
+    """Return df['timestamp'] coerced to tz-naive UTC."""
+    s = pd.to_datetime(df["timestamp"])
+    if hasattr(s.dt, "tz") and s.dt.tz is not None:
+        s = s.dt.tz_convert("UTC").dt.tz_localize(None)
+    return s
+
+
 def _has_coverage(data_service, source, symbol, timeframe, start, end) -> bool:
     df = data_service.load_market_data(source, symbol, timeframe)
     if df is None or df.empty:
         return False
-    df_min = pd.to_datetime(df["timestamp"]).min()
-    df_max = pd.to_datetime(df["timestamp"]).max()
-    return df_min <= pd.Timestamp(start) and df_max >= pd.Timestamp(end)
+    ts = _df_timestamps_naive(df)
+    return ts.min() <= _to_naive_utc(start) and ts.max() >= _to_naive_utc(end)
 
 
 def _load_bar_series(data_service, source, symbol, timeframe) -> pd.DataFrame:
@@ -206,11 +226,15 @@ class BacktestRunner:
                     raise RuntimeError(
                         f"Missing data for {dep['symbol']} {dep['timeframe']} {source}"
                     )
-                # Filter to the run's date range. The mocked DF in tests is a
-                # MagicMock that doesn't support pandas indexing; guard with try.
+                # Filter to the run's date range. Normalize tz on both sides
+                # because parquet timestamps are tz-naive and date_range_* are
+                # tz-aware. The mocked DF in tests is a MagicMock that doesn't
+                # support pandas indexing; guard with try.
                 try:
-                    df = df[(df["timestamp"] >= pd.Timestamp(date_range_start)) &
-                            (df["timestamp"] <= pd.Timestamp(date_range_end))].reset_index(drop=True)
+                    df = df.copy()
+                    df["timestamp"] = _df_timestamps_naive(df)
+                    df = df[(df["timestamp"] >= _to_naive_utc(date_range_start)) &
+                            (df["timestamp"] <= _to_naive_utc(date_range_end))].reset_index(drop=True)
                 except Exception:
                     # MagicMock path in tests — leave df as-is.
                     pass
