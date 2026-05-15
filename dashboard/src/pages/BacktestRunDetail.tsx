@@ -1,5 +1,6 @@
 // ── Spec D U2: backtest run detail ──
-import { useParams, Link } from "react-router-dom";
+import { useState } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { ChevronLeft, Download, Trash2 } from "lucide-react";
 import {
   useBacktestRun,
@@ -8,6 +9,8 @@ import {
   useDeleteBacktestRun,
 } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { useUIStore } from "../stores/ui";
 import {
   BacktestChart,
   type BacktestEquityPoint,
@@ -49,16 +52,35 @@ interface BacktestTradeRow {
 
 export function BacktestRunDetail() {
   const { id = "" } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const addAlert = useUIStore((s) => s.addAlert);
   const { data: run } = useBacktestRun(id, { refetchInterval: 2000 });
-  const { data: equity } = useBacktestEquityCurve(id);
-  const { data: tradesData } = useBacktestTrades(id, 500);
+  const isRunInflight = inflight(run?.status);
+  const liveRefetch = isRunInflight ? 2000 : undefined;
+  const { data: equity } = useBacktestEquityCurve(id, {
+    refetchInterval: liveRefetch,
+  });
+  const { data: tradesData } = useBacktestTrades(id, 500, 0, {
+    refetchInterval: liveRefetch,
+  });
   const del = useDeleteBacktestRun();
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  async function handleDelete() {
+    try {
+      await del.mutateAsync(id);
+      addAlert({ message: "Deleted backtest run.", severity: "success" });
+      navigate("/backtests");
+    } catch {
+      addAlert({ message: "Failed to delete backtest run.", severity: "error" });
+      setDeleteOpen(false);
+    }
+  }
 
   if (!run) {
     return <div className="p-4 text-gray-400">Loading…</div>;
   }
 
-  const isRunInflight = inflight(run.status);
   const trades = ((tradesData?.items ?? []) as BacktestTradeRow[]) ?? [];
   const totalTrades =
     (tradesData as { total?: number } | undefined)?.total ?? trades.length;
@@ -101,7 +123,7 @@ export function BacktestRunDetail() {
             </a>
           )}
           <button
-            onClick={() => del.mutate(id)}
+            onClick={() => setDeleteOpen(true)}
             disabled={del.isPending}
             className="flex items-center gap-1 px-3 py-1.5 rounded text-sm text-red-300 bg-red-900/40 border border-red-800 hover:bg-red-900/60 disabled:opacity-50"
           >
@@ -118,7 +140,7 @@ export function BacktestRunDetail() {
           </div>
           <div className="bg-gray-700 rounded-full h-2 overflow-hidden">
             <div
-              className="bg-indigo-600 h-2 transition-all duration-300"
+              className="bg-indigo-600 h-2 transition-[width] ease-linear duration-[2000ms]"
               style={{ width: `${(run.progress_pct ?? 0) * 100}%` }}
             />
           </div>
@@ -270,6 +292,15 @@ export function BacktestRunDetail() {
           </table>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        title="Delete backtest run"
+        message="Are you sure you want to delete this backtest run? This cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteOpen(false)}
+      />
     </div>
   );
 }

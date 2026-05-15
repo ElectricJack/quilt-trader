@@ -832,19 +832,29 @@ export function useBacktestRun(id: string, opts?: { refetchInterval?: number }) 
   });
 }
 
-export function useBacktestEquityCurve(id: string) {
+export function useBacktestEquityCurve(
+  id: string,
+  opts?: { refetchInterval?: number },
+) {
   return useQuery({
     queryKey: ["backtest-equity", id] as const,
     queryFn: () => api.getBacktestEquityCurve(id),
     enabled: !!id,
+    refetchInterval: opts?.refetchInterval,
   });
 }
 
-export function useBacktestTrades(id: string, limit = 500, offset = 0) {
+export function useBacktestTrades(
+  id: string,
+  limit = 500,
+  offset = 0,
+  opts?: { refetchInterval?: number },
+) {
   return useQuery({
     queryKey: ["backtest-trades", id, limit, offset] as const,
     queryFn: () => api.getBacktestTrades(id, { limit, offset }),
     enabled: !!id,
+    refetchInterval: opts?.refetchInterval,
   });
 }
 

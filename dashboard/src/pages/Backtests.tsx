@@ -1,8 +1,16 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useBacktestRuns, useBacktests, useAlgorithms } from "../api/hooks";
+import { Trash2 } from "lucide-react";
+import {
+  useBacktestRuns,
+  useBacktests,
+  useAlgorithms,
+  useDeleteBacktestRun,
+} from "../api/hooks";
 import { DataTable, ColumnDef } from "../components/DataTable";
 import { StatusBadge } from "../components/StatusBadge";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { useUIStore } from "../stores/ui";
 import type { BacktestComparison } from "../types/index";
 import type { BacktestRunRecord } from "../api/client";
 
@@ -123,6 +131,26 @@ interface RunsTabProps {
 
 function RunsTab({ algoById, navigate }: RunsTabProps) {
   const { data: runs = [], isLoading } = useBacktestRuns();
+  const del = useDeleteBacktestRun();
+  const addAlert = useUIStore((s) => s.addAlert);
+  const [deleteTarget, setDeleteTarget] = useState<BacktestRunRecord | null>(
+    null,
+  );
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeleteTarget(null);
+    try {
+      await del.mutateAsync(target.id);
+      addAlert({ message: "Deleted backtest run.", severity: "success" });
+    } catch {
+      addAlert({
+        message: "Failed to delete backtest run.",
+        severity: "error",
+      });
+    }
+  }
 
   const runsColumns: ColumnDef<BacktestRunRecord, unknown>[] = [
     {
@@ -203,19 +231,46 @@ function RunsTab({ algoById, navigate }: RunsTabProps) {
         );
       },
     },
+    {
+      id: "actions",
+      header: "",
+      cell: ({ row }) => (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setDeleteTarget(row.original);
+          }}
+          aria-label="Delete backtest run"
+          title="Delete backtest run"
+          className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      ),
+    },
   ];
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded overflow-hidden">
-      <DataTable<BacktestRunRecord>
-        data={runs}
-        columns={runsColumns}
-        isLoading={isLoading}
-        emptyMessage="No backtest runs found."
-        enableSorting
-        onRowClick={(run) => navigate(`/backtest-runs/${run.id}`)}
+    <>
+      <div className="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+        <DataTable<BacktestRunRecord>
+          data={runs}
+          columns={runsColumns}
+          isLoading={isLoading}
+          emptyMessage="No backtest runs found."
+          enableSorting
+          onRowClick={(run) => navigate(`/backtest-runs/${run.id}`)}
+        />
+      </div>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete backtest run"
+        message="Are you sure you want to delete this backtest run? This cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
       />
-    </div>
+    </>
   );
 }
 
