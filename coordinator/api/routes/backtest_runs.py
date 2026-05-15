@@ -9,7 +9,6 @@ from typing import Optional
 import pandas as pd
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -157,59 +156,6 @@ async def get_report(run_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.get("/{run_id}/equity-curve")
-async def get_equity_curve(run_id: str, db: AsyncSession = Depends(get_db)):
-    r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()
-    if r is None:
-        raise HTTPException(404, detail="Backtest run not found")
-
-    benchmark: list[dict] = []
-    # Compute the benchmark curve on demand from the cached parquet so a stale
-    # equity_curve never blocks the page. Normalize to initial_cash so the
-    # benchmark and strategy share the same starting value.
-    # NOTE: use `is not None` for initial_cash because 0 is a valid (if odd)
-    # input and we still want to compute the benchmark curve in that case.
-    if (
-        r.benchmark_symbol
-        and r.benchmark_source
-        and r.equity_curve
-        and r.initial_cash is not None
-        and r.initial_cash > 0
-    ):
-        try:
-            import pandas as pd
-            container = get_container()
-            ds = container.data_service
-            df = ds.load_market_data(r.benchmark_source, r.benchmark_symbol, "1day")
-            if df is not None and not df.empty:
-                ts = pd.to_datetime(df["timestamp"])
-                if hasattr(ts.dt, "tz") and ts.dt.tz is not None:
-                    ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
-                df = df.copy()
-                df["_ts"] = ts
-                start = pd.Timestamp(r.date_range_start)
-                if start.tz is not None:
-                    start = start.tz_convert("UTC").tz_localize(None)
-                end = pd.Timestamp(r.date_range_end)
-                if end.tz is not None:
-                    end = end.tz_convert("UTC").tz_localize(None)
-                df = df[(df["_ts"] >= start) & (df["_ts"] <= end)].reset_index(drop=True)
-                if not df.empty:
-                    first_close = float(df["close"].iloc[0])
-                    if first_close > 0:
-                        for _, row in df.iterrows():
-                            value = (float(row["close"]) / first_close) * r.initial_cash
-                            benchmark.append({
-                                "timestamp": row["_ts"].isoformat(),
-                                "value": value,
-                            })
-        except Exception:
-            logger.exception("Failed to compute benchmark curve for run %s", run_id)
-            benchmark = []
-
-    return {"items": r.equity_curve or [], "benchmark": benchmark}
-
-
 @router.get("/{run_id}/trades")
 async def get_trades(
     run_id: str,
@@ -222,18 +168,6 @@ async def get_trades(
         raise HTTPException(404, detail="Backtest run not found")
     trades = r.trades or []
     return {"total": len(trades), "items": trades[offset:offset + limit]}
-
-
-@router.get("/{run_id}/tearsheet")
-async def get_tearsheet(run_id: str, db: AsyncSession = Depends(get_db)):
-    r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()
-    if r is None or not r.tearsheet_path or not Path(r.tearsheet_path).exists():
-        raise HTTPException(404, detail="Tearsheet not available")
-    return FileResponse(
-        r.tearsheet_path,
-        media_type="text/html",
-        filename=f"backtest_{run_id}_tearsheet.html",
-    )
 
 
 @router.delete("/{run_id}", status_code=204)
