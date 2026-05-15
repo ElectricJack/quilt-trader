@@ -336,6 +336,65 @@ class LiveSubscription(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
+class BacktestRun(Base):
+    __tablename__ = "backtest_runs"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    algorithm_id: Mapped[str] = mapped_column(String, ForeignKey("algorithms.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued")
+    # queued | downloading_data | running | completed | failed | cancelled
+
+    # Inputs
+    date_range_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    date_range_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    initial_cash: Mapped[float] = mapped_column(Float, nullable=False, default=100_000.0)
+    config_overrides: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    buy_trading_fees: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    sell_trading_fees: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    slippage_model: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    benchmark_symbol: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    benchmark_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # Progress
+    progress_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    progress_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Results
+    total_return: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cagr: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    volatility: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sharpe_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sortino_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    calmar_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    max_drawdown: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    max_drawdown_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    romad: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_fees_paid: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_slippage_dollars: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    trade_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    win_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    profit_factor: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    avg_win: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    avg_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    expectancy: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longest_drawdown_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    longest_winning_streak: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    longest_losing_streak: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Large blobs
+    equity_curve: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    trades: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    drawdown_periods: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+    # Side artifacts
+    tearsheet_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    download_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class Setting(Base):
     __tablename__ = "settings"
     key: Mapped[str] = mapped_column(String, primary_key=True)

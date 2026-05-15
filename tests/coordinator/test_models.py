@@ -155,3 +155,35 @@ async def test_cash_flow_and_snapshot(db_session):
     assert cf_result.scalar_one().amount == 10000.0
     snap_result = await db_session.execute(select(AccountSnapshot).where(AccountSnapshot.account_id == account.id))
     assert snap_result.scalar_one().total_value == 10000.0
+
+
+@pytest.mark.asyncio
+async def test_backtest_run_round_trip(db_session):
+    from coordinator.database.models import Algorithm, BacktestRun
+    from datetime import datetime, timezone, timedelta
+
+    algo = Algorithm(name="test-algo", repo_url="https://example/x",
+                     install_status="installed")
+    db_session.add(algo)
+    await db_session.flush()
+
+    run = BacktestRun(
+        algorithm_id=algo.id,
+        date_range_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        date_range_end=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        initial_cash=50000.0,
+        buy_trading_fees=[{"flat_fee": 0.0, "percent_fee": 0.001, "maker": True, "taker": True}],
+        slippage_model={"market_bps": 5.0, "limit_bps": 0.0, "use_bar_range": False, "volume_impact_bps_per_pct": 0.0},
+        benchmark_symbol="SPY",
+        benchmark_source="polygon",
+    )
+    db_session.add(run)
+    await db_session.flush()
+
+    fetched = (await db_session.execute(
+        select(BacktestRun).where(BacktestRun.id == run.id)
+    )).scalar_one()
+    assert fetched.algorithm_id == algo.id
+    assert fetched.initial_cash == 50000.0
+    assert fetched.status == "queued"
+    assert fetched.buy_trading_fees[0]["percent_fee"] == 0.001
