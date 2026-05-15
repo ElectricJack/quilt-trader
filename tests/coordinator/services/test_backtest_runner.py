@@ -11,7 +11,9 @@ from coordinator.services.backtest_runner import BacktestRunner
 async def test_runner_creates_row_and_advances_status(test_app, db_session):
     """End-to-end with mocked engine: queued -> downloading_data -> running -> completed."""
     from coordinator.database.models import Algorithm, BacktestRun
-    algo = Algorithm(name="test-algo", repo_url="https://example/x", install_status="installed")
+    # Use a GitHub-shaped URL so the runner's _package_dir_name helper parses it.
+    algo = Algorithm(name="test-algo", repo_url="https://github.com/example/test-algo",
+                     install_status="installed")
     db_session.add(algo); await db_session.flush()
 
     run = BacktestRun(

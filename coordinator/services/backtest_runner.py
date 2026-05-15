@@ -29,9 +29,25 @@ from coordinator.services.backtest_tick_context import BacktestTickContext
 logger = logging.getLogger(__name__)
 
 
-def _load_manifest(algo_name: str):
+def _package_dir_name(repo_url: str) -> str:
+    """Return the on-disk package directory name for an installed algorithm.
+
+    Matches the convention used by the install flow (coordinator/api/routes/
+    algorithms.py) and the update flow: the package directory is named after
+    the GitHub repo (last URL segment), NOT after the manifest's `name` field.
+    Algorithm.name in the DB comes from the manifest, so it can differ —
+    don't use it for filesystem lookups.
+    """
+    import re
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url or "")
+    if not m:
+        raise ValueError(f"Cannot derive package directory from repo_url: {repo_url!r}")
+    return m.group(1).split("/", 1)[1]
+
+
+def _load_manifest(pkg_dir_name: str):
     from sdk.manifest import QuiltManifest
-    return QuiltManifest.from_file(Path("data/packages") / algo_name / "quilt.yaml")
+    return QuiltManifest.from_file(Path("data/packages") / pkg_dir_name / "quilt.yaml")
 
 
 def _has_coverage(data_service, source, symbol, timeframe, start, end) -> bool:
@@ -47,11 +63,11 @@ def _load_bar_series(data_service, source, symbol, timeframe) -> pd.DataFrame:
     return data_service.load_market_data(source, symbol, timeframe)
 
 
-def _load_algorithm_class(algo_name: str, manifest) -> type:
+def _load_algorithm_class(pkg_dir_name: str, manifest) -> type:
     import importlib.util, sys
-    pkg_dir = Path("data/packages") / algo_name
+    pkg_dir = Path("data/packages") / pkg_dir_name
     entry = pkg_dir / manifest.entry_point
-    mod_name = f"_qt_backtest_{algo_name.replace('-', '_')}"
+    mod_name = f"_qt_backtest_{pkg_dir_name.replace('-', '_')}"
     spec = importlib.util.spec_from_file_location(mod_name, entry)
     mod = importlib.util.module_from_spec(spec)
     old = sys.path.copy()
@@ -131,6 +147,7 @@ class BacktestRunner:
             run.started_at = datetime.now(timezone.utc)
             # Snapshot fields we'll need outside the session
             algo_name = algo.name
+            algo_repo_url = algo.repo_url
             date_range_start = run.date_range_start
             date_range_end = run.date_range_end
             initial_cash = run.initial_cash
@@ -140,7 +157,8 @@ class BacktestRunner:
             await session.commit()
 
         try:
-            manifest = _load_manifest(algo_name)
+            pkg_dir_name = _package_dir_name(algo_repo_url)
+            manifest = _load_manifest(pkg_dir_name)
             deps = manifest.requirements.data_dependencies or []
 
             # Stage 1: data coverage
@@ -208,7 +226,7 @@ class BacktestRunner:
                 default_source=clock_source,
             )
 
-            AlgoClass = _load_algorithm_class(algo_name, manifest)
+            AlgoClass = _load_algorithm_class(pkg_dir_name, manifest)
             algorithm = AlgoClass()
 
             slippage = SlippageModel(**(slippage_cfg or {}))
