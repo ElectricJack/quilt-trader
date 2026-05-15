@@ -20,11 +20,11 @@ Run any installed algorithm against historical data from the dashboard. The coor
 8. Optional quantstats HTML tearsheet (Lumibot-style) downloadable from the detail page.
 9. Backtest runs visible in the existing Backtests tab (extended).
 
-## Non-Goals
+## Non-Goals (v1)
 
-- Replacing the existing `BacktestComparison` (live-vs-parallel-backtest divergence). That's a different feature; leave it intact. The dashboard's Backtests page splits into two tabs: "Runs" (new) and "Comparisons" (existing).
+- **Replacing** the existing `BacktestComparison` table or its REST surface. That feature stays. **But the *engine* must be shared** — see §11. The `BacktestComparator` ingests two decision streams; until now nothing produced the "backtest" stream. After this spec, the same `BacktestEngine` that runs long one-shot backtests also feeds the parallel short-window backtests that `BacktestComparator` compares against live.
 - Tick-level backtesting. The smallest unit is the smallest bar timeframe declared by the algorithm.
-- Options-strategy backtesting in v1. Equities + crypto bar data only. Options chains for historical IV are out of scope (algorithms can reference historical option prices via their own data dependencies, but the engine doesn't simulate options-specific fills like assignment).
+- Options-strategy fill simulation in v1. See §12: the engine must not foreclose this — abstractions must accommodate options later (multi-leg legs, `asset_type` field, expiration, contract multiplier). For v1, a signal containing an `asset_type == "options"` leg is rejected with a clear error.
 - Walk-forward optimization / parameter sweeps. Single run per submission. Multiple-run kickoffs are allowed (user can submit N runs with different configs); the system runs them concurrently up to a coordinator-level concurrency cap.
 
 ---
@@ -141,6 +141,44 @@ When the run's `slippage_model` is null, we apply the defaults.
 
 ## 3. Engine
 
+### Design goal: persistence-free, observable, reusable
+
+`BacktestEngine` is a pure simulation service. It accepts inputs (algorithm class, configured `BacktestTickContext`, slippage/fee config) and emits structured events through an `EngineObserver` interface. It **does not** know about the `BacktestRun` table, `DecisionLog`, the dashboard, or any other persistence destination. Two thin wrappers consume the events:
+
+- **`BacktestRunner`** (for Spec D's one-shot runs) — accumulates events into an in-memory `BacktestResult`, writes everything to the `BacktestRun` row when the run finishes.
+- **`ParallelBacktestFeeder`** (for `BacktestComparison`) — writes each `signals_emitted` event as a `DecisionLog` row with `mode="backtest"` so `BacktestComparator` can compare it against the live decision stream. No equity-curve persistence; comparison-only consumer.
+
+```python
+class EngineObserver(Protocol):
+    def on_tick(self, sim_time: datetime, ctx_snapshot: dict) -> None: ...
+    def on_signals_emitted(self, sim_time: datetime, signals: list[Signal]) -> None: ...
+    def on_fill(self, fill: FillRecord) -> None: ...
+    def on_signal_rejected(self, sim_time: datetime, signal: Signal, reason: str) -> None: ...
+    def on_equity_point(self, sim_time: datetime, portfolio_value: float, cash: float, positions: list[dict]) -> None: ...
+    def on_complete(self, summary: EngineSummary) -> None: ...
+    def on_error(self, exc: Exception) -> None: ...
+
+
+class BacktestEngine:
+    def run(
+        self,
+        *,
+        algorithm: QuiltAlgorithm,           # already instantiated by the wrapper
+        ctx: BacktestTickContext,
+        clock_series: pd.DataFrame,          # the smallest-timeframe bars
+        clock_timeframe: str,
+        slippage: SlippageModel,
+        buy_fees: list[TradingFee],
+        sell_fees: list[TradingFee],
+        initial_cash: float,
+        observer: EngineObserver,
+        cancel_token: CancelToken,           # checked each iteration; allows clean stop
+    ) -> None:
+        ...
+```
+
+Same engine, two callers. `BacktestRunner` is from Spec D; `ParallelBacktestFeeder` is wired into `BacktestSchedulerJob` (§11).
+
 ### Clock and look-ahead enforcement
 
 The simulation maintains a single `sim_time_now: datetime`. At each step, `sim_time_now` is advanced to the close time of the next bar in the **smallest-timeframe** dependency, and `algorithm.on_tick(ctx)` is called.
@@ -225,6 +263,8 @@ Internal dict: `positions: dict[str, {qty, avg_price, asset_type}]`. On fill:
 
 ## 4. Orchestration (`coordinator/services/backtest_runner.py`)
 
+`BacktestRunner` is the Spec-D consumer of `BacktestEngine`. It owns persistence to the `BacktestRun` row. The engine itself remains persistence-free per §3.
+
 ```python
 class BacktestRunner:
     async def run(self, run_id: str) -> None:
@@ -233,13 +273,18 @@ class BacktestRunner:
         # 3. Resolve data_dependencies + benchmark to (source, symbol, timeframe) tuples
         # 4. For each, check DataService whether the parquet exists with coverage >= [date_range_start, date_range_end]
         # 5. For missing/short ones, call container.download_manager.create_download(...) and track the resulting download_id
-        # 6. Update status="downloading_data", progress_message="Downloading SPY 1day from polygon (1/3)..."
+        # 6. status="downloading_data", progress_message="Downloading SPY 1day from polygon (1/3)..."
         # 7. Poll the downloads' status; advance progress_message per completion
         # 8. When all downloads are 'completed', load the parquets, build BacktestTickContext
-        # 9. Load the algorithm class (via PackageManager's installed venv path)
-        # 10. status="running", invoke BacktestEngine.run() — engine streams progress via a callback
-        # 11. On engine finish: compute aggregate metrics, persist, optionally generate quantstats tearsheet, status="completed"
-        # 12. On engine exception: status="failed", error_message=str(e) + traceback
+        # 9. Load the algorithm class (via PackageManager's installed venv path), instantiate it
+        # 10. status="running"
+        # 11. Construct a `RunObserver` (implements EngineObserver) that accumulates events into in-memory
+        #     lists: equity_curve, trades, signals_log; tracks progress_pct as fraction of clock_series consumed.
+        # 12. Invoke BacktestEngine.run(algorithm, ctx, ..., observer=run_observer, cancel_token=...)
+        # 13. On engine completion (observer.on_complete): compute aggregate metrics from accumulated data,
+        #     persist everything to the BacktestRun row, optionally generate quantstats tearsheet, status="completed".
+        # 14. On engine error: status="failed", error_message=str(e) + traceback (via observer.on_error).
+        # 15. On cancel_token tripped: engine exits cleanly, runner sets status="cancelled".
 ```
 
 The runner is launched as a coordinator-process asyncio task when the user POSTs to create a run. Multiple concurrent runs allowed up to `MAX_CONCURRENT_BACKTESTS = 4` (per coordinator config); excess queue.
@@ -438,3 +483,127 @@ Add `quantstats` to `pyproject.toml`. Note it pulls in `matplotlib`, `statsmodel
 8. Integration smoke run.
 
 Each step lands in its own PR. The engine + look-ahead test (steps 2 + 3) are the highest-risk; they should be the most carefully reviewed.
+
+---
+
+## 11. Shared engine with `BacktestComparison`
+
+The existing `BacktestComparator` (`coordinator/services/backtest_engine.py`) takes two streams of `DecisionLog` rows and produces a `ComparisonResult`. Today, the periodic `BacktestSchedulerJob` reads live decisions (mode=`"live"`) and backtest decisions (mode=`"backtest"`) from `DecisionLog` and compares. **Problem:** nothing in the system has ever written `mode="backtest"` decision rows. The comparison feature has been dormant because there's no parallel-backtest stream.
+
+This spec fixes that by reusing the new `BacktestEngine` as the source of those rows.
+
+### `ParallelBacktestFeeder`
+
+New service `coordinator/services/parallel_backtest_feeder.py`. Implements `EngineObserver`:
+
+```python
+class ParallelBacktestFeeder:
+    def __init__(self, instance_id: str, session_factory):
+        self._instance_id = instance_id
+        self._sf = session_factory
+
+    def on_signals_emitted(self, sim_time, signals):
+        # Write a DecisionLog row with mode="backtest", matching the live-side write pattern.
+        async with self._sf() as session:
+            session.add(DecisionLog(
+                instance_id=self._instance_id,
+                timestamp=sim_time,
+                mode="backtest",
+                signals_produced=[s.to_dict() for s in signals],
+                # ... tick_data / reasoning / data_sources_used populated similarly
+            ))
+            await session.commit()
+
+    def on_tick(self, ...): pass        # no-op for comparison purposes
+    def on_fill(self, ...): pass         # comparison is at signal-emission granularity, not fill
+    def on_signal_rejected(self, ...): pass
+    def on_equity_point(self, ...): pass
+    def on_complete(self, ...): pass
+    def on_error(self, ...): pass
+```
+
+The comparison cares about whether the live and backtest streams produce the same signals at the same timestamps. Fills, equity, and metrics are irrelevant in this mode — the observer ignores them.
+
+### Updated `BacktestSchedulerJob`
+
+The existing job (`coordinator/services/backtest_scheduler.py`) is extended:
+
+1. For each running `AlgorithmInstance`, look up its `Algorithm` + manifest.
+2. Build a `BacktestTickContext` over the last `lookback_hours` of historical data (sourced from the same `DataService` parquets the engine uses for one-shot runs).
+3. Construct a `ParallelBacktestFeeder` observer for the instance.
+4. Invoke `BacktestEngine.run(...)` with that observer. Engine writes one `DecisionLog(mode="backtest")` per emitted signal as it walks the historical window.
+5. After the engine finishes, the existing `_compare_instance` flow runs: load live + backtest `DecisionLog` rows for the same window, pass them to `BacktestComparator.compare`, persist the `BacktestComparison` row.
+
+So `BacktestComparison` keeps its existing shape and its existing endpoints — but the parallel-backtest decision stream it depends on is now actually produced, by the same engine that powers Spec D's one-shot runs.
+
+### Configuration for periodic backtests
+
+The `BacktestSchedulerJob` runs each instance's backtest with **defaults**:
+- `slippage`: `SlippageModel()` (5 bps market default)
+- `fees`: empty lists (zero fees) — comparing pure decision streams, fees don't affect signal generation
+- `initial_cash`: 100_000 (irrelevant for signal-only comparison)
+- `clock_timeframe`: smallest in the manifest
+
+These aren't user-configurable yet. If we later want per-instance comparison configs, that's a future spec.
+
+### Why this matters
+
+This is the user's most important integration point: the engine that runs your hour-long historical backtests is **the same code** that runs every 24h alongside each live algorithm to detect divergence. If a bug in the engine causes look-ahead leakage, both surfaces are wrong in the same way — and they're discoverable in the same place. We get bug-fix amplification.
+
+---
+
+## 12. Forward-compatibility with options
+
+Options-strategy backtesting is **out of scope for v1 implementation** but **must not be foreclosed by v1 architecture**. Specific guarantees:
+
+### 1. `BacktestTickContext` implements the full `TickContext` interface
+
+The abstract base (`sdk/context.py`) already declares:
+- `market_data(symbol, timeframe, bars, source=None)` — equities/crypto, used in v1.
+- `option_chain(symbol, expiration=None)` — declared but not implemented by `BacktestTickContext` in v1. Raises `NotImplementedError` with the message: `"option_chain not yet available in backtest contexts; tracked as a follow-up."` Future implementation will need: historical chain snapshots (would require new `DataService.load_option_chain_history(...)` and a corresponding data download flow).
+
+When option support lands, the `BacktestTickContext` changes are additive — no algorithm currently using v1 needs modification.
+
+### 2. Engine fills handle multi-leg signals already
+
+`Signal.legs: list[SignalLeg]` exists. Each `SignalLeg` has `asset_type`. The fill loop already iterates over legs. The v1 implementation rejects any leg with `asset_type == "options"` at fill time:
+
+```python
+def _validate_leg_for_fill(self, leg, sim_time):
+    if leg.asset_type == "options":
+        raise UnsupportedAssetTypeError(
+            f"Options backtest not yet supported (leg: {leg.symbol}). "
+            f"This will be supported in a future spec. Track: options-backtest follow-up."
+        )
+```
+
+The error halts the run with `status="failed"` and a clear, search-friendly error message in `BacktestRun.error_message`. No silent equity-style fill of an options leg.
+
+### 3. Position storage handles options legs structurally
+
+`Position.legs` is JSON with per-leg `asset_type`, `expiry`, `strike`, `right`. The engine's internal `positions` dict is keyed by `(symbol, expiry, strike, right)` for options and `(symbol,)` for equities/crypto — code already structured to support both. v1 only populates the equities/crypto branch; options branch is unreachable until §12.2's guard is lifted.
+
+### 4. Fill simulation primitives are asset-type-aware
+
+`fill_price` calculation, slippage, and fee application all branch on `leg.asset_type`. v1's branches:
+
+```python
+if leg.asset_type in ("equities", "crypto"):
+    # current implementation
+elif leg.asset_type == "options":
+    raise UnsupportedAssetTypeError(...)  # v1 guard
+```
+
+When options support lands, the `options` branch implements: contract multiplier (×100 for US options), per-contract flat fees from `TradingFee` (already handled by the `tradier-options` preset), assignment at expiry (engine checks expired options at each step and processes exercises against the underlying's price), bid/ask spread modeling.
+
+### 5. Fee presets already include options
+
+`tradier-options` preset is already in the fee preset dropdown. Selecting it on an equities-only algorithm has no effect; selecting it on an options algorithm (post-v1) automatically applies the per-contract fee.
+
+### 6. UI
+
+The `RunBacktestModal`'s fee preset dropdown already lists `tradier-options`. The benchmark selector defaults to the underlying when an options strategy is being backtested (post-v1). For v1, no special UI changes — options paths are dead code, but visible in the data model.
+
+### Summary
+
+The v1 engine treats options as a **fast-fail** asset class with clear errors. The data model, fee model, and context interface are **already shaped** to support options. The future options spec adds: historical option chain data flow + a `BacktestTickContext.option_chain()` implementation + the options-side branches of fill simulation. None of that breaks the v1 contract.
