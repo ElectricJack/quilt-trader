@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useBacktests } from "../api/hooks";
+import { useBacktestRuns, useBacktests, useAlgorithms } from "../api/hooks";
 import { DataTable, ColumnDef } from "../components/DataTable";
+import { StatusBadge } from "../components/StatusBadge";
 import type { BacktestComparison } from "../types/index";
+import type { BacktestRunRecord } from "../api/client";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -22,9 +25,14 @@ function fmtDate(val: string | null): string {
   return new Date(val).toLocaleDateString();
 }
 
-// ─── Columns ──────────────────────────────────────────────────────────────────
+function fmtPct(val: number | null): string {
+  if (val === null || val === undefined) return "—";
+  return (val * 100).toFixed(2) + "%";
+}
 
-const columns: ColumnDef<BacktestComparison, unknown>[] = [
+// ─── Comparisons Columns ──────────────────────────────────────────────────────
+
+const comparisonColumns: ColumnDef<BacktestComparison, unknown>[] = [
   {
     id: "id",
     accessorKey: "id",
@@ -106,33 +114,161 @@ const columns: ColumnDef<BacktestComparison, unknown>[] = [
   },
 ];
 
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+interface RunsTabProps {
+  algoById: Map<string, string>;
+  navigate: ReturnType<typeof useNavigate>;
+}
+
+function RunsTab({ algoById, navigate }: RunsTabProps) {
+  const { data: payload, isLoading } = useBacktestRuns();
+  const runs: BacktestRunRecord[] = payload?.items ?? [];
+
+  const runsColumns: ColumnDef<BacktestRunRecord, unknown>[] = [
+    {
+      id: "created_at",
+      accessorKey: "created_at",
+      header: "Created",
+      cell: ({ row }) => (
+        <span className="text-xs text-gray-400">{fmtDate(row.original.created_at)}</span>
+      ),
+    },
+    {
+      id: "algorithm",
+      header: "Algorithm",
+      cell: ({ row }) => {
+        const name = algoById.get(row.original.algorithm_id);
+        return (
+          <span className="text-sm text-gray-300">
+            {name ?? row.original.algorithm_id.slice(0, 8) + "…"}
+          </span>
+        );
+      },
+    },
+    {
+      id: "status",
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => <StatusBadge status={row.original.status} />,
+    },
+    {
+      id: "date_range",
+      header: "Date Range",
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <span className="text-xs text-gray-400">
+            {fmtDate(r.date_range_start)}
+            {" – "}
+            {fmtDate(r.date_range_end)}
+          </span>
+        );
+      },
+    },
+    {
+      id: "total_return",
+      accessorKey: "total_return",
+      header: "Total Return",
+      cell: ({ row }) => {
+        const val = row.original.total_return;
+        if (val === null || val === undefined) {
+          return <span className="text-xs text-gray-500">—</span>;
+        }
+        const colorClass = val > 0 ? "text-green-400" : val < 0 ? "text-red-400" : "text-gray-400";
+        return <span className={`text-sm font-medium ${colorClass}`}>{fmtPct(val)}</span>;
+      },
+    },
+    {
+      id: "sharpe_ratio",
+      accessorKey: "sharpe_ratio",
+      header: "Sharpe",
+      cell: ({ row }) => {
+        const val = row.original.sharpe_ratio;
+        if (val === null || val === undefined) {
+          return <span className="text-xs text-gray-500">—</span>;
+        }
+        return <span className="text-sm text-gray-300">{val.toFixed(2)}</span>;
+      },
+    },
+    {
+      id: "trade_count",
+      accessorKey: "trade_count",
+      header: "Trades",
+      cell: ({ row }) => {
+        const val = row.original.trade_count;
+        return (
+          <span className="text-sm text-gray-300">
+            {val !== null && val !== undefined ? val.toLocaleString() : "—"}
+          </span>
+        );
+      },
+    },
+  ];
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+      <DataTable<BacktestRunRecord>
+        data={runs}
+        columns={runsColumns}
+        isLoading={isLoading}
+        emptyMessage="No backtest runs found."
+        enableSorting
+        onRowClick={(run) => navigate(`/backtest-runs/${run.id}`)}
+      />
+    </div>
+  );
+}
+
+interface ComparisonsTabProps {
+  navigate: ReturnType<typeof useNavigate>;
+}
+
+function ComparisonsTab({ navigate }: ComparisonsTabProps) {
+  const { data: backtests, isLoading } = useBacktests();
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded overflow-hidden">
+      <DataTable<BacktestComparison>
+        data={backtests ?? []}
+        columns={comparisonColumns}
+        isLoading={isLoading}
+        emptyMessage="No backtests found."
+        enableSorting
+        onRowClick={(bt) => navigate(`/backtests/${bt.id}`)}
+      />
+    </div>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function Backtests() {
-  const { data: backtests, isLoading } = useBacktests();
+  const [tab, setTab] = useState<"runs" | "comparisons">("runs");
   const navigate = useNavigate();
+  const { data: algos = [] } = useAlgorithms();
+  const algoById = new Map(algos.map((a) => [a.id, a.name]));
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-white">
-        Backtests{" "}
-        {!isLoading && (
-          <span className="text-gray-400 text-base font-normal">
-            ({backtests?.length ?? 0})
-          </span>
-        )}
-      </h1>
-
-      <div className="bg-gray-900 border border-gray-800 rounded overflow-hidden">
-        <DataTable<BacktestComparison>
-          data={backtests ?? []}
-          columns={columns}
-          isLoading={isLoading}
-          emptyMessage="No backtests found."
-          enableSorting
-          onRowClick={(bt) => navigate(`/backtests/${bt.id}`)}
-        />
+      <h1 className="text-2xl font-bold text-white">Backtests</h1>
+      <div className="flex gap-2 border-b border-gray-800">
+        {(["runs", "comparisons"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-3 py-2 text-sm ${
+              tab === t
+                ? "border-b-2 border-indigo-500 text-white"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            {t === "runs" ? "Runs" : "Comparisons"}
+          </button>
+        ))}
       </div>
+      {tab === "runs" && <RunsTab algoById={algoById} navigate={navigate} />}
+      {tab === "comparisons" && <ComparisonsTab navigate={navigate} />}
     </div>
   );
 }
