@@ -14,6 +14,7 @@ import type { AlgorithmInstance } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormModal } from "../components/FormModal";
+import { RunBacktestModal } from "../components/RunBacktestModal";
 import { FormField } from "../components/FormField";
 import { DataTable } from "../components/DataTable";
 import type { ColumnDef } from "../components/DataTable";
@@ -111,6 +112,7 @@ export function AlgorithmDetail() {
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [backtestOpen, setBacktestOpen] = useState(false);
 
   // ── Delete algorithm ───────────────────────────────────────────────────────
 
@@ -195,8 +197,15 @@ export function AlgorithmDetail() {
         </div>
 
         <button
+          onClick={() => setBacktestOpen(true)}
+          className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 shrink-0"
+        >
+          Run Backtest
+        </button>
+
+        <button
           onClick={() => setDeleteOpen(true)}
-          className="ml-auto px-3 py-2 rounded text-sm font-medium text-red-400 bg-red-950 border border-red-900 hover:bg-red-900 hover:border-red-800 transition-colors shrink-0"
+          className="px-3 py-2 rounded text-sm font-medium text-red-400 bg-red-950 border border-red-900 hover:bg-red-900 hover:border-red-800 transition-colors shrink-0"
         >
           Delete Algorithm
         </button>
@@ -377,6 +386,14 @@ export function AlgorithmDetail() {
           </>
         )}
       </FormModal>
+
+      {/* Run Backtest modal */}
+      <RunBacktestModal
+        open={backtestOpen}
+        onClose={() => setBacktestOpen(false)}
+        algorithmId={algorithm?.id ?? ""}
+        manifestConfig={(algorithm?.config_schema?.parameters as Array<{ name: string; type: string; default?: unknown }>) ?? []}
+      />
     </div>
   );
 }

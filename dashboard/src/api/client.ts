@@ -660,6 +660,38 @@ export const api = {
       `/api/accounts/${accountId}/options-chain/${encodeURIComponent(expiry)}?underlying=${encodeURIComponent(underlying)}`
     );
   },
+
+  // ── Spec D U1: run backtest modal ──
+  createBacktestRun(body: BacktestRunCreate): Promise<BacktestRunRecord> {
+    return request<BacktestRunRecord>("/api/backtest-runs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  listBacktestRuns(params?: { algorithm_id?: string; limit?: number; offset?: number }): Promise<{ items: BacktestRunRecord[] }> {
+    const qs = new URLSearchParams();
+    if (params?.algorithm_id) qs.set("algorithm_id", params.algorithm_id);
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    const query = qs.toString();
+    return request<{ items: BacktestRunRecord[] }>(`/api/backtest-runs${query ? `?${query}` : ""}`);
+  },
+  getBacktestRun(id: string): Promise<BacktestRunRecord> {
+    return request<BacktestRunRecord>(`/api/backtest-runs/${id}`);
+  },
+  getBacktestEquityCurve(id: string): Promise<{ items: Array<{ timestamp: string; portfolio_value: number }> }> {
+    return request(`/api/backtest-runs/${id}/equity-curve`);
+  },
+  getBacktestTrades(id: string, params?: { limit?: number; offset?: number }): Promise<{ items: unknown[] }> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    const query = qs.toString();
+    return request(`/api/backtest-runs/${id}/trades${query ? `?${query}` : ""}`);
+  },
+  deleteBacktestRun(id: string): Promise<void> {
+    return request<void>(`/api/backtest-runs/${id}`, { method: "DELETE" });
+  },
 };
 
 // ── U5: live subscriptions + compare ──
@@ -682,6 +714,68 @@ export interface LiveSubStorageEstimate {
   estimated_bytes: number;
   estimated_ticks: number;
   estimated_rate_per_min: number | null;
+}
+
+// ── Spec D U1: run backtest modal ──
+export interface BacktestRunCreate {
+  algorithm_id: string;
+  date_range_start: string;
+  date_range_end: string;
+  initial_cash: number;
+  config_overrides?: Record<string, unknown>;
+  buy_trading_fees?: Array<{ flat_fee: number; percent_fee: number; maker: boolean; taker: boolean }>;
+  sell_trading_fees?: Array<{ flat_fee: number; percent_fee: number; maker: boolean; taker: boolean }>;
+  slippage_model?: {
+    market_bps: number;
+    limit_bps: number;
+    use_bar_range: boolean;
+    volume_impact_bps_per_pct: number;
+  };
+  benchmark_symbol?: string;
+  benchmark_source?: string;
+}
+
+export interface BacktestRunRecord {
+  id: string;
+  algorithm_id: string;
+  status: string;
+  date_range_start: string;
+  date_range_end: string;
+  initial_cash: number;
+  config_overrides: Record<string, unknown> | null;
+  buy_trading_fees: unknown[] | null;
+  sell_trading_fees: unknown[] | null;
+  slippage_model: Record<string, unknown> | null;
+  benchmark_symbol: string | null;
+  benchmark_source: string | null;
+  progress_message: string | null;
+  progress_pct: number | null;
+  error_message: string | null;
+  total_return: number | null;
+  cagr: number | null;
+  volatility: number | null;
+  sharpe_ratio: number | null;
+  sortino_ratio: number | null;
+  calmar_ratio: number | null;
+  max_drawdown: number | null;
+  max_drawdown_date: string | null;
+  romad: number | null;
+  total_fees_paid: number | null;
+  total_slippage_dollars: number | null;
+  trade_count: number | null;
+  win_rate: number | null;
+  profit_factor: number | null;
+  avg_win: number | null;
+  avg_loss: number | null;
+  expectancy: number | null;
+  longest_drawdown_days: number | null;
+  longest_winning_streak: number | null;
+  longest_losing_streak: number | null;
+  tearsheet_path: string | null;
+  download_ids: string[] | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
 }
 
 // ── U6: options chain + submit ──

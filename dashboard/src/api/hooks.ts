@@ -802,3 +802,58 @@ export function useOptionChain(
     staleTime: 30_000,
   });
 }
+
+// ── Spec D U1: run backtest modal ──
+
+export function useCreateBacktestRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof api.createBacktestRun>[0]) =>
+      api.createBacktestRun(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["backtest-runs"] });
+    },
+  });
+}
+
+export function useBacktestRuns(algorithm_id?: string) {
+  return useQuery({
+    queryKey: ["backtest-runs", algorithm_id ?? null] as const,
+    queryFn: () => api.listBacktestRuns(algorithm_id ? { algorithm_id } : undefined),
+  });
+}
+
+export function useBacktestRun(id: string, opts?: { refetchInterval?: number }) {
+  return useQuery({
+    queryKey: ["backtest-run", id] as const,
+    queryFn: () => api.getBacktestRun(id),
+    enabled: !!id,
+    refetchInterval: opts?.refetchInterval,
+  });
+}
+
+export function useBacktestEquityCurve(id: string) {
+  return useQuery({
+    queryKey: ["backtest-equity", id] as const,
+    queryFn: () => api.getBacktestEquityCurve(id),
+    enabled: !!id,
+  });
+}
+
+export function useBacktestTrades(id: string, limit = 500, offset = 0) {
+  return useQuery({
+    queryKey: ["backtest-trades", id, limit, offset] as const,
+    queryFn: () => api.getBacktestTrades(id, { limit, offset }),
+    enabled: !!id,
+  });
+}
+
+export function useDeleteBacktestRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteBacktestRun(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["backtest-runs"] });
+    },
+  });
+}

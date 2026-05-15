@@ -15,6 +15,8 @@ import { WorkerDetail } from "./pages/WorkerDetail";
 import { Data } from "./pages/Data";
 import { Backtests } from "./pages/Backtests";
 import { BacktestDetail } from "./pages/BacktestDetail";
+// ── Spec D U2: backtest run detail ──
+import { BacktestRunDetail } from "./pages/BacktestRunDetail";
 import { Notifications } from "./pages/Notifications";
 import { Settings } from "./pages/Settings";
 import { Strategies } from "./pages/Strategies";
@@ -55,6 +57,8 @@ export function App() {
             <Route path="/data" element={<Data />} />
             <Route path="/backtests" element={<Backtests />} />
             <Route path="/backtests/:id" element={<BacktestDetail />} />
+            {/* ── Spec D U2: backtest run detail ── */}
+            <Route path="/backtest-runs/:id" element={<BacktestRunDetail />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
