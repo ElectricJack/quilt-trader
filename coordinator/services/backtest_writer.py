@@ -9,13 +9,42 @@ and appends to parquet files using pyarrow.parquet.ParquetWriter.
 """
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from datetime import datetime, date
+from pathlib import Path
 from queue import Queue
 from typing import Any, Optional
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+logger = logging.getLogger(__name__)
+
+
+_EQUITY_SCHEMA = pa.schema([
+    ("timestamp", pa.timestamp("ns")),
+    ("portfolio_value", pa.float64()),
+    ("cash", pa.float64()),
+])
+
+_TRADE_SCHEMA = pa.schema([
+    ("timestamp", pa.timestamp("ns")),
+    ("symbol", pa.string()),
+    ("asset_type", pa.string()),
+    ("side", pa.string()),
+    ("quantity", pa.float64()),
+    ("requested_price", pa.float64()),
+    ("fill_price", pa.float64()),
+    ("slippage_dollars", pa.float64()),
+    ("slippage_bps_applied", pa.float64()),
+    ("fees", pa.float64()),
+    ("fee_breakdown", pa.string()),  # JSON-serialized
+    ("signal_id", pa.string()),
+    ("realized_pnl", pa.float64()),
+])
 
 TARGET_TICKS_PER_CHUNK = 5_000
 MIN_DAYS_PER_CHUNK = 1
@@ -142,3 +171,65 @@ class ChunkingObserver:
         self._chunk_start_date = None
         self._chunk_window_days = 0
         self._q.put(chunk)
+
+
+class ParquetWriterThread(threading.Thread):
+    """Drain (queue → parquet) until a None sentinel, then close writers."""
+
+    def __init__(
+        self, *, queue: Queue, equity_path: Path, trades_path: Path,
+    ) -> None:
+        super().__init__(daemon=True, name="backtest-writer")
+        self._q = queue
+        self._eq_path = Path(equity_path)
+        self._tr_path = Path(trades_path)
+        self.error: Optional[BaseException] = None
+
+    def run(self) -> None:
+        eq_writer: Optional[pq.ParquetWriter] = None
+        tr_writer: Optional[pq.ParquetWriter] = None
+        try:
+            self._eq_path.parent.mkdir(parents=True, exist_ok=True)
+            eq_writer = pq.ParquetWriter(self._eq_path, _EQUITY_SCHEMA, compression="snappy")
+            tr_writer = pq.ParquetWriter(self._tr_path, _TRADE_SCHEMA, compression="snappy")
+            while True:
+                chunk = self._q.get()
+                if chunk is None:
+                    return
+                self._write_chunk(eq_writer, tr_writer, chunk)
+        except Exception as exc:
+            logger.exception("ParquetWriterThread failed")
+            self.error = exc
+            # Drain remaining items so the producer doesn't block forever
+            while True:
+                try:
+                    item = self._q.get_nowait()
+                except Exception:
+                    break
+                if item is None:
+                    break
+        finally:
+            if eq_writer is not None:
+                try: eq_writer.close()
+                except Exception: pass
+            if tr_writer is not None:
+                try: tr_writer.close()
+                except Exception: pass
+
+    @staticmethod
+    def _write_chunk(eq_writer, tr_writer, chunk: dict) -> None:
+        import json
+        eq_rows = chunk["equity"]
+        if not isinstance(eq_rows, list):
+            raise TypeError(f"chunk['equity'] must be a list, got {type(eq_rows).__name__}")
+        if eq_rows:
+            table = pa.Table.from_pylist(eq_rows, schema=_EQUITY_SCHEMA)
+            eq_writer.write_table(table)
+        tr_rows = chunk.get("trades") or []
+        if tr_rows:
+            normalized = [
+                {**t, "fee_breakdown": json.dumps(t.get("fee_breakdown") or {})}
+                for t in tr_rows
+            ]
+            table = pa.Table.from_pylist(normalized, schema=_TRADE_SCHEMA)
+            tr_writer.write_table(table)

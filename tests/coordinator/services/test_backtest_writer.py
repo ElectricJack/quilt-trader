@@ -72,3 +72,57 @@ def test_chunk_includes_trades_for_window():
     chunk = q.get()
     assert len(chunk["trades"]) == 1
     assert chunk["trades"][0]["symbol"] == "SPY"
+
+
+import time
+from pathlib import Path
+import pyarrow.parquet as pq
+
+from coordinator.services.backtest_writer import ParquetWriterThread
+
+
+def test_writer_thread_appends_chunks_to_parquet(tmp_path):
+    q: Queue = Queue()
+    eq_path = tmp_path / "equity_native.parquet"
+    tr_path = tmp_path / "trades.parquet"
+    t = ParquetWriterThread(queue=q, equity_path=eq_path, trades_path=tr_path)
+    t.start()
+    # Push 2 chunks
+    q.put({
+        "equity": [
+            {"timestamp": datetime(2024, 1, 2, 10, 0), "portfolio_value": 100.0, "cash": 100.0},
+            {"timestamp": datetime(2024, 1, 2, 10, 1), "portfolio_value": 101.0, "cash": 99.0},
+        ],
+        "trades": [],
+        "window_start": datetime(2024, 1, 2, 10, 0),
+        "window_end": datetime(2024, 1, 2, 10, 1),
+    })
+    q.put({
+        "equity": [
+            {"timestamp": datetime(2024, 1, 3, 10, 0), "portfolio_value": 102.0, "cash": 98.0},
+        ],
+        "trades": [],
+        "window_start": datetime(2024, 1, 3, 10, 0),
+        "window_end": datetime(2024, 1, 3, 10, 0),
+    })
+    q.put(None)  # sentinel
+    t.join(timeout=5)
+    assert not t.is_alive()
+    table = pq.read_table(eq_path)
+    assert table.num_rows == 3
+    assert "portfolio_value" in table.column_names
+
+
+def test_writer_thread_records_error_on_bad_chunk(tmp_path):
+    q: Queue = Queue()
+    t = ParquetWriterThread(
+        queue=q,
+        equity_path=tmp_path / "equity_native.parquet",
+        trades_path=tmp_path / "trades.parquet",
+    )
+    t.start()
+    # Send a malformed chunk (string instead of dict for equity rows)
+    q.put({"equity": "not-a-list", "trades": [], "window_start": None, "window_end": None})
+    q.put(None)
+    t.join(timeout=5)
+    assert t.error is not None
