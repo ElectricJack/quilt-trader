@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createChart,
   ColorType,
+  PriceScaleMode,
   type IChartApi,
   type ISeriesApi,
   type LineData,
@@ -34,6 +35,8 @@ interface BacktestChartProps {
   trades?: BacktestTradeMarker[];
   benchmarkLabel?: string;
   height?: number;
+  logScale?: boolean;
+  onVisibleRangeChange?: (from: string | null, to: string | null) => void;
 }
 
 type SeriesKey = "portfolio" | "cash" | "benchmark" | "trades";
@@ -66,6 +69,8 @@ export function BacktestChart({
   trades = [],
   benchmarkLabel = "Benchmark",
   height = 360,
+  logScale = false,
+  onVisibleRangeChange,
 }: BacktestChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -137,7 +142,7 @@ export function BacktestChart({
     [benchmark],
   );
 
-  // Create chart on mount
+  // Create chart on mount (recreated when height, logScale, or onVisibleRangeChange changes)
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -156,7 +161,10 @@ export function BacktestChart({
         vertLine: { color: "#6366f1" },
         horzLine: { color: "#6366f1" },
       },
-      rightPriceScale: { borderColor: "#374151" },
+      rightPriceScale: {
+        borderColor: "#374151",
+        mode: logScale ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
+      },
       timeScale: { borderColor: "#374151", timeVisible: true, secondsVisible: false },
     });
 
@@ -177,6 +185,19 @@ export function BacktestChart({
       title: "Benchmark",
     });
 
+    if (onVisibleRangeChange) {
+      chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+        if (range && typeof range.from === "number" && typeof range.to === "number") {
+          onVisibleRangeChange(
+            new Date(range.from * 1000).toISOString(),
+            new Date(range.to * 1000).toISOString(),
+          );
+        } else {
+          onVisibleRangeChange(null, null);
+        }
+      });
+    }
+
     chartRef.current = chart;
 
     const observer = new ResizeObserver((entries) => {
@@ -195,7 +216,7 @@ export function BacktestChart({
       cashSeriesRef.current = null;
       benchmarkSeriesRef.current = null;
     };
-  }, [height]);
+  }, [height, logScale, onVisibleRangeChange]);
 
   // Push data into series
   useEffect(() => {
