@@ -24,7 +24,7 @@ from coordinator.services.backtest_config import SlippageModel, TradingFee
 from coordinator.services.backtest_engine_v2 import (
     BacktestEngine, CancelToken, EngineObserver, EngineSummary, FillRecord,
 )
-from coordinator.services.backtest_metrics import compute_all
+from coordinator.services.backtest_metrics_qs import compute_all
 from coordinator.services.backtest_tick_context import BacktestTickContext
 
 logger = logging.getLogger(__name__)
