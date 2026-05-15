@@ -135,7 +135,49 @@ async def get_equity_curve(run_id: str, db: AsyncSession = Depends(get_db)):
     r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()
     if r is None:
         raise HTTPException(404, detail="Backtest run not found")
-    return {"items": r.equity_curve or []}
+
+    benchmark: list[dict] = []
+    # Compute the benchmark curve on demand from the cached parquet so a stale
+    # equity_curve never blocks the page. Normalize to initial_cash so the
+    # benchmark and strategy share the same starting value.
+    if (
+        r.benchmark_symbol
+        and r.benchmark_source
+        and r.equity_curve
+        and r.initial_cash
+    ):
+        try:
+            import pandas as pd
+            container = get_container()
+            ds = container.data_service
+            df = ds.load_market_data(r.benchmark_source, r.benchmark_symbol, "1day")
+            if df is not None and not df.empty:
+                ts = pd.to_datetime(df["timestamp"])
+                if hasattr(ts.dt, "tz") and ts.dt.tz is not None:
+                    ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+                df = df.copy()
+                df["_ts"] = ts
+                start = pd.Timestamp(r.date_range_start)
+                if start.tz is not None:
+                    start = start.tz_convert("UTC").tz_localize(None)
+                end = pd.Timestamp(r.date_range_end)
+                if end.tz is not None:
+                    end = end.tz_convert("UTC").tz_localize(None)
+                df = df[(df["_ts"] >= start) & (df["_ts"] <= end)].reset_index(drop=True)
+                if not df.empty:
+                    first_close = float(df["close"].iloc[0])
+                    if first_close > 0:
+                        for _, row in df.iterrows():
+                            value = (float(row["close"]) / first_close) * r.initial_cash
+                            benchmark.append({
+                                "timestamp": row["_ts"].isoformat(),
+                                "value": value,
+                            })
+        except Exception:
+            logger.exception("Failed to compute benchmark curve for run %s", run_id)
+            benchmark = []
+
+    return {"items": r.equity_curve or [], "benchmark": benchmark}
 
 
 @router.get("/{run_id}/trades")

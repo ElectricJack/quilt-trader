@@ -680,7 +680,10 @@ export const api = {
   getBacktestRun(id: string): Promise<BacktestRunRecord> {
     return request<BacktestRunRecord>(`/api/backtest-runs/${id}`);
   },
-  getBacktestEquityCurve(id: string): Promise<{ items: Array<{ timestamp: string; portfolio_value: number }> }> {
+  getBacktestEquityCurve(id: string): Promise<{
+    items: Array<{ timestamp: string; portfolio_value: number; cash?: number }>;
+    benchmark: Array<{ timestamp: string; value: number }>;
+  }> {
     return request(`/api/backtest-runs/${id}/equity-curve`);
   },
   getBacktestTrades(id: string, params?: { limit?: number; offset?: number }): Promise<{ items: unknown[] }> {

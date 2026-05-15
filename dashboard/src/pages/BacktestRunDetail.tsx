@@ -8,7 +8,12 @@ import {
   useDeleteBacktestRun,
 } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
-import { EquityCurve } from "../components/EquityCurve";
+import {
+  BacktestChart,
+  type BacktestEquityPoint,
+  type BacktestBenchmarkPoint,
+  type BacktestTradeMarker,
+} from "../components/BacktestChart";
 
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return "—";
@@ -57,10 +62,21 @@ export function BacktestRunDetail() {
   const trades = ((tradesData?.items ?? []) as BacktestTradeRow[]) ?? [];
   const totalTrades =
     (tradesData as { total?: number } | undefined)?.total ?? trades.length;
-  const equityPoints = (equity?.items ?? []).map((p) => ({
+  const equityPoints: BacktestEquityPoint[] = (equity?.items ?? []).map((p) => ({
     timestamp: p.timestamp,
-    equity: p.portfolio_value,
+    portfolio_value: p.portfolio_value,
+    cash: p.cash,
   }));
+  const benchmarkPoints: BacktestBenchmarkPoint[] = equity?.benchmark ?? [];
+  const tradeMarkers: BacktestTradeMarker[] = trades
+    .filter((t) => t.fill_price !== null && (t.side === "buy" || t.side === "sell"))
+    .map((t) => ({
+      timestamp: t.timestamp,
+      side: t.side as "buy" | "sell",
+      symbol: t.symbol,
+      quantity: t.quantity,
+      fill_price: t.fill_price as number,
+    }));
 
   return (
     <div className="space-y-4">
@@ -168,13 +184,21 @@ export function BacktestRunDetail() {
         ))}
       </div>
 
-      {/* Equity curve */}
+      {/* Equity curve + benchmark + cash + trade markers */}
       <div className="bg-gray-900 border border-gray-800 rounded p-3">
         <h3 className="text-sm font-semibold text-gray-300 mb-2">
           Equity curve
         </h3>
         {equityPoints.length > 0 ? (
-          <EquityCurve data={equityPoints} height={300} />
+          <BacktestChart
+            equity={equityPoints}
+            benchmark={benchmarkPoints}
+            trades={tradeMarkers}
+            benchmarkLabel={
+              run.benchmark_symbol ? `Benchmark (${run.benchmark_symbol})` : "Benchmark"
+            }
+            height={360}
+          />
         ) : (
           <div className="text-gray-500 text-sm py-8 text-center">
             No equity data yet
