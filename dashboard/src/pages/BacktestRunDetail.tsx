@@ -1,26 +1,38 @@
 // ── Spec D U2: backtest run detail ──
 import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { ChevronLeft, Download, Trash2 } from "lucide-react";
+import { ChevronLeft, Trash2 } from "lucide-react";
 import {
-  useBacktestRun,
-  // TODO(T22): useBacktestEquityCurve removed; page will be rewritten in Task 22
+  useBacktestReport,
   useBacktestTrades,
   useDeleteBacktestRun,
 } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useUIStore } from "../stores/ui";
-import {
-  BacktestChart,
-  type BacktestEquityPoint,
-  type BacktestBenchmarkPoint,
-  type BacktestTradeMarker,
-} from "../components/BacktestChart";
+import { KpiCard } from "../components/report/KpiCard";
+import { ParametersTable } from "../components/report/ParametersTable";
+import { EoyTable } from "../components/report/EoyTable";
+import { DrawdownsTable } from "../components/report/DrawdownsTable";
+import { MetricsTable } from "../components/report/MetricsTable";
+import { EquitySlot } from "../components/report/EquitySlot";
+import { DrawdownSlot } from "../components/report/DrawdownSlot";
+import { ReturnsDistributionSlot } from "../components/report/ReturnsDistributionSlot";
+import { RollingMetricsSlot } from "../components/report/RollingMetricsSlot";
+
+const INFLIGHT_STATUSES = ["queued", "downloading_data", "running"];
+function inflight(status: string | undefined | null): boolean {
+  return !!status && INFLIGHT_STATUSES.includes(status);
+}
 
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return "—";
   return `${(v * 100).toFixed(2)}%`;
+}
+
+function fmtInt(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return Math.round(v).toString();
 }
 
 function fmtNum(v: number | null | undefined, digits = 2): string {
@@ -28,41 +40,20 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
   return v.toLocaleString("en-US", { maximumFractionDigits: digits });
 }
 
-function fmtUsd(v: number | null | undefined): string {
-  if (v == null) return "—";
-  return v.toLocaleString("en-US", { style: "currency", currency: "USD" });
-}
-
-const INFLIGHT_STATUSES = ["queued", "downloading_data", "running"];
-function inflight(status: string | undefined | null): boolean {
-  return !!status && INFLIGHT_STATUSES.includes(status);
-}
-
 interface BacktestTradeRow {
-  timestamp: string;
-  symbol: string;
-  side: string;
-  quantity: number;
-  requested_price: number | null;
-  fill_price: number | null;
-  slippage_dollars: number | null;
-  fees: number | null;
-  realized_pnl: number | null;
+  timestamp: string; symbol: string; side: string; quantity: number;
+  requested_price: number | null; fill_price: number | null;
+  slippage_dollars: number | null; fees: number | null; realized_pnl: number | null;
 }
 
 export function BacktestRunDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const addAlert = useUIStore((s) => s.addAlert);
-  const { data: run } = useBacktestRun(id, { refetchInterval: 2000 });
-  const isRunInflight = inflight(run?.status);
+  const { data: report } = useBacktestReport(id, { refetchInterval: 2000 });
+  const isRunInflight = inflight(report?.status);
   const liveRefetch = isRunInflight ? 2000 : undefined;
-  // TODO(T22): equity data will come from useBacktestReport in the rewritten page
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const equity = undefined as { items: Array<{ timestamp: string; portfolio_value: number; cash?: number }>; benchmark: Array<{ timestamp: string; value: number }> } | undefined;
-  const { data: tradesData } = useBacktestTrades(id, 500, 0, {
-    refetchInterval: liveRefetch,
-  });
+  const { data: tradesData } = useBacktestTrades(id, 500, 0, { refetchInterval: liveRefetch });
   const del = useDeleteBacktestRun();
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -77,28 +68,13 @@ export function BacktestRunDetail() {
     }
   }
 
-  if (!run) {
+  if (!report) {
     return <div className="p-4 text-gray-400">Loading…</div>;
   }
 
   const trades = ((tradesData?.items ?? []) as BacktestTradeRow[]) ?? [];
-  const totalTrades =
-    (tradesData as { total?: number } | undefined)?.total ?? trades.length;
-  const equityPoints: BacktestEquityPoint[] = (equity?.items ?? []).map((p) => ({
-    timestamp: p.timestamp,
-    portfolio_value: p.portfolio_value,
-    cash: p.cash,
-  }));
-  const benchmarkPoints: BacktestBenchmarkPoint[] = equity?.benchmark ?? [];
-  const tradeMarkers: BacktestTradeMarker[] = trades
-    .filter((t) => t.fill_price !== null && (t.side === "buy" || t.side === "sell"))
-    .map((t) => ({
-      timestamp: t.timestamp,
-      side: t.side as "buy" | "sell",
-      symbol: t.symbol,
-      quantity: t.quantity,
-      fill_price: t.fill_price as number,
-    }));
+  const totalTrades = (tradesData as { total?: number } | undefined)?.total ?? trades.length;
+  const km = report.key_metrics?.strategy;
 
   return (
     <div className="space-y-4">
@@ -109,19 +85,9 @@ export function BacktestRunDetail() {
             <ChevronLeft size={20} />
           </Link>
           <h1 className="text-xl font-bold">Backtest Run</h1>
-          <StatusBadge status={run.status} />
+          <StatusBadge status={report.status} />
         </div>
         <div className="flex gap-2">
-          {run.tearsheet_path && (
-            <a
-              href={`/api/backtest-runs/${id}/tearsheet`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-1 px-3 py-1.5 rounded text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
-            >
-              <Download size={14} /> Download tearsheet
-            </a>
-          )}
           <button
             onClick={() => setDeleteOpen(true)}
             disabled={del.isPending}
@@ -135,98 +101,54 @@ export function BacktestRunDetail() {
       {/* In-flight progress */}
       {isRunInflight && (
         <div className="bg-gray-900 border border-gray-800 rounded p-3">
-          <div className="text-sm text-gray-300 mb-2">
-            {run.progress_message ?? run.status}
-          </div>
+          <div className="text-sm text-gray-300 mb-2">{(report as any).progress_message ?? report.status}</div>
           <div className="bg-gray-700 rounded-full h-2 overflow-hidden">
             <div
               className="bg-indigo-600 h-2 transition-[width] ease-linear duration-[2000ms]"
-              style={{ width: `${(run.progress_pct ?? 0) * 100}%` }}
+              style={{ width: `${(((report as any).progress_pct ?? 0) as number) * 100}%` }}
             />
           </div>
         </div>
       )}
 
-      {/* Error block */}
-      {run.error_message && (
-        <div className="bg-red-900/30 border border-red-800 rounded p-3 text-sm text-red-200 whitespace-pre-wrap">
-          {run.error_message}
+      {/* Incomplete-data banner for legacy rows */}
+      {report.status === "completed" && !report.key_metrics && (
+        <div className="bg-yellow-900/30 border border-yellow-800 rounded p-3 text-sm text-yellow-200">
+          This backtest pre-dates the report system. Re-run it to populate the new metrics.
         </div>
       )}
 
-      {/* Metrics grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {(
-          [
-            ["Total return", fmtPct(run.total_return), run.total_return],
-            ["CAGR", fmtPct(run.cagr), run.cagr],
-            ["Sharpe", fmtNum(run.sharpe_ratio), run.sharpe_ratio],
-            ["Sortino", fmtNum(run.sortino_ratio), run.sortino_ratio],
-            ["Calmar", fmtNum(run.calmar_ratio), run.calmar_ratio],
-            ["Max drawdown", fmtPct(run.max_drawdown), -1],
-            ["Volatility", fmtPct(run.volatility), null],
-            ["RoMaD", fmtNum(run.romad), run.romad],
-            ["Trade count", fmtNum(run.trade_count, 0), null],
-            ["Win rate", fmtPct(run.win_rate), null],
-            ["Profit factor", fmtNum(run.profit_factor), null],
-            ["Expectancy", fmtUsd(run.expectancy), run.expectancy],
-            ["Total fees", fmtUsd(run.total_fees_paid), -1],
-            ["Total slippage", fmtUsd(run.total_slippage_dollars), -1],
-            [
-              "Longest win streak",
-              fmtNum(run.longest_winning_streak, 0),
-              null,
-            ],
-            [
-              "Longest loss streak",
-              fmtNum(run.longest_losing_streak, 0),
-              null,
-            ],
-          ] as Array<[string, string, number | null]>
-        ).map(([label, value, signed]) => (
-          <div
-            key={label}
-            className="bg-gray-900 border border-gray-800 rounded p-3"
-          >
-            <div className="text-[10px] uppercase tracking-wide text-gray-500">
-              {label}
-            </div>
-            <div
-              className={`text-lg font-semibold ${
-                typeof signed === "number" && signed > 0
-                  ? "text-green-400"
-                  : typeof signed === "number" && signed < 0
-                    ? "text-red-400"
-                    : "text-gray-200"
-              }`}
-            >
-              {value}
-            </div>
-          </div>
-        ))}
+      {/* KPI row */}
+      {km && (
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+          <KpiCard variant="hero" label="Annual Return" value={fmtPct(km.cagr)} hint="CAGR" />
+          <KpiCard label="Total Return" value={fmtPct(km.total_return)} />
+          <KpiCard label="Max Drawdown" value={fmtPct(km.max_drawdown)} />
+          <KpiCard label="RoMaD" value={fmtNum(km.romad)} hint="CAGR / Max Drawdown" />
+          <KpiCard label="Longest DD Days" value={fmtInt(km.longest_drawdown_days)} />
+        </div>
+      )}
+
+      {/* 4 chart slots — 2x2 grid at wide widths */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <EquitySlot report={report} trades={trades} />
+        <DrawdownSlot report={report} />
+        <ReturnsDistributionSlot report={report} />
+        <RollingMetricsSlot report={report} />
       </div>
 
-      {/* Equity curve + benchmark + cash + trade markers */}
-      <div className="bg-gray-900 border border-gray-800 rounded p-3">
-        <h3 className="text-sm font-semibold text-gray-300 mb-2">
-          Equity curve
-        </h3>
-        {equityPoints.length > 0 ? (
-          <BacktestChart
-            equity={equityPoints}
-            benchmark={benchmarkPoints}
-            trades={tradeMarkers}
-            benchmarkLabel={
-              run.benchmark_symbol ? `Benchmark (${run.benchmark_symbol})` : "Benchmark"
-            }
-            height={360}
-          />
-        ) : (
-          <div className="text-gray-500 text-sm py-8 text-center">
-            No equity data yet
-          </div>
-        )}
+      {/* Side tables — 3-col at wide widths */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <ParametersTable params={report.config_overrides} />
+        <EoyTable rows={report.eoy_returns} />
+        <DrawdownsTable rows={report.drawdown_periods} />
       </div>
+
+      {/* Strategy vs Benchmark metrics */}
+      <MetricsTable
+        strategy={report.key_metrics?.strategy}
+        benchmark={report.key_metrics?.benchmark}
+      />
 
       {/* Trades */}
       <div className="bg-gray-900 border border-gray-800 rounded">
@@ -241,50 +163,25 @@ export function BacktestRunDetail() {
                 <th className="text-left p-2">Symbol</th>
                 <th className="text-left p-2">Side</th>
                 <th className="text-right p-2">Qty</th>
-                <th className="text-right p-2">Requested</th>
                 <th className="text-right p-2">Fill</th>
-                <th className="text-right p-2">Slippage $</th>
-                <th className="text-right p-2">Fees</th>
                 <th className="text-right p-2">Realized P&amp;L</th>
               </tr>
             </thead>
             <tbody>
               {trades.map((t, i) => (
                 <tr key={i} className="border-t border-gray-800">
-                  <td className="p-2 text-xs text-gray-400">
-                    {new Date(t.timestamp).toLocaleString()}
-                  </td>
+                  <td className="p-2 text-xs text-gray-400">{new Date(t.timestamp).toLocaleString()}</td>
                   <td className="p-2 font-mono">{t.symbol}</td>
-                  <td
-                    className={`p-2 ${
-                      t.side === "buy" ? "text-green-400" : "text-red-400"
-                    }`}
-                  >
-                    {t.side}
-                  </td>
+                  <td className={`p-2 ${t.side === "buy" ? "text-green-400" : "text-red-400"}`}>{t.side}</td>
                   <td className="p-2 text-right">{fmtNum(t.quantity, 4)}</td>
-                  <td className="p-2 text-right">
-                    {fmtUsd(t.requested_price)}
-                  </td>
                   <td className="p-2 text-right font-semibold">
-                    {fmtUsd(t.fill_price)}
+                    {t.fill_price === null ? "—" : t.fill_price.toLocaleString("en-US", { style: "currency", currency: "USD" })}
                   </td>
-                  <td className="p-2 text-right text-gray-400">
-                    {fmtUsd(t.slippage_dollars)}
-                  </td>
-                  <td className="p-2 text-right text-gray-400">
-                    {fmtUsd(t.fees)}
-                  </td>
-                  <td
-                    className={`p-2 text-right ${
-                      t.realized_pnl == null
-                        ? "text-gray-500"
-                        : t.realized_pnl > 0
-                          ? "text-green-400"
-                          : "text-red-400"
-                    }`}
-                  >
-                    {t.realized_pnl == null ? "—" : fmtUsd(t.realized_pnl)}
+                  <td className={`p-2 text-right ${
+                    t.realized_pnl == null ? "text-gray-500" : t.realized_pnl > 0 ? "text-green-400" : "text-red-400"
+                  }`}>
+                    {t.realized_pnl == null ? "—" :
+                      t.realized_pnl.toLocaleString("en-US", { style: "currency", currency: "USD" })}
                   </td>
                 </tr>
               ))}
