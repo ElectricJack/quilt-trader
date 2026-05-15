@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import type { BacktestKeyMetrics } from "../../types";
 
 type Fmt = "pct" | "num" | "int";
@@ -89,8 +90,8 @@ export function MetricsTable({ strategy, benchmark }: Props) {
         </thead>
         <tbody>
           {GROUPS.map((g) => (
-            <>
-              <tr key={`g-${g.title}`} className="bg-gray-800/40">
+            <Fragment key={g.title}>
+              <tr className="bg-gray-800/40">
                 <td colSpan={3} className="px-2 py-1 text-[10px] uppercase text-gray-500">
                   {g.title}
                 </td>
@@ -108,7 +109,7 @@ export function MetricsTable({ strategy, benchmark }: Props) {
                   </tr>
                 );
               })}
-            </>
+            </Fragment>
           ))}
         </tbody>
       </table>

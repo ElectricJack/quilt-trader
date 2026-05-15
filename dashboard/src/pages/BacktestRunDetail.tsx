@@ -101,11 +101,11 @@ export function BacktestRunDetail() {
       {/* In-flight progress */}
       {isRunInflight && (
         <div className="bg-gray-900 border border-gray-800 rounded p-3">
-          <div className="text-sm text-gray-300 mb-2">{(report as any).progress_message ?? report.status}</div>
+          <div className="text-sm text-gray-300 mb-2">{report.progress_message ?? report.status}</div>
           <div className="bg-gray-700 rounded-full h-2 overflow-hidden">
             <div
               className="bg-indigo-600 h-2 transition-[width] ease-linear duration-[2000ms]"
-              style={{ width: `${(((report as any).progress_pct ?? 0) as number) * 100}%` }}
+              style={{ width: `${(report.progress_pct ?? 0) * 100}%` }}
             />
           </div>
         </div>

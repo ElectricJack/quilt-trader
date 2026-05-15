@@ -853,6 +853,7 @@ export function useBacktestEquityWindow(
     queryFn: () => api.getBacktestEquityWindow(id, params!),
     enabled: !!id && params != null,
     staleTime: 60_000,
+    retry: false,  // 404s on missing resolution are expected (pyramid v2)
   });
 }
 

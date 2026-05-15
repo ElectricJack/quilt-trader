@@ -261,8 +261,10 @@ class BacktestRunner:
                 chunk_queue.put(None)
                 writer.join(timeout=30)
 
-            if observer.writer_error or writer.error:
-                raise (writer.error or observer.writer_error)
+            if writer.is_alive():
+                raise RuntimeError("ParquetWriterThread did not finish within 30s")
+            if writer.error:
+                raise writer.error
 
             # Load benchmark bars for finalize (if configured)
             benchmark_bar_df = None

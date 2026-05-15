@@ -16,12 +16,14 @@ export function EquitySlot({ report, trades }: Props) {
   const [visible, setVisible] = useState<VisibleRange>({ from: null, to: null });
 
   // Decide what resolution to fetch based on the visible range.
+  // Use "auto" so the server picks the highest-available resolution and
+  // gracefully falls back to 1day when 1min/1hour parquet files don't
+  // exist (current pipeline only writes 1day; the others are a v2 add-on).
   const zoomParams = useMemo(() => {
     if (!visible.from || !visible.to) return null;
     const days = (Date.parse(visible.to) - Date.parse(visible.from)) / 86_400_000;
     if (days > 60) return null;  // daily already in report
-    const resolution: "1min" | "1hour" = days < 3 ? "1min" : "1hour";
-    return { from: visible.from, to: visible.to, resolution };
+    return { from: visible.from, to: visible.to, resolution: "auto" as const };
   }, [visible]);
 
   const { data: zoomedEquity } = useBacktestEquityWindow(report.id, zoomParams);

@@ -783,7 +783,6 @@ export interface BacktestRunRecord {
   longest_drawdown_days: number | null;
   longest_winning_streak: number | null;
   longest_losing_streak: number | null;
-  tearsheet_path: string | null;
   download_ids: string[] | null;
   started_at: string | null;
   completed_at: string | null;

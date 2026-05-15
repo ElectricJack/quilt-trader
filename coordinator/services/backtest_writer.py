@@ -82,7 +82,7 @@ class ChunkingObserver:
         self._chunk_window_days: int = 0
         self._lock = threading.Lock()
         self._daily_aggregate: dict[date, float] = {}  # date -> last portfolio_value
-        self.writer_error: Optional[BaseException] = None
+        self.progress: float = 0.0  # set by engine via progress_callback
 
     # ---- EngineObserver protocol ----
 

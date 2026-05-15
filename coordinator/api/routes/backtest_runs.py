@@ -145,6 +145,8 @@ async def get_report(run_id: str, db: AsyncSession = Depends(get_db)):
         "config_overrides": r.config_overrides,
         "benchmark_symbol": r.benchmark_symbol,
         "benchmark_source": r.benchmark_source,
+        "progress_message": r.progress_message,
+        "progress_pct": r.progress_pct,
         "key_metrics": r.key_metrics,
         "equity_curve": r.equity_curve,
         "benchmark_equity_curve": r.benchmark_equity_curve,
@@ -193,7 +195,7 @@ async def get_equity_window(
     run_id: str,
     from_: datetime = Query(..., alias="from"),
     to: datetime = Query(...),
-    resolution: str = Query("auto", regex="^(1min|1hour|1day|auto)$"),
+    resolution: str = Query("auto", pattern="^(1min|1hour|1day|auto)$"),
     db: AsyncSession = Depends(get_db),
 ):
     r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()

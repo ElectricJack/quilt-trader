@@ -421,6 +421,8 @@ export interface BacktestReport {
   config_overrides: Record<string, unknown> | null;
   benchmark_symbol: string | null;
   benchmark_source: string | null;
+  progress_message: string | null;
+  progress_pct: number | null;
   key_metrics: { strategy: BacktestKeyMetrics; benchmark: BacktestKeyMetrics } | null;
   equity_curve: { timestamp: string; portfolio_value: number; cash?: number }[] | null;
   benchmark_equity_curve: { timestamp: string; value: number }[] | null;
