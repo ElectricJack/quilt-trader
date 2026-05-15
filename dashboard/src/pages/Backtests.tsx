@@ -122,8 +122,7 @@ interface RunsTabProps {
 }
 
 function RunsTab({ algoById, navigate }: RunsTabProps) {
-  const { data: payload, isLoading } = useBacktestRuns();
-  const runs: BacktestRunRecord[] = payload?.items ?? [];
+  const { data: runs = [], isLoading } = useBacktestRuns();
 
   const runsColumns: ColumnDef<BacktestRunRecord, unknown>[] = [
     {

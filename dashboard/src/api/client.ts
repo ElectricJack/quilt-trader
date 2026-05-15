@@ -668,13 +668,14 @@ export const api = {
       body: JSON.stringify(body),
     });
   },
-  listBacktestRuns(params?: { algorithm_id?: string; limit?: number; offset?: number }): Promise<{ items: BacktestRunRecord[] }> {
+  listBacktestRuns(params?: { algorithm_id?: string; limit?: number; offset?: number }): Promise<BacktestRunRecord[]> {
     const qs = new URLSearchParams();
     if (params?.algorithm_id) qs.set("algorithm_id", params.algorithm_id);
     if (params?.limit !== undefined) qs.set("limit", String(params.limit));
     if (params?.offset !== undefined) qs.set("offset", String(params.offset));
     const query = qs.toString();
-    return request<{ items: BacktestRunRecord[] }>(`/api/backtest-runs${query ? `?${query}` : ""}`);
+    // Server returns a bare array (matches /api/algorithms, /api/data/sources convention).
+    return request<BacktestRunRecord[]>(`/api/backtest-runs${query ? `?${query}` : ""}`);
   },
   getBacktestRun(id: string): Promise<BacktestRunRecord> {
     return request<BacktestRunRecord>(`/api/backtest-runs/${id}`);
