@@ -85,6 +85,14 @@ export function BacktestChart({
     trades: true,
   });
 
+  // Hold the latest callback + enabled state in refs so the chart-creation
+  // effect doesn't tear down and rebuild on every render (e.g. when the
+  // parent passes an inline `onVisibleRangeChange` whose identity changes).
+  const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
+  onVisibleRangeChangeRef.current = onVisibleRangeChange;
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+
   // Build series data once per data prop change so re-renders triggered by
   // toggling visibility don't re-parse the arrays.
   const portfolioData = useMemo<LineData<Time>[]>(
@@ -172,31 +180,34 @@ export function BacktestChart({
       color: "#6366f1",
       lineWidth: 2,
       title: "Portfolio value",
+      visible: enabledRef.current.portfolio,
     });
     cashSeriesRef.current = chart.addLineSeries({
       color: "#fbbf24",
       lineWidth: 1,
       lineStyle: 2, // dashed
       title: "Cash",
+      visible: enabledRef.current.cash,
     });
     benchmarkSeriesRef.current = chart.addLineSeries({
       color: "#34d399",
       lineWidth: 1,
       title: "Benchmark",
+      visible: enabledRef.current.benchmark,
     });
 
-    if (onVisibleRangeChange) {
-      chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-        if (range && typeof range.from === "number" && typeof range.to === "number") {
-          onVisibleRangeChange(
-            new Date(range.from * 1000).toISOString(),
-            new Date(range.to * 1000).toISOString(),
-          );
-        } else {
-          onVisibleRangeChange(null, null);
-        }
-      });
-    }
+    chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+      const cb = onVisibleRangeChangeRef.current;
+      if (!cb) return;
+      if (range && typeof range.from === "number" && typeof range.to === "number") {
+        cb(
+          new Date(range.from * 1000).toISOString(),
+          new Date(range.to * 1000).toISOString(),
+        );
+      } else {
+        cb(null, null);
+      }
+    });
 
     chartRef.current = chart;
 
@@ -216,7 +227,10 @@ export function BacktestChart({
       cashSeriesRef.current = null;
       benchmarkSeriesRef.current = null;
     };
-  }, [height, logScale, onVisibleRangeChange]);
+    // onVisibleRangeChange intentionally omitted — read via ref so callback
+    // identity changes don't tear down the chart.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [height, logScale]);
 
   // Push data into series
   useEffect(() => {

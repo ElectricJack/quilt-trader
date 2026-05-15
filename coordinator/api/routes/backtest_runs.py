@@ -168,6 +168,40 @@ async def get_trades(
     r = (await db.execute(select(BacktestRun).where(BacktestRun.id == run_id))).scalar_one_or_none()
     if r is None:
         raise HTTPException(404, detail="Backtest run not found")
+    # New runs stream trades to data/backtests/{id}/trades.parquet via the
+    # writer thread; fall back to the legacy r.trades JSON column for runs
+    # completed before that pipeline shipped.
+    parquet_path = Path("data/backtests") / run_id / "trades.parquet"
+    if parquet_path.exists():
+        import pyarrow.parquet as _pq
+        import json as _json
+        df = _pq.read_table(parquet_path).to_pandas()
+        total = int(len(df))
+        sliced = df.iloc[offset:offset + limit]
+        items = []
+        for _, row in sliced.iterrows():
+            ts = row["timestamp"]
+            try:
+                fb = _json.loads(row["fee_breakdown"]) if row.get("fee_breakdown") else {}
+            except Exception:
+                fb = {}
+            items.append({
+                "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "symbol": row["symbol"],
+                "asset_type": row.get("asset_type"),
+                "side": row["side"],
+                "quantity": float(row["quantity"]),
+                "requested_price": (None if pd.isna(row.get("requested_price")) else float(row["requested_price"])),
+                "fill_price": (None if pd.isna(row.get("fill_price")) else float(row["fill_price"])),
+                "slippage_dollars": (None if pd.isna(row.get("slippage_dollars")) else float(row["slippage_dollars"])),
+                "slippage_bps_applied": (None if pd.isna(row.get("slippage_bps_applied")) else float(row["slippage_bps_applied"])),
+                "fees": (None if pd.isna(row.get("fees")) else float(row["fees"])),
+                "fee_breakdown": fb,
+                "signal_id": row.get("signal_id"),
+                "realized_pnl": (None if pd.isna(row.get("realized_pnl")) else float(row["realized_pnl"])),
+            })
+        return {"total": total, "items": items}
+    # Legacy fallback
     trades = r.trades or []
     return {"total": len(trades), "items": trades[offset:offset + limit]}
 
