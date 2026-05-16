@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sdk.signals import Signal
@@ -27,11 +27,16 @@ class TickResult:
 
 class TickProcessor:
     def __init__(self, runner: AlgorithmRunner, broker: BrokerAdapter,
-                 data_client: DataClient, coordinator_client: Any) -> None:
+                 data_client: DataClient, coordinator_client: Any,
+                 idle_threshold_seconds: int = 60) -> None:
         self._runner = runner
         self._broker = broker
         self._data_client = data_client
         self._coordinator = coordinator_client
+        self._idle_threshold_seconds = idle_threshold_seconds
+        self._silent_tick_count: int = 0
+        self._last_active_tick_ts: Optional[datetime] = None
+        self._last_idle_tick_emitted_ts: Optional[datetime] = None
 
     async def process_tick(self, timestamp: datetime) -> TickResult:
         ctx = LiveTickContext(timestamp=timestamp, mode="live", broker=self._broker, data_client=self._data_client)
@@ -41,6 +46,18 @@ class TickProcessor:
         serialized_signals = []
         for signal in signals:
             serialized_signals.append(signal.to_dict())
+            # Emit signal_produced activity event for each signal
+            if hasattr(self._coordinator, "send_activity_event"):
+                first_leg = signal.legs[0] if signal.legs else None
+                await self._coordinator.send_activity_event(
+                    self._runner.instance_id,
+                    "signal_produced",
+                    severity="info",
+                    payload={
+                        "symbol": first_leg.symbol if first_leg else None,
+                        "side": first_leg.signal_type.value if first_leg else None,
+                    },
+                )
             approval = await self._coordinator.request_signal_approval(
                 instance_id=self._runner.instance_id, signal=signal.to_dict())
             if approval.get("approved"):
@@ -49,6 +66,19 @@ class TickProcessor:
                         symbol=leg.symbol, side=leg.signal_type.value, quantity=leg.quantity,
                         order_type=leg.order_type.value, limit_price=leg.limit_price, stop_price=leg.stop_price)
                     result.trade_results.append(TradeResult(signal=signal, order_result=order_result))
+                    # Emit trade_executed activity event for each leg filled
+                    if hasattr(self._coordinator, "send_activity_event"):
+                        await self._coordinator.send_activity_event(
+                            self._runner.instance_id,
+                            "trade_executed",
+                            severity="info",
+                            payload={
+                                "symbol": leg.symbol,
+                                "side": leg.signal_type.value,
+                                "quantity": leg.quantity,
+                                "filled_price": order_result.filled_price,
+                            },
+                        )
                 result.trades_executed += 1
                 self._runner.on_trade_executed(signal, result.trade_results[-1].order_result)
             else:
@@ -62,4 +92,35 @@ class TickProcessor:
             "mode": "live",
             "signals_produced": serialized_signals,
         }
+
+        # Emit per-tick activity events
+        if hasattr(self._coordinator, "send_activity_event"):
+            if result.signals_produced > 0 or result.trades_executed > 0:
+                await self._coordinator.send_activity_event(
+                    self._runner.instance_id,
+                    "tick_processed",
+                    severity="info",
+                    payload={
+                        "signals_produced": result.signals_produced,
+                        "trades_executed": result.trades_executed,
+                        "trades_rejected": result.trades_rejected,
+                    },
+                )
+                self._silent_tick_count = 0
+                self._last_active_tick_ts = timestamp
+            else:
+                self._silent_tick_count += 1
+                if self._last_idle_tick_emitted_ts is None:
+                    self._last_idle_tick_emitted_ts = timestamp
+                else:
+                    elapsed = (timestamp - self._last_idle_tick_emitted_ts).total_seconds()
+                    if elapsed >= self._idle_threshold_seconds:
+                        await self._coordinator.send_activity_event(
+                            self._runner.instance_id,
+                            "idle_tick",
+                            severity="debug",
+                            payload={"silent_ticks": self._silent_tick_count},
+                        )
+                        self._last_idle_tick_emitted_ts = timestamp
+
         return result

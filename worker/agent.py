@@ -58,6 +58,33 @@ class WorkerAgent:
         await self._send({"type": event_type, "instance_id": instance_id, "payload": payload or {},
                          "timestamp": datetime.now(timezone.utc).isoformat()})
 
+    async def send_activity_event(
+        self, instance_id: Optional[str], event_type: str,
+        severity: str = "info", payload: Optional[dict] = None,
+    ) -> None:
+        await self._send({
+            "type": "activity_event",
+            "worker_id": self.worker_id,
+            "instance_id": instance_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": event_type,
+            "severity": severity,
+            "payload": payload or {},
+        })
+
+    async def send_algo_log(
+        self, instance_id: str, logger_name: str, level: str, message: str,
+    ) -> None:
+        await self._send({
+            "type": "algo_log",
+            "worker_id": self.worker_id,
+            "instance_id": instance_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "logger_name": logger_name,
+            "level": level,
+            "message": message,
+        })
+
     async def request_signal_approval(self, instance_id: str, signal: dict) -> dict:
         await self._send({"type": "signal_request", "instance_id": instance_id, "signal": signal,
                          "timestamp": datetime.now(timezone.utc).isoformat()})
@@ -86,6 +113,7 @@ class WorkerAgent:
             "persisted_state": persisted_state,
         }
         await self.send_event("instance_started", instance_id)
+        await self.send_activity_event(instance_id, "instance_started", severity="info")
         logger.info("Started instance %s", instance_id)
 
     async def _handle_stop_instance(self, message: dict) -> None:
@@ -95,6 +123,7 @@ class WorkerAgent:
             final_state = instance_info["runner"].stop()
             await self.send_state_checkpoint(instance_id, final_state)
         await self.send_event("instance_stopped", instance_id)
+        await self.send_activity_event(instance_id, "instance_stopped", severity="info")
         logger.info("Stopped instance %s", instance_id)
 
     async def _handle_heartbeat_ack(self, message: dict) -> None:

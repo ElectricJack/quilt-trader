@@ -62,10 +62,12 @@ class TestWorkerAgent:
             "instance_id": "inst-2",
             "config": {},
         })
-        ws.send.assert_called_once()
-        sent = json.loads(ws.send.call_args[0][0])
-        assert sent["type"] == "instance_started"
-        assert sent["instance_id"] == "inst-2"
+        # Now sends two messages: instance_started + activity_event
+        assert ws.send.call_count == 2
+        calls = [json.loads(c[0][0]) for c in ws.send.call_args_list]
+        types = [c["type"] for c in calls]
+        assert "instance_started" in types
+        assert any(c["type"] == "activity_event" and c["event_type"] == "instance_started" for c in calls)
 
     @pytest.mark.asyncio
     async def test_stop_instance_sends_event(self):
@@ -77,10 +79,12 @@ class TestWorkerAgent:
             "type": "stop_instance",
             "instance_id": "inst-3",
         })
-        ws.send.assert_called_once()
-        sent = json.loads(ws.send.call_args[0][0])
-        assert sent["type"] == "instance_stopped"
-        assert sent["instance_id"] == "inst-3"
+        # Now sends two messages: instance_stopped + activity_event
+        assert ws.send.call_count == 2
+        calls = [json.loads(c[0][0]) for c in ws.send.call_args_list]
+        types = [c["type"] for c in calls]
+        assert "instance_stopped" in types
+        assert any(c["type"] == "activity_event" and c["event_type"] == "instance_stopped" for c in calls)
 
     @pytest.mark.asyncio
     async def test_stop_instance_with_runner(self):
@@ -96,12 +100,13 @@ class TestWorkerAgent:
             "instance_id": "inst-4",
         })
         mock_runner.stop.assert_called_once()
-        # Two sends: state_checkpoint + instance_stopped
-        assert ws.send.call_count == 2
+        # Three sends: state_checkpoint + instance_stopped + activity_event
+        assert ws.send.call_count == 3
         calls = [json.loads(c[0][0]) for c in ws.send.call_args_list]
         types = {c["type"] for c in calls}
         assert "state_checkpoint" in types
         assert "instance_stopped" in types
+        assert "activity_event" in types
 
     @pytest.mark.asyncio
     async def test_heartbeat_ack_no_op(self):
