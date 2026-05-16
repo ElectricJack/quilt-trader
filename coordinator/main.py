@@ -153,6 +153,14 @@ def create_app(
         container.live_feed_aggregator = LiveFeedAggregator(session_factory, encryption=encryption)
         await container.live_feed_aggregator.start()
 
+        from coordinator.services.live_sample_sink import LiveSampleSink
+        from pathlib import Path
+        container.live_sample_sink = LiveSampleSink(
+            base_dir=Path(os.environ.get("QT_LIVE_DATA_DIR", "data/live")),
+            buffer_size=int(os.environ.get("QT_LIVE_SAMPLE_BUFFER_SIZE", "200")),
+            flush_interval_seconds=int(os.environ.get("QT_LIVE_SAMPLE_FLUSH_INTERVAL_SECONDS", "10")),
+        )
+
         try:
             from coordinator.services.backtest_runner import BacktestRunner
             container.backtest_runner = BacktestRunner(

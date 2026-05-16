@@ -356,6 +356,27 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
             except Exception:
                 logger.exception("Failed to update instance_error for instance %s", instance_id)
 
+    elif msg_type in ("equity_sample", "trade_sample"):
+        container = get_container()
+        sink = getattr(container, "live_sample_sink", None)
+        if sink is None:
+            return
+        dep_id = data.get("instance_id")
+        run_id = data.get("run_id")
+        if not dep_id or not run_id:
+            return
+        try:
+            if msg_type == "equity_sample":
+                await sink.add_equity_sample(dep_id, run_id, {
+                    "timestamp": data.get("timestamp"),
+                    "portfolio_value": data.get("portfolio_value"),
+                    "cash": data.get("cash", 0.0),
+                })
+            else:
+                await sink.add_trade_sample(dep_id, run_id, data)
+        except Exception:
+            logger.exception("Failed to route %s for deployment %s run %s", msg_type, dep_id, run_id)
+
     elif msg_type in ("activity_event", "algo_log"):
         from coordinator.database.models import WorkerActivity
         worker_id = data.get("worker_id")

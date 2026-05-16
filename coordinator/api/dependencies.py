@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from coordinator.services.live_feed_aggregator import LiveFeedAggregator
     from coordinator.services.backtest_runner import BacktestRunner
     from coordinator.services.data_service import DataService
+    from coordinator.services.live_sample_sink import LiveSampleSink
 
 
 class ServiceContainer:
@@ -29,6 +30,7 @@ class ServiceContainer:
         self.live_feed_aggregator: Optional["LiveFeedAggregator"] = None
         self.backtest_runner: Optional["BacktestRunner"] = None
         self.data_service: Optional["DataService"] = None
+        self.live_sample_sink: Optional["LiveSampleSink"] = None
 
 
 _container: ServiceContainer | None = None
