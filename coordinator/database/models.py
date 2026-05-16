@@ -406,3 +406,23 @@ class Setting(Base):
     value: Mapped[str] = mapped_column(Text, nullable=False)
     encrypted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class WorkerActivity(Base):
+    __tablename__ = "worker_activity"
+    __table_args__ = (
+        Index("ix_worker_activity_worker_ts", "worker_id", "timestamp"),
+        Index("ix_worker_activity_instance_ts", "instance_id", "timestamp"),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    worker_id: Mapped[str] = mapped_column(String, ForeignKey("workers.id"), nullable=False)
+    instance_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("algorithm_instances.id"), nullable=True
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # "event" | "log"
+    event_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    severity: Mapped[str] = mapped_column(String, nullable=False, default="info")
+    logger_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
