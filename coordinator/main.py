@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -147,7 +149,7 @@ def create_app(
         from coordinator.services.live_feed_manager import LiveFeedManager
         from coordinator.services.live_feed_aggregator import LiveFeedAggregator
         container.live_feed_manager = LiveFeedManager()
-        container.live_feed_aggregator = LiveFeedAggregator(session_factory)
+        container.live_feed_aggregator = LiveFeedAggregator(session_factory, encryption=encryption)
         await container.live_feed_aggregator.start()
 
         try:
@@ -164,7 +166,22 @@ def create_app(
             )
 
         set_container(container)
-        yield
+
+        from coordinator.services.worker_health import run_worker_health_loop
+        health_task = asyncio.create_task(
+            run_worker_health_loop(
+                container.session_factory,
+                interval_seconds=int(os.environ.get("QT_WORKER_HEALTH_INTERVAL_SECONDS", "30")),
+                offline_after_seconds=int(os.environ.get("QT_WORKER_OFFLINE_TIMEOUT_SECONDS", "60")),
+            )
+        )
+
+        try:
+            yield
+        finally:
+            health_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await health_task
 
         if container.live_feed_aggregator:
             await container.live_feed_aggregator.stop()
