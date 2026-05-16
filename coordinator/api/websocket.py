@@ -13,14 +13,36 @@ class ConnectionManager:
     def __init__(self) -> None:
         self.dashboard_connections: list[WebSocket] = []
         self.worker_connections: dict[str, WebSocket] = {}
+        self.subscriptions: dict[str, set[WebSocket]] = {}
 
     async def connect_dashboard(self, websocket: WebSocket) -> None:
         await websocket.accept()
         self.dashboard_connections.append(websocket)
 
     async def disconnect_dashboard(self, websocket: WebSocket) -> None:
+        self.unsubscribe_all(websocket)
         if websocket in self.dashboard_connections:
             self.dashboard_connections.remove(websocket)
+
+    def subscribe(self, ws: WebSocket, target: str) -> None:
+        self.subscriptions.setdefault(target, set()).add(ws)
+
+    def unsubscribe(self, ws: WebSocket, target: str) -> None:
+        if target in self.subscriptions:
+            self.subscriptions[target].discard(ws)
+            if not self.subscriptions[target]:
+                self.subscriptions.pop(target, None)
+
+    def unsubscribe_all(self, ws: WebSocket) -> None:
+        for target in list(self.subscriptions.keys()):
+            self.unsubscribe(ws, target)
+
+    async def broadcast_to_target(self, target: str, message: dict) -> None:
+        for ws in list(self.subscriptions.get(target, ())):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                self.unsubscribe(ws, target)
 
     async def accept_worker(self, websocket: WebSocket) -> None:
         # The worker_id is not known until the first heartbeat, so we
@@ -58,6 +80,20 @@ async def handle_dashboard_message(websocket, data: dict) -> None:
 
     if msg_type == "ping":
         await websocket.send_json({"type": "pong"})
+        return
+
+    if msg_type == "subscribe" and "target" in data:
+        target = data.get("target")
+        if target:
+            manager.subscribe(websocket, target)
+            await websocket.send_json({"type": "subscribed", "target": target})
+        return
+
+    if msg_type == "unsubscribe":
+        target = data.get("target")
+        if target:
+            manager.unsubscribe(websocket, target)
+            await websocket.send_json({"type": "unsubscribed", "target": target})
         return
 
     if msg_type == "subscribe":
@@ -319,6 +355,64 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
                         })
             except Exception:
                 logger.exception("Failed to update instance_error for instance %s", instance_id)
+
+    elif msg_type in ("activity_event", "algo_log"):
+        from coordinator.database.models import WorkerActivity
+        worker_id = data.get("worker_id")
+        instance_id = data.get("instance_id")
+        kind = "event" if msg_type == "activity_event" else "log"
+        severity = data.get("severity", "info").lower()
+        if kind == "log":
+            level = (data.get("level") or "INFO").upper()
+            severity = {"DEBUG": "debug", "INFO": "info", "WARNING": "warn",
+                        "ERROR": "error", "CRITICAL": "error"}.get(level, "info")
+        raw_ts = data.get("timestamp")
+        try:
+            ts = (
+                datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                if isinstance(raw_ts, str)
+                else datetime.now(timezone.utc)
+            )
+        except Exception:
+            ts = datetime.now(timezone.utc)
+        try:
+            container = get_container()
+            async with container.session_factory() as session:
+                row = WorkerActivity(
+                    worker_id=worker_id,
+                    instance_id=instance_id,
+                    timestamp=ts,
+                    kind=kind,
+                    severity=severity,
+                    event_type=data.get("event_type") if kind == "event" else None,
+                    logger_name=data.get("logger_name") if kind == "log" else None,
+                    message=data.get("message"),
+                    payload=data.get("payload") if kind == "event" else None,
+                )
+                session.add(row)
+                await session.commit()
+        except Exception:
+            logger.exception("Failed to persist worker_activity for worker %s", worker_id)
+
+        broadcast_msg = {
+            "type": msg_type,
+            "worker_id": worker_id,
+            "instance_id": instance_id,
+            "timestamp": ts.isoformat().replace("+00:00", "Z"),
+            "severity": severity,
+        }
+        if kind == "event":
+            broadcast_msg["event_type"] = data.get("event_type")
+            broadcast_msg["payload"] = data.get("payload")
+        else:
+            broadcast_msg["logger_name"] = data.get("logger_name")
+            broadcast_msg["level"] = data.get("level")
+            broadcast_msg["message"] = data.get("message")
+
+        if worker_id:
+            await manager.broadcast_to_target(f"worker:{worker_id}", broadcast_msg)
+        if instance_id:
+            await manager.broadcast_to_target(f"deployment:{instance_id}", broadcast_msg)
 
 
 async def handle_worker_disconnect(websocket: WebSocket) -> None:
