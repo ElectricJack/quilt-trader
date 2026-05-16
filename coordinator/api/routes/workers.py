@@ -249,6 +249,62 @@ async def update_worker(
     return _to_response(worker)
 
 
+SEVERITY_ORDER = {"debug": 0, "info": 1, "warn": 2, "error": 3}
+
+
+@router.get("/{worker_id}/activity")
+async def list_worker_activity(
+    worker_id: str,
+    limit: int = 100,
+    before: Optional[str] = None,
+    severity: str = "info",
+    event_types: Optional[str] = None,
+    kind: str = "all",
+    db: AsyncSession = Depends(get_db),
+):
+    from coordinator.database.models import WorkerActivity
+    from datetime import datetime
+
+    limit = max(1, min(500, limit))
+    min_sev = SEVERITY_ORDER.get(severity, 1)
+    allowed_sev = [s for s, n in SEVERITY_ORDER.items() if n >= min_sev]
+
+    stmt = (
+        select(WorkerActivity)
+        .where(WorkerActivity.worker_id == worker_id)
+        .where(WorkerActivity.severity.in_(allowed_sev))
+    )
+    if kind in ("event", "log"):
+        stmt = stmt.where(WorkerActivity.kind == kind)
+    if event_types:
+        stmt = stmt.where(WorkerActivity.event_type.in_(event_types.split(",")))
+    if before:
+        try:
+            before_dt = datetime.fromisoformat(before.replace("Z", "+00:00"))
+            stmt = stmt.where(WorkerActivity.timestamp < before_dt)
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid `before`")
+    stmt = stmt.order_by(WorkerActivity.timestamp.desc()).limit(limit)
+    rows = (await db.execute(stmt)).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "worker_id": r.worker_id,
+                "instance_id": r.instance_id,
+                "timestamp": to_iso_utc(r.timestamp),
+                "kind": r.kind,
+                "event_type": r.event_type,
+                "severity": r.severity,
+                "logger_name": r.logger_name,
+                "message": r.message,
+                "payload": r.payload,
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.delete("/{worker_id}", status_code=204)
 async def delete_worker(worker_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Worker).where(Worker.id == worker_id))
