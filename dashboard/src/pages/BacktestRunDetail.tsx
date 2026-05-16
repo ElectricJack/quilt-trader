@@ -144,49 +144,49 @@ export function BacktestRunDetail() {
         <DrawdownsTable rows={report.drawdown_periods} />
       </div>
 
-      {/* Strategy vs Benchmark metrics */}
-      <MetricsTable
-        strategy={report.key_metrics?.strategy}
-        benchmark={report.key_metrics?.benchmark}
-      />
-
-      {/* Trades */}
-      <div className="bg-gray-900 border border-gray-800 rounded">
-        <div className="px-3 py-2 border-b border-gray-800 text-sm font-semibold text-gray-300">
-          Trades ({totalTrades})
-        </div>
-        <div className="overflow-auto max-h-96">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-800 text-xs uppercase text-gray-400 sticky top-0">
-              <tr>
-                <th className="text-left p-2">Timestamp</th>
-                <th className="text-left p-2">Symbol</th>
-                <th className="text-left p-2">Side</th>
-                <th className="text-right p-2">Qty</th>
-                <th className="text-right p-2">Fill</th>
-                <th className="text-right p-2">Realized P&amp;L</th>
-              </tr>
-            </thead>
-            <tbody>
-              {trades.map((t, i) => (
-                <tr key={i} className="border-t border-gray-800">
-                  <td className="p-2 text-xs text-gray-400">{new Date(t.timestamp).toLocaleString()}</td>
-                  <td className="p-2 font-mono">{t.symbol}</td>
-                  <td className={`p-2 ${t.side === "buy" ? "text-green-400" : "text-red-400"}`}>{t.side}</td>
-                  <td className="p-2 text-right">{fmtNum(t.quantity, 4)}</td>
-                  <td className="p-2 text-right font-semibold">
-                    {t.fill_price === null ? "—" : t.fill_price.toLocaleString("en-US", { style: "currency", currency: "USD" })}
-                  </td>
-                  <td className={`p-2 text-right ${
-                    t.realized_pnl == null ? "text-gray-500" : t.realized_pnl > 0 ? "text-green-400" : "text-red-400"
-                  }`}>
-                    {t.realized_pnl == null ? "—" :
-                      t.realized_pnl.toLocaleString("en-US", { style: "currency", currency: "USD" })}
-                  </td>
+      {/* Metrics + Trades side-by-side at wide widths */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+        <MetricsTable
+          strategy={report.key_metrics?.strategy}
+          benchmark={report.key_metrics?.benchmark}
+        />
+        <div className="bg-gray-900 border border-gray-800 rounded">
+          <div className="px-3 py-2 border-b border-gray-800 text-sm font-semibold text-gray-300">
+            Trades ({totalTrades})
+          </div>
+          <div className="overflow-auto max-h-[800px]">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-800 text-xs uppercase text-gray-400 sticky top-0">
+                <tr>
+                  <th className="text-left p-2">Timestamp</th>
+                  <th className="text-left p-2">Symbol</th>
+                  <th className="text-left p-2">Side</th>
+                  <th className="text-right p-2">Qty</th>
+                  <th className="text-right p-2">Fill</th>
+                  <th className="text-right p-2">Realized P&amp;L</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {trades.map((t, i) => (
+                  <tr key={i} className="border-t border-gray-800">
+                    <td className="p-2 text-xs text-gray-400">{new Date(t.timestamp).toLocaleString()}</td>
+                    <td className="p-2 font-mono">{t.symbol}</td>
+                    <td className={`p-2 ${t.side === "buy" ? "text-green-400" : "text-red-400"}`}>{t.side}</td>
+                    <td className="p-2 text-right">{fmtNum(t.quantity, 4)}</td>
+                    <td className="p-2 text-right font-semibold">
+                      {t.fill_price === null ? "—" : t.fill_price.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                    </td>
+                    <td className={`p-2 text-right ${
+                      t.realized_pnl == null ? "text-gray-500" : t.realized_pnl > 0 ? "text-green-400" : "text-red-400"
+                    }`}>
+                      {t.realized_pnl == null ? "—" :
+                        t.realized_pnl.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
