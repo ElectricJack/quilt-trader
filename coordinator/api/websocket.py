@@ -238,6 +238,7 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
         instance_id = data.get("instance_id")
         if instance_id is not None:
             try:
+                from coordinator.database.models import AlgorithmRun
                 container = get_container()
                 async with container.session_factory() as session:
                     result = await session.execute(
@@ -247,6 +248,12 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
                     if instance:
                         instance.status = "running"
                         await session.commit()
+                        await manager.broadcast_to_dashboards({
+                            "type": "deployment_status_changed",
+                            "deployment_id": instance_id,
+                            "status": "running",
+                            "active_run_id": instance.active_run_id,
+                        })
             except Exception:
                 logger.exception("Failed to update instance_started for instance %s", instance_id)
 
@@ -254,6 +261,7 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
         instance_id = data.get("instance_id")
         if instance_id is not None:
             try:
+                from coordinator.database.models import AlgorithmRun
                 container = get_container()
                 async with container.session_factory() as session:
                     result = await session.execute(
@@ -262,7 +270,22 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
                     instance = result.scalar_one_or_none()
                     if instance:
                         instance.status = "stopped"
+                        if instance.active_run_id is not None:
+                            run_result = await session.execute(
+                                select(AlgorithmRun).where(AlgorithmRun.id == instance.active_run_id)
+                            )
+                            run = run_result.scalar_one_or_none()
+                            if run:
+                                run.status = "stopped"
+                                run.stopped_at = datetime.now(timezone.utc)
+                        instance.active_run_id = None
                         await session.commit()
+                        await manager.broadcast_to_dashboards({
+                            "type": "deployment_status_changed",
+                            "deployment_id": instance_id,
+                            "status": "stopped",
+                            "active_run_id": None,
+                        })
             except Exception:
                 logger.exception("Failed to update instance_stopped for instance %s", instance_id)
 
@@ -270,6 +293,7 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
         instance_id = data.get("instance_id")
         if instance_id is not None:
             try:
+                from coordinator.database.models import AlgorithmRun
                 container = get_container()
                 async with container.session_factory() as session:
                     result = await session.execute(
@@ -278,7 +302,21 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
                     instance = result.scalar_one_or_none()
                     if instance:
                         instance.status = "error"
+                        if instance.active_run_id is not None:
+                            run_result = await session.execute(
+                                select(AlgorithmRun).where(AlgorithmRun.id == instance.active_run_id)
+                            )
+                            run = run_result.scalar_one_or_none()
+                            if run:
+                                run.status = "error"
+                                run.stopped_at = datetime.now(timezone.utc)
                         await session.commit()
+                        await manager.broadcast_to_dashboards({
+                            "type": "deployment_status_changed",
+                            "deployment_id": instance_id,
+                            "status": "error",
+                            "active_run_id": instance.active_run_id,
+                        })
             except Exception:
                 logger.exception("Failed to update instance_error for instance %s", instance_id)
 

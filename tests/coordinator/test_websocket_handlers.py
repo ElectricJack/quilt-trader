@@ -362,3 +362,174 @@ async def test_worker_marked_offline_on_disconnect(running_app, db_session):
     async with container.session_factory() as session:
         w = (await session.execute(select(Worker).where(Worker.id == wid))).scalar_one()
         assert w.status == "offline"
+
+
+# ---------------------------------------------------------------------------
+# Broadcast tests: worker-reported state transitions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_instance_started_broadcasts_deployment_status_changed(running_app, db_session):
+    from coordinator.database.models import (
+        Algorithm, Account, Worker, AlgorithmInstance, AlgorithmRun,
+    )
+    from coordinator.api.websocket import manager, handle_worker_message
+
+    algo = Algorithm(repo_url="x", name="A")
+    acct = Account(name="A", broker_type="alpaca", credentials="{}", supported_asset_types=["equities"])
+    worker = Worker(name="W", status="online")
+    db_session.add_all([algo, acct, worker])
+    await db_session.flush()
+    inst = AlgorithmInstance(
+        algorithm_id=algo.id, account_id=acct.id,
+        worker_id=worker.id, status="starting",
+    )
+    db_session.add(inst)
+    await db_session.flush()
+    run = AlgorithmRun(instance_id=inst.id, run_number=1, status="running")
+    db_session.add(run)
+    await db_session.flush()
+    inst.active_run_id = run.id
+    await db_session.commit()
+
+    dashboard_ws = FakeWebSocket()
+    manager.dashboard_connections.append(dashboard_ws)
+    try:
+        await handle_worker_message(FakeWebSocket(), {
+            "type": "instance_started", "instance_id": inst.id,
+        })
+    finally:
+        manager.dashboard_connections.remove(dashboard_ws)
+
+    assert any(
+        m.get("type") == "deployment_status_changed"
+        and m.get("deployment_id") == inst.id
+        and m.get("status") == "running"
+        and m.get("active_run_id") == run.id
+        for m in dashboard_ws.sent
+    ), f"no deployment_status_changed in: {dashboard_ws.sent!r}"
+
+
+@pytest.mark.asyncio
+async def test_instance_stopped_broadcasts_deployment_status_changed(running_app, db_session):
+    from coordinator.database.models import (
+        Algorithm, Account, Worker, AlgorithmInstance, AlgorithmRun,
+    )
+    from coordinator.api.websocket import manager, handle_worker_message
+
+    algo = Algorithm(repo_url="x", name="B")
+    acct = Account(name="B", broker_type="alpaca", credentials="{}", supported_asset_types=["equities"])
+    worker = Worker(name="W2", status="online")
+    db_session.add_all([algo, acct, worker])
+    await db_session.flush()
+    inst = AlgorithmInstance(
+        algorithm_id=algo.id, account_id=acct.id,
+        worker_id=worker.id, status="running",
+    )
+    db_session.add(inst)
+    await db_session.flush()
+    run = AlgorithmRun(instance_id=inst.id, run_number=1, status="running")
+    db_session.add(run)
+    await db_session.flush()
+    inst.active_run_id = run.id
+    run_id = run.id
+    await db_session.commit()
+
+    dashboard_ws = FakeWebSocket()
+    manager.dashboard_connections.append(dashboard_ws)
+    try:
+        await handle_worker_message(FakeWebSocket(), {
+            "type": "instance_stopped", "instance_id": inst.id,
+        })
+    finally:
+        manager.dashboard_connections.remove(dashboard_ws)
+
+    # Broadcast should carry status="stopped" and active_run_id=None
+    assert any(
+        m.get("type") == "deployment_status_changed"
+        and m.get("deployment_id") == inst.id
+        and m.get("status") == "stopped"
+        and m.get("active_run_id") is None
+        for m in dashboard_ws.sent
+    ), f"no deployment_status_changed in: {dashboard_ws.sent!r}"
+
+    # The AlgorithmRun row should be marked stopped with stopped_at set
+    container = get_container()
+    async with container.session_factory() as session:
+        result = await session.execute(
+            select(AlgorithmRun).where(AlgorithmRun.id == run_id)
+        )
+        updated_run = result.scalar_one()
+        assert updated_run.status == "stopped"
+        assert updated_run.stopped_at is not None
+
+    # The instance should have active_run_id cleared
+    async with container.session_factory() as session:
+        result = await session.execute(
+            select(AlgorithmInstance).where(AlgorithmInstance.id == inst.id)
+        )
+        updated_inst = result.scalar_one()
+        assert updated_inst.active_run_id is None
+
+
+@pytest.mark.asyncio
+async def test_instance_error_broadcasts_deployment_status_changed(running_app, db_session):
+    from coordinator.database.models import (
+        Algorithm, Account, Worker, AlgorithmInstance, AlgorithmRun,
+    )
+    from coordinator.api.websocket import manager, handle_worker_message
+
+    algo = Algorithm(repo_url="x", name="C")
+    acct = Account(name="C", broker_type="alpaca", credentials="{}", supported_asset_types=["equities"])
+    worker = Worker(name="W3", status="online")
+    db_session.add_all([algo, acct, worker])
+    await db_session.flush()
+    inst = AlgorithmInstance(
+        algorithm_id=algo.id, account_id=acct.id,
+        worker_id=worker.id, status="running",
+    )
+    db_session.add(inst)
+    await db_session.flush()
+    run = AlgorithmRun(instance_id=inst.id, run_number=1, status="running")
+    db_session.add(run)
+    await db_session.flush()
+    inst.active_run_id = run.id
+    run_id = run.id
+    await db_session.commit()
+
+    dashboard_ws = FakeWebSocket()
+    manager.dashboard_connections.append(dashboard_ws)
+    try:
+        await handle_worker_message(FakeWebSocket(), {
+            "type": "instance_error", "instance_id": inst.id,
+        })
+    finally:
+        manager.dashboard_connections.remove(dashboard_ws)
+
+    # Broadcast should carry status="error" and active_run_id still set
+    assert any(
+        m.get("type") == "deployment_status_changed"
+        and m.get("deployment_id") == inst.id
+        and m.get("status") == "error"
+        and m.get("active_run_id") == run_id
+        for m in dashboard_ws.sent
+    ), f"no deployment_status_changed in: {dashboard_ws.sent!r}"
+
+    # The AlgorithmRun row should be marked error with stopped_at set
+    container = get_container()
+    async with container.session_factory() as session:
+        result = await session.execute(
+            select(AlgorithmRun).where(AlgorithmRun.id == run_id)
+        )
+        updated_run = result.scalar_one()
+        assert updated_run.status == "error"
+        assert updated_run.stopped_at is not None
+
+    # The instance should still have active_run_id pointing to the run
+    async with container.session_factory() as session:
+        result = await session.execute(
+            select(AlgorithmInstance).where(AlgorithmInstance.id == inst.id)
+        )
+        updated_inst = result.scalar_one()
+        assert updated_inst.active_run_id == run_id
