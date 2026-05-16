@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import BacktestComparison
 
 router = APIRouter(prefix="/api/backtests", tags=["backtests"])
@@ -22,12 +23,12 @@ class ComparisonCreate(BaseModel):
 def _to_response(c: BacktestComparison) -> dict:
     return {
         "id": c.id, "instance_id": c.instance_id, "algorithm_id": c.algorithm_id,
-        "time_range_start": c.time_range_start.isoformat() if c.time_range_start else None,
-        "time_range_end": c.time_range_end.isoformat() if c.time_range_end else None,
+        "time_range_start": to_iso_utc(c.time_range_start),
+        "time_range_end": to_iso_utc(c.time_range_end),
         "total_ticks": c.total_ticks, "matching_ticks": c.matching_ticks,
         "match_percentage": c.match_percentage, "divergences": c.divergences,
         "summary": c.summary,
-        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "created_at": to_iso_utc(c.created_at),
     }
 
 @router.get("")

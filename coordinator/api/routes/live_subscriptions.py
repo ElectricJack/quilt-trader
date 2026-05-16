@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_container, get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import LiveSubscription
 
 router = APIRouter(prefix="/api/live-subscriptions", tags=["live-subscriptions"])
@@ -67,7 +68,7 @@ def _to_response(s: LiveSubscription) -> dict:
         "symbol": s.symbol,
         "status": s.status,
         "last_error": s.last_error,
-        "last_tick_at": s.last_tick_at.isoformat() if s.last_tick_at else None,
+        "last_tick_at": to_iso_utc(s.last_tick_at),
         "tick_rate_per_min": s.tick_rate_per_min,
         "tick_retention_hours": s.tick_retention_hours,
         "dependent_count": s.dependent_count,

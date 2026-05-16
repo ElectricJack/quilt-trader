@@ -6,6 +6,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import AlgorithmRun
 
 router = APIRouter(tags=["runs"])
@@ -21,8 +22,8 @@ def _to_response(run: AlgorithmRun) -> dict:
         "instance_id": run.instance_id,
         "run_number": run.run_number,
         "status": run.status,
-        "started_at": run.started_at.isoformat() if run.started_at else None,
-        "stopped_at": run.stopped_at.isoformat() if run.stopped_at else None,
+        "started_at": to_iso_utc(run.started_at),
+        "stopped_at": to_iso_utc(run.stopped_at),
         "starting_equity": run.starting_equity,
         "ending_equity": run.ending_equity,
         "net_pnl": run.net_pnl,

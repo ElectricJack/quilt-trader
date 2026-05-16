@@ -5,6 +5,7 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     TradeLog, AlgorithmInstance, Algorithm,
 )
@@ -19,7 +20,7 @@ def _to_response(trade: TradeLog, algo_name: Optional[str]) -> dict:
         "instance_id": trade.instance_id,
         "account_id": trade.account_id,
         "algorithm_name": algo_name,
-        "timestamp": trade.timestamp.isoformat() if trade.timestamp else None,
+        "timestamp": to_iso_utc(trade.timestamp),
         "symbol": trade.symbol,
         "asset_type": trade.asset_type,
         "side": trade.side,

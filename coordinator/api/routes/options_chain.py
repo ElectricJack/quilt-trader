@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import Account
 from coordinator.api.routes.accounts import _adapter_for_account, _close_adapter
 
@@ -64,7 +65,7 @@ async def get_chain(
         "underlying": snap.underlying,
         "spot": snap.spot,
         "expiry": snap.expiry.isoformat(),
-        "as_of": snap.as_of.isoformat() if snap.as_of else None,
+        "as_of": to_iso_utc(snap.as_of),
         "contracts": [{
             "strike": c.strike, "right": c.right, "occ_symbol": c.occ_symbol,
             "bid": c.bid, "ask": c.ask, "last": c.last, "iv": c.iv,

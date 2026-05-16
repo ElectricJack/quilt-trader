@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 from coordinator.api.dependencies import get_db, get_container
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     Account,
     AccountCashFlow,
@@ -83,8 +84,8 @@ def _to_response(account: Account) -> dict:
         "account_features": account.account_features,
         "pdt_mode": account.pdt_mode,
         "locked_by": account.locked_by,
-        "created_at": account.created_at.isoformat() if account.created_at else None,
-        "updated_at": account.updated_at.isoformat() if account.updated_at else None,
+        "created_at": to_iso_utc(account.created_at),
+        "updated_at": to_iso_utc(account.updated_at),
     }
 
 
@@ -163,7 +164,7 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
 
 def _snap_to_dict(snap: "AccountSnapshot") -> dict:
     return {
-        "timestamp": snap.timestamp.isoformat(),
+        "timestamp": to_iso_utc(snap.timestamp),
         "total_value": snap.total_value,
         "cash": snap.cash,
         "positions_value": snap.positions_value,
@@ -315,13 +316,13 @@ async def equity_curve(
         for cf in reversed(pre):
             value -= cf_delta(cf)
             points.append({
-                "timestamp": cf.timestamp.isoformat(),
+                "timestamp": to_iso_utc(cf.timestamp),
                 "value": round(value, 2),
                 "source": "estimated",
             })
         # Anchor.
         points.append({
-            "timestamp": first_snap.timestamp.isoformat(),
+            "timestamp": to_iso_utc(first_snap.timestamp),
             "value": float(first_snap.total_value),
             "source": "snapshot",
         })
@@ -338,13 +339,13 @@ async def equity_curve(
             for cf in between:
                 prev_value += cf_delta(cf)
                 points.append({
-                    "timestamp": cf.timestamp.isoformat(),
+                    "timestamp": to_iso_utc(cf.timestamp),
                     "value": round(prev_value, 2),
                     "source": "estimated",
                 })
             # Snapshot anchor wipes out drift error from missing market movements.
             points.append({
-                "timestamp": snap.timestamp.isoformat(),
+                "timestamp": to_iso_utc(snap.timestamp),
                 "value": float(snap.total_value),
                 "source": "snapshot",
             })
@@ -355,7 +356,7 @@ async def equity_curve(
         for cf in after:
             prev_value += cf_delta(cf)
             points.append({
-                "timestamp": cf.timestamp.isoformat(),
+                "timestamp": to_iso_utc(cf.timestamp),
                 "value": round(prev_value, 2),
                 "source": "estimated",
             })
@@ -377,7 +378,7 @@ async def equity_curve(
         now = datetime.now(timezone.utc)
         current_value = float(info.get("portfolio_value", 0.0))
         points.append({
-            "timestamp": now.isoformat(),
+            "timestamp": to_iso_utc(now),
             "value": round(current_value, 2),
             "source": "live",
         })
@@ -385,7 +386,7 @@ async def equity_curve(
         for cf in reversed(cash_flows):
             value -= cf_delta(cf)
             points.append({
-                "timestamp": cf.timestamp.isoformat(),
+                "timestamp": to_iso_utc(cf.timestamp),
                 "value": round(value, 2),
                 "source": "estimated",
             })
@@ -548,7 +549,7 @@ async def sync_account(
 
     return {
         "ok": True,
-        "since": since_dt.isoformat(),
+        "since": to_iso_utc(since_dt),
         "trades_inserted": trades_inserted,
         "cash_flows_inserted": cash_flows_inserted,
         "total_fetched": len(txns),

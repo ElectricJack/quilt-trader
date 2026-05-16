@@ -14,6 +14,7 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db, get_container
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import BacktestRun, Algorithm
 
 logger = logging.getLogger(__name__)
@@ -50,8 +51,8 @@ class BacktestRunCreate(BaseModel):
 def _to_response(r: BacktestRun) -> dict:
     return {
         "id": r.id, "algorithm_id": r.algorithm_id, "status": r.status,
-        "date_range_start": r.date_range_start.isoformat() if r.date_range_start else None,
-        "date_range_end": r.date_range_end.isoformat() if r.date_range_end else None,
+        "date_range_start": to_iso_utc(r.date_range_start),
+        "date_range_end": to_iso_utc(r.date_range_end),
         "initial_cash": r.initial_cash,
         "config_overrides": r.config_overrides,
         "buy_trading_fees": r.buy_trading_fees, "sell_trading_fees": r.sell_trading_fees,
@@ -62,7 +63,7 @@ def _to_response(r: BacktestRun) -> dict:
         "total_return": r.total_return, "cagr": r.cagr, "volatility": r.volatility,
         "sharpe_ratio": r.sharpe_ratio, "sortino_ratio": r.sortino_ratio,
         "calmar_ratio": r.calmar_ratio, "max_drawdown": r.max_drawdown,
-        "max_drawdown_date": r.max_drawdown_date.isoformat() if r.max_drawdown_date else None,
+        "max_drawdown_date": to_iso_utc(r.max_drawdown_date),
         "romad": r.romad, "total_fees_paid": r.total_fees_paid,
         "total_slippage_dollars": r.total_slippage_dollars,
         "trade_count": r.trade_count, "win_rate": r.win_rate,
@@ -72,9 +73,9 @@ def _to_response(r: BacktestRun) -> dict:
         "longest_winning_streak": r.longest_winning_streak,
         "longest_losing_streak": r.longest_losing_streak,
         "drawdown_periods": r.drawdown_periods,
-        "started_at": r.started_at.isoformat() if r.started_at else None,
-        "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "started_at": to_iso_utc(r.started_at),
+        "completed_at": to_iso_utc(r.completed_at),
+        "created_at": to_iso_utc(r.created_at),
     }
 
 
@@ -139,8 +140,8 @@ async def get_report(run_id: str, db: AsyncSession = Depends(get_db)):
         "id": r.id,
         "algorithm_id": r.algorithm_id,
         "status": r.status,
-        "date_range_start": r.date_range_start.isoformat() if r.date_range_start else None,
-        "date_range_end": r.date_range_end.isoformat() if r.date_range_end else None,
+        "date_range_start": to_iso_utc(r.date_range_start),
+        "date_range_end": to_iso_utc(r.date_range_end),
         "initial_cash": r.initial_cash,
         "config_overrides": r.config_overrides,
         "benchmark_symbol": r.benchmark_symbol,
@@ -186,7 +187,7 @@ async def get_trades(
             except Exception:
                 fb = {}
             items.append({
-                "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "timestamp": to_iso_utc(ts) if hasattr(ts, "isoformat") else str(ts),
                 "symbol": row["symbol"],
                 "asset_type": row.get("asset_type"),
                 "side": row["side"],
@@ -263,7 +264,7 @@ async def get_equity_window(
     return {
         "resolution": chosen,
         "items": [
-            {"ts": row["timestamp"].isoformat(), "portfolio_value": float(row["portfolio_value"]), "cash": float(row.get("cash", 0.0))}
+            {"ts": to_iso_utc(row["timestamp"]), "portfolio_value": float(row["portfolio_value"]), "cash": float(row.get("cash", 0.0))}
             for _, row in sliced.iterrows()
         ],
     }

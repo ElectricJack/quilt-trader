@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     Position, AlgorithmInstance, Algorithm,
 )
@@ -32,7 +33,7 @@ def _expand(pos: Position, algo_name: Optional[str]) -> dict:
         "net_pnl": pos.net_pnl,
         "net_cost": pos.net_cost,
         "extra_legs": extra_legs,
-        "opened_at": pos.opened_at.isoformat() if pos.opened_at else None,
+        "opened_at": to_iso_utc(pos.opened_at),
     }
 
 

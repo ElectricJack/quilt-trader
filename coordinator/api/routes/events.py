@@ -6,6 +6,7 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import Event
 
 router = APIRouter(prefix="/api/events", tags=["events"])
@@ -27,7 +28,7 @@ def _to_response(event: Event) -> dict:
         "event_type": event.event_type,
         "severity": event.severity,
         "payload": event.payload,
-        "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+        "timestamp": to_iso_utc(event.timestamp),
         "routed_to_discord": event.routed_to_discord,
         "discord_channel": event.discord_channel,
     }

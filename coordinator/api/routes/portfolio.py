@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import Account, AccountSnapshot, Position, TradeLog
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -49,7 +50,7 @@ async def portfolio_equity(
             "account_id": acct.id,
             "account_name": acct.name,
             "points": [
-                {"timestamp": s.timestamp.isoformat(), "value": s.total_value}
+                {"timestamp": to_iso_utc(s.timestamp), "value": s.total_value}
                 for s in snaps
             ],
         })

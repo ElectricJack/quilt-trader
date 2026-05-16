@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import DataSource
 from coordinator.services.data_service import DataService
 from coordinator.services.download_manager import DownloadManager
@@ -89,7 +90,7 @@ async def list_data_sources(
         "name": r.name,
         "description": r.description,
         "file_path": r.file_path,
-        "last_updated": r.last_updated.isoformat() if r.last_updated else None,
+        "last_updated": to_iso_utc(r.last_updated),
         "metadata": r.metadata_,
     } for r in rows]
 

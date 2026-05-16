@@ -1,9 +1,14 @@
 import io
 import logging
+import os
 import secrets
 import tarfile
 from pathlib import Path
 from typing import Optional
+
+DEFAULT_WORKER_INSTALL_SCRIPT_URL = (
+    "https://raw.githubusercontent.com/ElectricJack/quilt-trader/main/scripts/install-worker.sh"
+)
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
@@ -11,8 +16,9 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from coordinator.api.dependencies import get_db
-from coordinator.database.models import AlgorithmInstance, Worker
+from coordinator.api.dependencies import get_container, get_db
+from coordinator.api.serialization import to_iso_utc
+from coordinator.database.models import AlgorithmInstance, Setting, Worker
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/workers", tags=["workers"])
@@ -20,7 +26,7 @@ router = APIRouter(prefix="/api/workers", tags=["workers"])
 
 class WorkerCreate(BaseModel):
     name: str
-    tailscale_ip: str
+    tailscale_ip: Optional[str] = None
     max_algorithms: int = 2
 
 
@@ -36,12 +42,12 @@ def _to_response(worker: Worker) -> dict:
         "name": worker.name,
         "tailscale_ip": worker.tailscale_ip,
         "status": worker.status,
-        "last_heartbeat": worker.last_heartbeat.isoformat() if worker.last_heartbeat else None,
+        "last_heartbeat": to_iso_utc(worker.last_heartbeat),
         "max_algorithms": worker.max_algorithms,
         "install_status": worker.install_status,
         # install_token is included so the UI can render the one-liner after create.
         "install_token": worker.install_token,
-        "created_at": worker.created_at.isoformat() if worker.created_at else None,
+        "created_at": to_iso_utc(worker.created_at),
     }
 
 
@@ -166,8 +172,6 @@ async def worker_install_command(
     Coordinator host is derived from the request's Host header so the command targets
     whatever URL the user is browsing the dashboard at.
     """
-    from coordinator.config import CoordinatorConfig
-
     worker = (await db.execute(
         select(Worker).where(Worker.id == worker_id)
     )).scalar_one_or_none()
@@ -176,15 +180,38 @@ async def worker_install_command(
     if not worker.install_token:
         raise HTTPException(status_code=409, detail="Worker has no active install token; regenerate it first")
 
-    config = CoordinatorConfig()
-    bootstrap_url = config.worker_install_script_url
-    coord_host = request.headers.get("host", f"{config.host}:{config.port}")
-    coord_scheme = "https" if request.url.scheme == "https" else "http"
+    bootstrap_url = os.environ.get("QT_WORKER_INSTALL_SCRIPT_URL", DEFAULT_WORKER_INSTALL_SCRIPT_URL)
+
+    # Prefer the operator-configured coordinator Tailscale IP (settings table) over the request
+    # Host header, since the dashboard is typically browsed from localhost but the Pi needs a
+    # reachable address. The Pi reaches the coordinator on port 8000 over Tailscale.
+    coord_ip = (await db.execute(
+        select(Setting.value).where(Setting.key == "coordinator_ip")
+    )).scalar_one_or_none()
+    if coord_ip:
+        coord_url = f"http://{coord_ip}:8000"
+    else:
+        scheme = "https" if request.url.scheme == "https" else "http"
+        coord_url = f"{scheme}://{request.headers.get('host', 'localhost:8000')}"
+
+    # Tailscale auth key: if configured in settings, decrypt and embed; else leave the
+    # tskey-CHANGE-ME placeholder so the operator knows they need to fill it in.
+    authkey_encrypted = (await db.execute(
+        select(Setting.value).where(Setting.key == "tailscale_authkey")
+    )).scalar_one_or_none()
+    if authkey_encrypted:
+        try:
+            tailscale_authkey = get_container().encryption.decrypt(authkey_encrypted)
+        except Exception:
+            logger.exception("Failed to decrypt tailscale_authkey setting")
+            tailscale_authkey = "tskey-CHANGE-ME"
+    else:
+        tailscale_authkey = "tskey-CHANGE-ME"
 
     command = (
         f"curl -fsSL '{bootstrap_url}' | "
-        f"TAILSCALE_AUTHKEY=tskey-CHANGE-ME "
-        f"COORDINATOR_URL='{coord_scheme}://{coord_host}' "
+        f"TAILSCALE_AUTHKEY='{tailscale_authkey}' "
+        f"COORDINATOR_URL='{coord_url}' "
         f"WORKER_ID='{worker.id}' "
         f"WORKER_NAME='{worker.name}' "
         f"WORKER_TOKEN='{worker.install_token}' "

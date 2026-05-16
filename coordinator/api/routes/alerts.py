@@ -5,6 +5,7 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     Event, BacktestComparison, AlgorithmInstance, Algorithm, Worker,
 )
@@ -57,7 +58,7 @@ async def list_alerts(
             "severity": ev.severity,
             "label": ev.event_type.replace("_", " ").title(),
             "source_name": source_name,
-            "timestamp": ev.timestamp.isoformat() if ev.timestamp else None,
+            "timestamp": to_iso_utc(ev.timestamp),
             "link_path": link,
             "pill": ev.severity.upper()[:4],
             "pill_color": "err" if ev.severity == "error" else "warn",
@@ -79,7 +80,7 @@ async def list_alerts(
             "severity": "warning",
             "label": "Backtest divergence",
             "source_name": algo_name,
-            "timestamp": bt.created_at.isoformat() if bt.created_at else None,
+            "timestamp": to_iso_utc(bt.created_at),
             "link_path": f"/backtests/{bt.id}",
             "pill": f"{bt.match_percentage:.1f}%",
             "pill_color": "backtest",

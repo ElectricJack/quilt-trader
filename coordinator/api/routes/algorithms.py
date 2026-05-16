@@ -10,6 +10,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_container, get_db
+from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     Account,
     Algorithm,
@@ -67,8 +68,8 @@ def _algo_to_response(algo: Algorithm) -> dict:
         "custom_events": algo.custom_events,
         "install_status": algo.install_status,
         "install_error": algo.install_error,
-        "installed_at": algo.installed_at.isoformat() if algo.installed_at else None,
-        "updated_at": algo.updated_at.isoformat() if algo.updated_at else None,
+        "installed_at": to_iso_utc(algo.installed_at),
+        "updated_at": to_iso_utc(algo.updated_at),
     }
 
 
@@ -127,8 +128,8 @@ async def _enrich_instance(inst: AlgorithmInstance, db: AsyncSession) -> dict:
         "lifetime_metrics": inst.lifetime_metrics,
         "today_pnl": today_pnl,
         "pnl_sparkline": sparkline,
-        "created_at": inst.created_at.isoformat() if inst.created_at else None,
-        "updated_at": inst.updated_at.isoformat() if inst.updated_at else None,
+        "created_at": to_iso_utc(inst.created_at),
+        "updated_at": to_iso_utc(inst.updated_at),
     }
 
 
