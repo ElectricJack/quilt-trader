@@ -92,7 +92,7 @@ function Histogram({ equity }: { equity: BacktestReport["equity_curve"] }) {
   if (bins.length === 0) return <div className="text-xs text-gray-500 p-4">No data.</div>;
   const max = Math.max(...bins.map((b) => b.count));
   return (
-    <div className="flex items-end gap-px h-40">
+    <div className="flex items-end gap-px w-full h-full min-h-[200px]">
       {bins.map((b, i) => (
         <div
           key={i}
