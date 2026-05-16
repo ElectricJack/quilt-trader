@@ -38,3 +38,35 @@ def test_list_archives(archive_dir):
     svc.export_to_parquet("trade_log", "2025-02-01", "2025-02-28", df)
     archives = svc.list_archives()
     assert len(archives) == 2
+
+
+@pytest.mark.asyncio
+async def test_prune_worker_activity_deletes_rows_older_than_retention(test_app, db_session):
+    from coordinator.api.dependencies import get_container
+    from coordinator.database.models import Worker, WorkerActivity
+
+    w = Worker(name="w", status="online")
+    db_session.add(w)
+    await db_session.flush()
+    now = datetime.now(timezone.utc)
+    db_session.add_all([
+        WorkerActivity(worker_id=w.id, kind="event", event_type="old", severity="info",
+                       timestamp=now - timedelta(days=8)),
+        WorkerActivity(worker_id=w.id, kind="event", event_type="new", severity="info",
+                       timestamp=now - timedelta(days=1)),
+    ])
+    await db_session.commit()
+    wid = w.id
+
+    from coordinator.services.archival import prune_worker_activity
+    from sqlalchemy import select
+
+    container = get_container()
+    deleted = await prune_worker_activity(container.session_factory, retention_days=7)
+    assert deleted == 1
+
+    async with container.session_factory() as session:
+        rows = (await session.execute(
+            select(WorkerActivity).where(WorkerActivity.worker_id == wid)
+        )).scalars().all()
+        assert [r.event_type for r in rows] == ["new"]

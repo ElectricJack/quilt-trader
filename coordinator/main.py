@@ -177,12 +177,24 @@ def create_app(
             )
         )
 
+        from coordinator.services.archival import run_worker_activity_retention_loop
+        activity_retention_task = asyncio.create_task(
+            run_worker_activity_retention_loop(
+                container.session_factory,
+                interval_seconds=int(os.environ.get("QT_WORKER_ACTIVITY_RETENTION_INTERVAL_SECONDS", "3600")),
+                retention_days=int(os.environ.get("QT_WORKER_ACTIVITY_RETENTION_DAYS", "7")),
+            )
+        )
+
         try:
             yield
         finally:
             health_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await health_task
+            activity_retention_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await activity_retention_task
 
         if container.live_feed_aggregator:
             await container.live_feed_aggregator.stop()
