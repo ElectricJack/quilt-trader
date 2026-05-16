@@ -13,7 +13,7 @@ interface Props {
 export function ReturnsDistributionSlot({ report }: Props) {
   const [view, setView] = useState<View>("heatmap");
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded p-3">
+    <div className="bg-gray-900 border border-gray-800 rounded p-3 flex flex-col h-full min-h-[280px]">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-gray-300">Returns distribution</h3>
         <div className="flex gap-1 text-xs">
@@ -26,10 +26,12 @@ export function ReturnsDistributionSlot({ report }: Props) {
           ))}
         </div>
       </div>
-      {view === "heatmap" && <MonthlyHeatmap matrix={report.monthly_returns_matrix} />}
-      {view === "eoy" && <EoyBar rows={report.eoy_returns} />}
-      {view === "histogram" && <Histogram equity={report.equity_curve} />}
-      {view === "scatter" && <Scatter equity={report.equity_curve} />}
+      <div className="flex-1 min-h-0">
+        {view === "heatmap" && <MonthlyHeatmap matrix={report.monthly_returns_matrix} />}
+        {view === "eoy" && <EoyBar rows={report.eoy_returns} />}
+        {view === "histogram" && <Histogram equity={report.equity_curve} />}
+        {view === "scatter" && <Scatter equity={report.equity_curve} />}
+      </div>
     </div>
   );
 }

@@ -25,29 +25,32 @@ export function MonthlyHeatmap({ matrix }: Props) {
   const lookup = new Map<string, number>();
   for (const [y, m, v] of matrix.cells) lookup.set(`${y}-${m}`, v);
   return (
-    <div className="overflow-auto">
-      <table className="text-[10px] border-separate" style={{ borderSpacing: 1 }}>
+    <div className="w-full h-full min-h-[220px]">
+      <table
+        className="w-full h-full text-[10px] border-separate"
+        style={{ borderSpacing: 2, tableLayout: "fixed" }}
+      >
         <thead>
           <tr>
-            <th className="text-gray-500 px-1 text-left">Year</th>
+            <th className="text-gray-500 text-left w-12 font-normal">Year</th>
             {MONTHS.map((m) => (
-              <th key={m} className="text-gray-500 px-1">{m}</th>
+              <th key={m} className="text-gray-500 font-normal">{m}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {matrix.years.map((y) => (
             <tr key={y}>
-              <td className="text-gray-400 px-1">{y}</td>
+              <td className="text-gray-400">{y}</td>
               {MONTHS.map((_, idx) => {
                 const v = lookup.get(`${y}-${idx + 1}`);
                 if (v === undefined) {
-                  return <td key={idx} className="w-8 h-6 bg-gray-800/30" />;
+                  return <td key={idx} className="bg-gray-800/30 rounded" />;
                 }
                 return (
                   <td
                     key={idx}
-                    className="w-8 h-6 text-center text-white"
+                    className="text-center text-white rounded"
                     style={{ background: colorFor(v) }}
                     title={`${y}-${String(idx + 1).padStart(2, "0")}: ${(v * 100).toFixed(2)}%`}
                   >
