@@ -22,12 +22,18 @@ class ConnectionManager:
         if websocket in self.dashboard_connections:
             self.dashboard_connections.remove(websocket)
 
-    async def connect_worker(self, websocket: WebSocket, worker_id: str = "unknown") -> None:
+    async def accept_worker(self, websocket: WebSocket) -> None:
+        # The worker_id is not known until the first heartbeat, so we
+        # only accept here. `register_worker` adds it to the lookup map.
         await websocket.accept()
+
+    def register_worker(self, worker_id: str, websocket: WebSocket) -> None:
         self.worker_connections[worker_id] = websocket
 
-    async def disconnect_worker(self, worker_id: str) -> None:
-        self.worker_connections.pop(worker_id, None)
+    def disconnect_worker_by_socket(self, websocket: WebSocket) -> None:
+        for wid, ws in list(self.worker_connections.items()):
+            if ws is websocket:
+                self.worker_connections.pop(wid, None)
 
     async def broadcast_to_dashboards(self, message: dict) -> None:
         disconnected = []
@@ -43,17 +49,90 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def handle_dashboard_message(websocket, data: dict) -> None:
+    """Handle a single dashboard WebSocket message. Separated for testability."""
+    from sqlalchemy import select
+    from coordinator.database.models import AlgorithmInstance
+
+    msg_type = data.get("type")
+
+    if msg_type == "ping":
+        await websocket.send_json({"type": "pong"})
+        return
+
+    if msg_type == "subscribe":
+        await websocket.send_json({"type": "subscribed", "events": data.get("events", [])})
+        return
+
+    if msg_type in ("start_instance", "stop_instance"):
+        instance_id = data.get("instance_id")
+        if not instance_id:
+            await websocket.send_json({
+                "type": "error",
+                "related_to": msg_type,
+                "error": "missing instance_id",
+            })
+            return
+
+        try:
+            container = get_container()
+            async with container.session_factory() as session:
+                result = await session.execute(
+                    select(AlgorithmInstance).where(AlgorithmInstance.id == instance_id)
+                )
+                instance = result.scalar_one_or_none()
+        except Exception:
+            logger.exception("Failed to load instance %s for %s", instance_id, msg_type)
+            await websocket.send_json({
+                "type": "error",
+                "related_to": msg_type,
+                "instance_id": instance_id,
+                "error": "database error",
+            })
+            return
+
+        if instance is None:
+            await websocket.send_json({
+                "type": "error",
+                "related_to": msg_type,
+                "instance_id": instance_id,
+                "error": "instance not found",
+            })
+            return
+
+        worker_ws = manager.worker_connections.get(instance.worker_id)
+        if worker_ws is None:
+            await websocket.send_json({
+                "type": "error",
+                "related_to": msg_type,
+                "instance_id": instance_id,
+                "error": "worker offline",
+            })
+            return
+
+        payload: dict = {"type": msg_type, "instance_id": instance_id}
+        if msg_type == "start_instance":
+            payload["config"] = instance.config_values or {}
+            payload["persisted_state"] = instance.persisted_state
+        try:
+            await worker_ws.send_json(payload)
+        except Exception:
+            logger.exception("Failed to forward %s to worker %s", msg_type, instance.worker_id)
+            await websocket.send_json({
+                "type": "error",
+                "related_to": msg_type,
+                "instance_id": instance_id,
+                "error": "failed to reach worker",
+            })
+
+
 @router.websocket("/ws/dashboard")
 async def dashboard_websocket(websocket: WebSocket):
     await manager.connect_dashboard(websocket)
     try:
         while True:
             data = await websocket.receive_json()
-            msg_type = data.get("type")
-            if msg_type == "ping":
-                await websocket.send_json({"type": "pong"})
-            elif msg_type == "subscribe":
-                await websocket.send_json({"type": "subscribed", "events": data.get("events", [])})
+            await handle_dashboard_message(websocket, data)
     except WebSocketDisconnect:
         await manager.disconnect_dashboard(websocket)
 
@@ -73,6 +152,7 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
         await websocket.send_json({"type": "heartbeat_ack"})
         if not worker_id:
             return
+        manager.register_worker(worker_id, websocket)
         try:
             container = get_container()
             async with container.session_factory() as session:
@@ -203,12 +283,44 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
                 logger.exception("Failed to update instance_error for instance %s", instance_id)
 
 
+async def handle_worker_disconnect(websocket: WebSocket) -> None:
+    """Mark a worker offline when its websocket disconnects and broadcast."""
+    from sqlalchemy import select
+    from coordinator.database.models import Worker
+    # Find the worker id from the connection map *before* removing
+    worker_id = None
+    for wid, ws in list(manager.worker_connections.items()):
+        if ws is websocket:
+            worker_id = wid
+            break
+    manager.disconnect_worker_by_socket(websocket)
+    if worker_id is None:
+        return
+    try:
+        container = get_container()
+        async with container.session_factory() as session:
+            worker = (await session.execute(
+                select(Worker).where(Worker.id == worker_id)
+            )).scalar_one_or_none()
+            if worker is not None and worker.status != "offline":
+                worker.status = "offline"
+                await session.commit()
+                await manager.broadcast_to_dashboards({
+                    "type": "worker_disconnected",
+                    "worker_id": worker_id,
+                })
+    except Exception:
+        logger.exception("Failed to mark worker %s offline on disconnect", worker_id)
+
+
 @router.websocket("/ws/worker")
 async def worker_websocket(websocket: WebSocket):
-    await manager.connect_worker(websocket)
+    await manager.accept_worker(websocket)
     try:
         while True:
             data = await websocket.receive_json()
             await handle_worker_message(websocket, data)
     except WebSocketDisconnect:
         logger.info("Worker disconnected")
+    finally:
+        await handle_worker_disconnect(websocket)

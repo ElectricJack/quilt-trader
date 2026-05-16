@@ -234,3 +234,129 @@ async def test_instance_error_sets_status(running_app, algo_instance):
         )
         inst = result.scalar_one()
         assert inst.status == "error"
+
+
+# ---------------------------------------------------------------------------
+# Dashboard → worker relay (start/stop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dashboard_start_forwards_to_worker(running_app, algo_instance, worker_and_account):
+    from coordinator.api.websocket import handle_dashboard_message, manager
+
+    worker_id, _ = worker_and_account
+
+    # Set config_values + persisted_state on the instance so we can assert they're forwarded.
+    container = get_container()
+    async with container.session_factory() as session:
+        result = await session.execute(
+            select(AlgorithmInstance).where(AlgorithmInstance.id == algo_instance)
+        )
+        inst = result.scalar_one()
+        inst.config_values = {"foo": 1}
+        inst.persisted_state = {"bar": 2}
+        await session.commit()
+
+    worker_ws = FakeWebSocket()
+    manager.register_worker(worker_id, worker_ws)
+    try:
+        dashboard_ws = FakeWebSocket()
+        await handle_dashboard_message(
+            dashboard_ws,
+            {"type": "start_instance", "instance_id": algo_instance},
+        )
+        assert dashboard_ws.sent == []
+        assert worker_ws.sent == [{
+            "type": "start_instance",
+            "instance_id": algo_instance,
+            "config": {"foo": 1},
+            "persisted_state": {"bar": 2},
+        }]
+    finally:
+        manager.disconnect_worker_by_socket(worker_ws)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_stop_forwards_to_worker(running_app, algo_instance, worker_and_account):
+    from coordinator.api.websocket import handle_dashboard_message, manager
+
+    worker_id, _ = worker_and_account
+    worker_ws = FakeWebSocket()
+    manager.register_worker(worker_id, worker_ws)
+    try:
+        dashboard_ws = FakeWebSocket()
+        await handle_dashboard_message(
+            dashboard_ws,
+            {"type": "stop_instance", "instance_id": algo_instance},
+        )
+        assert dashboard_ws.sent == []
+        assert worker_ws.sent == [{
+            "type": "stop_instance",
+            "instance_id": algo_instance,
+        }]
+    finally:
+        manager.disconnect_worker_by_socket(worker_ws)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_start_errors_when_worker_offline(running_app, algo_instance):
+    from coordinator.api.websocket import handle_dashboard_message
+
+    dashboard_ws = FakeWebSocket()
+    await handle_dashboard_message(
+        dashboard_ws,
+        {"type": "start_instance", "instance_id": algo_instance},
+    )
+    assert len(dashboard_ws.sent) == 1
+    msg = dashboard_ws.sent[0]
+    assert msg["type"] == "error"
+    assert msg["related_to"] == "start_instance"
+    assert msg["error"] == "worker offline"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_start_errors_when_instance_missing(running_app):
+    from coordinator.api.websocket import handle_dashboard_message
+
+    dashboard_ws = FakeWebSocket()
+    await handle_dashboard_message(
+        dashboard_ws,
+        {"type": "start_instance", "instance_id": "does-not-exist"},
+    )
+    assert len(dashboard_ws.sent) == 1
+    assert dashboard_ws.sent[0]["error"] == "instance not found"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_registers_worker_in_connection_map(running_app, worker_and_account):
+    from coordinator.api.websocket import handle_worker_message, manager
+
+    worker_id, _ = worker_and_account
+    ws = FakeWebSocket()
+    await handle_worker_message(ws, {"type": "heartbeat", "worker_id": worker_id})
+    try:
+        assert manager.worker_connections.get(worker_id) is ws
+    finally:
+        manager.disconnect_worker_by_socket(ws)
+
+
+@pytest.mark.asyncio
+async def test_worker_marked_offline_on_disconnect(running_app, db_session):
+    from coordinator.api.websocket import manager, handle_worker_disconnect
+    worker = Worker(name="w", status="online")
+    db_session.add(worker)
+    await db_session.flush()
+    wid = worker.id
+
+    fake = FakeWebSocket()
+    manager.register_worker(wid, fake)
+    await handle_worker_disconnect(fake)
+
+    # Verify the row is now offline (use a fresh query — the session-cached
+    # row may need a refresh; safest is a new session via container)
+    from coordinator.api.dependencies import get_container
+    container = get_container()
+    async with container.session_factory() as session:
+        w = (await session.execute(select(Worker).where(Worker.id == wid))).scalar_one()
+        assert w.status == "offline"
