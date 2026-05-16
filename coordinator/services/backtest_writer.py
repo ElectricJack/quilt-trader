@@ -24,27 +24,7 @@ import pyarrow.parquet as pq
 logger = logging.getLogger(__name__)
 
 
-_EQUITY_SCHEMA = pa.schema([
-    ("timestamp", pa.timestamp("ns")),
-    ("portfolio_value", pa.float64()),
-    ("cash", pa.float64()),
-])
-
-_TRADE_SCHEMA = pa.schema([
-    ("timestamp", pa.timestamp("ns")),
-    ("symbol", pa.string()),
-    ("asset_type", pa.string()),
-    ("side", pa.string()),
-    ("quantity", pa.float64()),
-    ("requested_price", pa.float64()),
-    ("fill_price", pa.float64()),
-    ("slippage_dollars", pa.float64()),
-    ("slippage_bps_applied", pa.float64()),
-    ("fees", pa.float64()),
-    ("fee_breakdown", pa.string()),  # JSON-serialized
-    ("signal_id", pa.string()),
-    ("realized_pnl", pa.float64()),
-])
+from coordinator.services.streaming_schemas import EQUITY_SCHEMA as _EQUITY_SCHEMA, TRADE_SCHEMA as _TRADE_SCHEMA
 
 TARGET_TICKS_PER_CHUNK = 5_000
 MIN_DAYS_PER_CHUNK = 1
