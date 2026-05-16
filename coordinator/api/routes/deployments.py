@@ -1,0 +1,139 @@
+"""Public 'deployments' API — the user-facing name for AlgorithmInstance.
+
+Wraps the existing instance model and joins in algorithm/account/worker names
+so the frontend never has to display GUIDs. The original /api/instances/*
+routes still exist for one release for backwards compatibility.
+"""
+from __future__ import annotations
+
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from coordinator.api.dependencies import get_db
+from coordinator.api.serialization import to_iso_utc
+from coordinator.database.models import (
+    Account, Algorithm, AlgorithmInstance, AlgorithmRun, Worker,
+)
+
+router = APIRouter(prefix="/api/deployments", tags=["deployments"])
+
+
+def _deployment_to_response(
+    inst: AlgorithmInstance,
+    algo_name: str,
+    account_name: str,
+    worker_name: str,
+) -> dict:
+    return {
+        "id": inst.id,
+        "algorithm_id": inst.algorithm_id,
+        "account_id": inst.account_id,
+        "worker_id": inst.worker_id,
+        "algorithm_name": algo_name,
+        "account_name": account_name,
+        "worker_name": worker_name,
+        "status": inst.status,
+        "active_run_id": inst.active_run_id,
+        "config_values": inst.config_values,
+        "lifetime_metrics": inst.lifetime_metrics,
+        "created_at": to_iso_utc(inst.created_at),
+        "updated_at": to_iso_utc(inst.updated_at),
+    }
+
+
+class DeploymentUpdate(BaseModel):
+    config_values: Optional[dict] = None
+
+
+@router.get("")
+async def list_deployments(
+    algorithm_id: Optional[str] = None,
+    worker_id: Optional[str] = None,
+    account_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(AlgorithmInstance, Algorithm.name, Account.name, Worker.name)
+        .join(Algorithm, AlgorithmInstance.algorithm_id == Algorithm.id)
+        .join(Account, AlgorithmInstance.account_id == Account.id)
+        .join(Worker, AlgorithmInstance.worker_id == Worker.id)
+    )
+    if algorithm_id:
+        stmt = stmt.where(AlgorithmInstance.algorithm_id == algorithm_id)
+    if worker_id:
+        stmt = stmt.where(AlgorithmInstance.worker_id == worker_id)
+    if account_id:
+        stmt = stmt.where(AlgorithmInstance.account_id == account_id)
+    rows = (await db.execute(stmt)).all()
+    return [_deployment_to_response(inst, a, ac, w) for inst, a, ac, w in rows]
+
+
+@router.get("/{deployment_id}/runs")
+async def list_runs(deployment_id: str, db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(
+        select(AlgorithmRun)
+        .where(AlgorithmRun.instance_id == deployment_id)
+        .order_by(AlgorithmRun.run_number.desc())
+    )).scalars().all()
+    return [
+        {
+            "id": r.id,
+            "run_number": r.run_number,
+            "status": r.status,
+            "started_at": to_iso_utc(r.started_at),
+            "stopped_at": to_iso_utc(r.stopped_at),
+            "starting_equity": r.starting_equity,
+            "ending_equity": r.ending_equity,
+            "net_pnl": r.net_pnl,
+            "unrealized_pnl": r.unrealized_pnl,
+            "total_fees": r.total_fees,
+            "total_slippage": r.total_slippage,
+            "trade_count": r.trade_count,
+            "metrics": r.metrics,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/{deployment_id}")
+async def get_deployment(deployment_id: str, db: AsyncSession = Depends(get_db)):
+    stmt = (
+        select(AlgorithmInstance, Algorithm.name, Account.name, Worker.name)
+        .join(Algorithm, AlgorithmInstance.algorithm_id == Algorithm.id)
+        .join(Account, AlgorithmInstance.account_id == Account.id)
+        .join(Worker, AlgorithmInstance.worker_id == Worker.id)
+        .where(AlgorithmInstance.id == deployment_id)
+    )
+    row = (await db.execute(stmt)).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    inst, a, ac, w = row
+    return _deployment_to_response(inst, a, ac, w)
+
+
+@router.patch("/{deployment_id}")
+async def update_deployment(
+    deployment_id: str, body: DeploymentUpdate, db: AsyncSession = Depends(get_db),
+):
+    inst = (await db.execute(
+        select(AlgorithmInstance).where(AlgorithmInstance.id == deployment_id)
+    )).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    if body.config_values is not None:
+        inst.config_values = body.config_values
+    await db.flush()
+    return {"ok": True}
+
+
+@router.delete("/{deployment_id}", status_code=204)
+async def delete_deployment(deployment_id: str, db: AsyncSession = Depends(get_db)):
+    inst = (await db.execute(
+        select(AlgorithmInstance).where(AlgorithmInstance.id == deployment_id)
+    )).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    await db.delete(inst)

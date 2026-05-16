@@ -255,6 +255,9 @@ def create_app(
     from coordinator.api.routes import backtest_runs as backtest_runs_routes
     app.include_router(backtest_runs_routes.router)
 
+    from coordinator.api.routes import deployments as deployments_routes
+    app.include_router(deployments_routes.router)
+
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
     if os.path.isdir(dashboard_dir):

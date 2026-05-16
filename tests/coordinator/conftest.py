@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest_asyncio
 
 from coordinator.database.connection import create_engine
@@ -20,6 +22,12 @@ async def db_engine():
 async def test_app():
     app = create_app(database_url="sqlite+aiosqlite:///:memory:")
     async with app.router.lifespan_context(app):
+        # Allow background tasks (e.g. worker_health_loop) to complete their
+        # first iteration before tests start writing to the DB.  Without this,
+        # the health-loop's first session runs concurrently with the test's
+        # db_session writes on the shared StaticPool connection, which causes
+        # SQLite to silently drop some inserts.
+        await asyncio.sleep(0.05)
         yield app
 
 
