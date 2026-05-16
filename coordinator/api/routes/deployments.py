@@ -9,10 +9,11 @@ from __future__ import annotations
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db
+from coordinator.api.websocket import manager as ws_manager
 from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     Account, Algorithm, AlgorithmInstance, AlgorithmRun, Worker,
@@ -69,6 +70,80 @@ async def list_deployments(
         stmt = stmt.where(AlgorithmInstance.account_id == account_id)
     rows = (await db.execute(stmt)).all()
     return [_deployment_to_response(inst, a, ac, w) for inst, a, ac, w in rows]
+
+
+async def _broadcast_status_changed(deployment_id: str, status: str, active_run_id: Optional[str]) -> None:
+    await ws_manager.broadcast_to_dashboards({
+        "type": "deployment_status_changed",
+        "deployment_id": deployment_id,
+        "status": status,
+        "active_run_id": active_run_id,
+    })
+
+
+@router.post("/{deployment_id}/start")
+async def start_deployment(deployment_id: str, db: AsyncSession = Depends(get_db)):
+    inst = (await db.execute(
+        select(AlgorithmInstance).where(AlgorithmInstance.id == deployment_id)
+    )).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    if inst.status not in ("stopped", "error"):
+        raise HTTPException(status_code=409, detail=f"Cannot start deployment in status {inst.status!r}")
+
+    worker_ws = ws_manager.worker_connections.get(inst.worker_id)
+    if worker_ws is None:
+        raise HTTPException(status_code=502, detail="Worker offline")
+
+    next_n = (await db.execute(
+        select(func.coalesce(func.max(AlgorithmRun.run_number), 0))
+        .where(AlgorithmRun.instance_id == inst.id)
+    )).scalar_one() + 1
+    run = AlgorithmRun(instance_id=inst.id, run_number=next_n, status="running")
+    db.add(run)
+    await db.flush()
+
+    inst.status = "starting"
+    inst.active_run_id = run.id
+    await db.commit()
+
+    await _broadcast_status_changed(inst.id, "starting", run.id)
+    try:
+        await worker_ws.send_json({
+            "type": "start_instance",
+            "instance_id": inst.id,
+            "config": inst.config_values or {},
+            "persisted_state": inst.persisted_state,
+        })
+    except Exception:
+        inst.status = "error"
+        run.status = "error"
+        await db.commit()
+        await _broadcast_status_changed(inst.id, "error", run.id)
+        raise HTTPException(status_code=502, detail="Failed to reach worker")
+    return {"ok": True, "active_run_id": run.id}
+
+
+@router.post("/{deployment_id}/stop")
+async def stop_deployment(deployment_id: str, db: AsyncSession = Depends(get_db)):
+    inst = (await db.execute(
+        select(AlgorithmInstance).where(AlgorithmInstance.id == deployment_id)
+    )).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    if inst.status not in ("running", "starting"):
+        raise HTTPException(status_code=409, detail=f"Cannot stop deployment in status {inst.status!r}")
+
+    worker_ws = ws_manager.worker_connections.get(inst.worker_id)
+    inst.status = "stopping"
+    await db.commit()
+    await _broadcast_status_changed(inst.id, "stopping", inst.active_run_id)
+    if worker_ws is not None:
+        try:
+            await worker_ws.send_json({"type": "stop_instance", "instance_id": inst.id})
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 @router.get("/{deployment_id}/runs")
