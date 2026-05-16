@@ -120,11 +120,13 @@ export function BacktestRunDetail() {
 
       {/* KPI row */}
       {km && (
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
           <KpiCard variant="hero" label="Annual Return" value={fmtPct(km.cagr)} hint="CAGR" />
           <KpiCard label="Total Return" value={fmtPct(km.total_return)} />
           <KpiCard label="Max Drawdown" value={fmtPct(km.max_drawdown)} />
           <KpiCard label="RoMaD" value={fmtNum(km.romad)} hint="CAGR / Max Drawdown" />
+          <KpiCard label="Sharpe" value={fmtNum(km.sharpe_ratio)} />
+          <KpiCard label="Sortino" value={fmtNum(km.sortino_ratio)} />
           <KpiCard label="Longest DD Days" value={fmtInt(km.longest_drawdown_days)} />
         </div>
       )}
