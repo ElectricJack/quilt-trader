@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, type IChartApi, type ISeriesApi } from "lightweight-charts";
 import type { BacktestReport, BacktestRollingPoint } from "../../types";
-import { useChartResize } from "./useChartResize";
+import { attachChartResize } from "./useChartResize";
 
 type Series = "sharpe" | "sortino" | "vol" | "beta";
 const SERIES_META: Record<Series, { color: string; label: string }> = {
@@ -22,18 +22,19 @@ export function RollingMetricsSlot({ report }: Props) {
   const seriesRef = useRef<Partial<Record<Series, ISeriesApi<"Line">>>>({});
 
   useEffect(() => {
-    if (!ref.current || !report.rolling_metrics) return;
-    const chart = createChart(ref.current, {
-      width: ref.current.clientWidth,
-      height: 220,
+    const el = ref.current;
+    if (!el || !report.rolling_metrics) return;
+    const chart = createChart(el, {
+      width: el.clientWidth,
+      height: el.clientHeight || 220,
       layout: { background: { type: ColorType.Solid, color: "#0f172a" }, textColor: "#9ca3af" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
     });
     chartRef.current = chart;
+    const detach = attachChartResize(el, chart);
     chart.timeScale().fitContent();
-    return () => { chart.remove(); chartRef.current = null; seriesRef.current = {}; };
+    return () => { detach(); chart.remove(); chartRef.current = null; seriesRef.current = {}; };
   }, [report.rolling_metrics]);
-  useChartResize(ref, chartRef.current);
 
   useEffect(() => {
     if (!chartRef.current || !report.rolling_metrics) return;
@@ -58,7 +59,7 @@ export function RollingMetricsSlot({ report }: Props) {
   }, [enabled, report.rolling_metrics]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded p-3">
+    <div className="bg-gray-900 border border-gray-800 rounded p-3 flex flex-col h-full min-h-[280px]">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-gray-300">
           Rolling metrics ({report.rolling_metrics?.window_days ?? 90}d window)
@@ -74,7 +75,7 @@ export function RollingMetricsSlot({ report }: Props) {
           ))}
         </div>
       </div>
-      <div ref={ref} className="w-full" />
+      <div ref={ref} className="w-full flex-1 min-h-[200px]" />
     </div>
   );
 }

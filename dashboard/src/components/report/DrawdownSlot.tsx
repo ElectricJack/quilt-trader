@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, type IChartApi } from "lightweight-charts";
 import type { BacktestReport } from "../../types";
-import { useChartResize } from "./useChartResize";
+import { attachChartResize } from "./useChartResize";
 
 interface Props { report: BacktestReport; }
 
 export function DrawdownSlot({ report }: Props) {
   const [view, setView] = useState<"underwater" | "topN">("underwater");
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded p-3">
+    <div className="bg-gray-900 border border-gray-800 rounded p-3 flex flex-col h-full min-h-[280px]">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-gray-300">Drawdown</h3>
         <div className="flex gap-1 text-xs">
@@ -21,23 +21,25 @@ export function DrawdownSlot({ report }: Props) {
           ))}
         </div>
       </div>
-      {view === "underwater" ? <Underwater curve={report.drawdown_curve} /> : <TopN periods={report.drawdown_periods} />}
+      <div className="flex-1 min-h-0">
+        {view === "underwater" ? <Underwater curve={report.drawdown_curve} /> : <TopN periods={report.drawdown_periods} />}
+      </div>
     </div>
   );
 }
 
 function Underwater({ curve }: { curve: BacktestReport["drawdown_curve"] }) {
   const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
   useEffect(() => {
-    if (!ref.current || !curve) return;
-    const chart: IChartApi = createChart(ref.current, {
-      width: ref.current.clientWidth,
-      height: 220,
+    const el = ref.current;
+    if (!el || !curve) return;
+    const chart: IChartApi = createChart(el, {
+      width: el.clientWidth,
+      height: el.clientHeight || 220,
       layout: { background: { type: ColorType.Solid, color: "#0f172a" }, textColor: "#9ca3af" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
     });
-    chartRef.current = chart;
+    const detach = attachChartResize(el, chart);
     const series = chart.addAreaSeries({
       lineColor: "#ef4444", topColor: "rgba(239,68,68,0.3)", bottomColor: "rgba(239,68,68,0.0)",
     });
@@ -46,10 +48,9 @@ function Underwater({ curve }: { curve: BacktestReport["drawdown_curve"] }) {
       value: p.drawdown_pct * 100,
     })));
     chart.timeScale().fitContent();
-    return () => { chart.remove(); chartRef.current = null; };
+    return () => { detach(); chart.remove(); };
   }, [curve]);
-  useChartResize(ref, chartRef.current);
-  return <div ref={ref} className="w-full" />;
+  return <div ref={ref} className="w-full h-full min-h-[200px]" />;
 }
 
 function TopN({ periods }: { periods: BacktestReport["drawdown_periods"] }) {

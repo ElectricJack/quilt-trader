@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createChart, ColorType, type IChartApi } from "lightweight-charts";
 import { MonthlyHeatmap } from "./MonthlyHeatmap";
-import { useChartResize } from "./useChartResize";
+import { attachChartResize } from "./useChartResize";
 import type { BacktestReport } from "../../types";
 
 type View = "heatmap" | "eoy" | "histogram" | "scatter";
@@ -107,16 +107,16 @@ function Histogram({ equity }: { equity: BacktestReport["equity_curve"] }) {
 
 function Scatter({ equity }: { equity: BacktestReport["equity_curve"] }) {
   const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
   useEffect(() => {
-    if (!ref.current) return;
-    const chart: IChartApi = createChart(ref.current, {
-      width: ref.current.clientWidth,
-      height: ref.current.clientHeight || 220,
+    const el = ref.current;
+    if (!el) return;
+    const chart: IChartApi = createChart(el, {
+      width: el.clientWidth,
+      height: el.clientHeight || 220,
       layout: { background: { type: ColorType.Solid, color: "#0f172a" }, textColor: "#9ca3af" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
     });
-    chartRef.current = chart;
+    const detach = attachChartResize(el, chart);
     const series = chart.addHistogramSeries({ color: "#6366f1" });
     const points = dailyReturnsFromEquity(equity).map((p) => ({
       time: (Date.parse(p.ts) / 1000) as any,
@@ -125,8 +125,7 @@ function Scatter({ equity }: { equity: BacktestReport["equity_curve"] }) {
     }));
     series.setData(points);
     chart.timeScale().fitContent();
-    return () => { chart.remove(); chartRef.current = null; };
+    return () => { detach(); chart.remove(); };
   }, [equity]);
-  useChartResize(ref, chartRef.current);
   return <div ref={ref} className="w-full h-full min-h-[200px]" />;
 }
