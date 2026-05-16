@@ -1,12 +1,15 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from sdk.signals import Signal
 from worker.broker_adapter import BrokerAdapter, OrderResult
 from worker.context import LiveTickContext
 from worker.data_client import DataClient
 from worker.runner import AlgorithmRunner
+
+if TYPE_CHECKING:
+    from worker.live_observer import LiveObserver
 
 
 @dataclass
@@ -28,12 +31,14 @@ class TickResult:
 class TickProcessor:
     def __init__(self, runner: AlgorithmRunner, broker: BrokerAdapter,
                  data_client: DataClient, coordinator_client: Any,
-                 idle_threshold_seconds: int = 60) -> None:
+                 idle_threshold_seconds: int = 60,
+                 live_observer: Optional["LiveObserver"] = None) -> None:
         self._runner = runner
         self._broker = broker
         self._data_client = data_client
         self._coordinator = coordinator_client
         self._idle_threshold_seconds = idle_threshold_seconds
+        self._live_observer = live_observer
         self._silent_tick_count: int = 0
         self._last_active_tick_ts: Optional[datetime] = None
         self._last_idle_tick_emitted_ts: Optional[datetime] = None
@@ -79,6 +84,23 @@ class TickProcessor:
                                 "filled_price": order_result.filled_price,
                             },
                         )
+                    # Emit trade_sample to coordinator via LiveObserver
+                    if self._live_observer is not None:
+                        await self._live_observer.on_trade(trade={
+                            "timestamp": timestamp.isoformat(),
+                            "symbol": leg.symbol,
+                            "asset_type": getattr(leg, "asset_type", "equities"),
+                            "side": leg.signal_type.value,
+                            "quantity": leg.quantity,
+                            "requested_price": leg.limit_price,
+                            "fill_price": order_result.filled_price,
+                            "slippage_dollars": None,
+                            "slippage_bps_applied": None,
+                            "fees": getattr(order_result, "fees", 0.0),
+                            "fee_breakdown": "{}",
+                            "signal_id": getattr(signal, "id", None) or "",
+                            "realized_pnl": None,
+                        })
                 result.trades_executed += 1
                 self._runner.on_trade_executed(signal, result.trade_results[-1].order_result)
             else:
@@ -92,6 +114,10 @@ class TickProcessor:
             "mode": "live",
             "signals_produced": serialized_signals,
         }
+
+        # Emit per-tick equity sample to coordinator via LiveObserver
+        if self._live_observer is not None:
+            await self._live_observer.on_tick(timestamp=timestamp.isoformat())
 
         # Emit per-tick activity events
         if hasattr(self._coordinator, "send_activity_event"):
