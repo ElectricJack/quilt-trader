@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createChart, ColorType, type IChartApi } from "lightweight-charts";
 import { MonthlyHeatmap } from "./MonthlyHeatmap";
 import { attachChartResize } from "./useChartResize";
+import { MaximizableCard } from "./MaximizableCard";
 import type { BacktestReport } from "../../types";
 
 type View = "heatmap" | "eoy" | "histogram" | "scatter";
@@ -12,27 +13,24 @@ interface Props {
 
 export function ReturnsDistributionSlot({ report }: Props) {
   const [view, setView] = useState<View>("heatmap");
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded p-3 flex flex-col h-full min-h-[280px]">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-gray-300">Returns distribution</h3>
-        <div className="flex gap-1 text-xs">
-          {(["heatmap", "eoy", "histogram", "scatter"] as const).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-2 py-1 rounded ${view === v ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}
-            >{v}</button>
-          ))}
-        </div>
-      </div>
-      <div className="flex-1 min-h-0">
-        {view === "heatmap" && <MonthlyHeatmap matrix={report.monthly_returns_matrix} />}
-        {view === "eoy" && <EoyBar rows={report.eoy_returns} />}
-        {view === "histogram" && <Histogram equity={report.equity_curve} />}
-        {view === "scatter" && <Scatter equity={report.equity_curve} />}
-      </div>
+  const toolbar = (
+    <div className="flex gap-1 text-xs">
+      {(["heatmap", "eoy", "histogram", "scatter"] as const).map((v) => (
+        <button
+          key={v}
+          onClick={() => setView(v)}
+          className={`px-2 py-1 rounded ${view === v ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}
+        >{v}</button>
+      ))}
     </div>
+  );
+  return (
+    <MaximizableCard title="Returns distribution" toolbar={toolbar}>
+      {view === "heatmap" && <MonthlyHeatmap matrix={report.monthly_returns_matrix} />}
+      {view === "eoy" && <EoyBar rows={report.eoy_returns} />}
+      {view === "histogram" && <Histogram equity={report.equity_curve} />}
+      {view === "scatter" && <Scatter equity={report.equity_curve} />}
+    </MaximizableCard>
   );
 }
 

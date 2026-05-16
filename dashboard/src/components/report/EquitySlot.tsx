@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { BacktestChart, type BacktestEquityPoint, type BacktestBenchmarkPoint, type BacktestTradeMarker } from "../BacktestChart";
+import { MaximizableCard } from "./MaximizableCard";
 import type { BacktestReport } from "../../types";
 import { useBacktestEquityWindow } from "../../api/hooks";
 
@@ -89,34 +90,36 @@ export function EquitySlot({ report, trades }: Props) {
       fill_price: t.fill_price as number,
     }));
 
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded p-3">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-gray-300">Equity</h3>
-        <div className="flex gap-2 text-xs">
-          <label className="flex items-center gap-1 text-gray-400">
-            <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} />
-            Log scale
-          </label>
-          <label className="flex items-center gap-1 text-gray-400">
-            <input type="checkbox" checked={showVolMatched} onChange={(e) => setShowVolMatched(e.target.checked)} />
-            Vol-matched
-          </label>
-        </div>
-      </div>
-      <BacktestChart
-        equity={equityPoints}
-        benchmark={benchmarkPoints}
-        trades={tradeMarkers}
-        benchmarkLabel={
-          report.benchmark_symbol
-            ? `Benchmark${showVolMatched ? " (vol-matched)" : ""} (${report.benchmark_symbol})`
-            : "Benchmark"
-        }
-        height={300}
-        logScale={logScale}
-        onVisibleRangeChange={(from, to) => setVisible({ from, to })}
-      />
+  const toolbar = (
+    <div className="flex gap-2 text-xs">
+      <label className="flex items-center gap-1 text-gray-400">
+        <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} />
+        Log scale
+      </label>
+      <label className="flex items-center gap-1 text-gray-400">
+        <input type="checkbox" checked={showVolMatched} onChange={(e) => setShowVolMatched(e.target.checked)} />
+        Vol-matched
+      </label>
     </div>
+  );
+
+  return (
+    <MaximizableCard title="Equity" toolbar={toolbar}>
+      {(isMax) => (
+        <BacktestChart
+          equity={equityPoints}
+          benchmark={benchmarkPoints}
+          trades={tradeMarkers}
+          benchmarkLabel={
+            report.benchmark_symbol
+              ? `Benchmark${showVolMatched ? " (vol-matched)" : ""} (${report.benchmark_symbol})`
+              : "Benchmark"
+          }
+          height={isMax ? Math.max(500, window.innerHeight - 200) : 300}
+          logScale={logScale}
+          onVisibleRangeChange={(from, to) => setVisible({ from, to })}
+        />
+      )}
+    </MaximizableCard>
   );
 }
