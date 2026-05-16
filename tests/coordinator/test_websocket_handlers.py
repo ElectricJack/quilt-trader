@@ -33,7 +33,7 @@ class FakeWebSocket:
 @pytest_asyncio.fixture
 async def running_app():
     app = create_app(
-        database_url="sqlite+aiosqlite://",
+        database_url="sqlite+aiosqlite:///file::memory:?cache=shared&uri=true",
         encryption_key="test-key-32-bytes-long!!!!!!!!",
     )
     async with app.router.lifespan_context(app):
@@ -61,6 +61,7 @@ async def worker_and_account(db_session):
     db_session.add(worker)
     db_session.add(account)
     await db_session.flush()
+    await db_session.commit()
     return worker.id, account.id
 
 
@@ -347,6 +348,7 @@ async def test_worker_marked_offline_on_disconnect(running_app, db_session):
     worker = Worker(name="w", status="online")
     db_session.add(worker)
     await db_session.flush()
+    await db_session.commit()
     wid = worker.id
 
     fake = FakeWebSocket()

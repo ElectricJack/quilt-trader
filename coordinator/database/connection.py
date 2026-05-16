@@ -6,11 +6,12 @@ from sqlalchemy.ext.asyncio import (
 )
 
 
-def create_engine(url: str) -> AsyncEngine:
+def create_engine(url: str, **kwargs) -> AsyncEngine:
     return create_async_engine(
         url,
         echo=False,
         connect_args={"check_same_thread": False},
+        **kwargs,
     )
 
 

@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 def create_app(
     database_url: str = "sqlite+aiosqlite:///data/quilt_trader.db",
     encryption_key: str = "default-dev-key-32-bytes-long!!!",
+    engine_kwargs: dict | None = None,
 ) -> FastAPI:
-    engine = create_engine(database_url)
+    engine = create_engine(database_url, **(engine_kwargs or {}))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
