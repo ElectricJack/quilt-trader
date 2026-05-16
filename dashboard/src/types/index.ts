@@ -66,6 +66,24 @@ export interface AlgorithmInstance {
   pnl_sparkline?: number[] | null;
 }
 
+// Deployment is the public-facing alias for AlgorithmInstance (used by /api/deployments/*).
+// AlgorithmInstance is kept for backward-compat with existing code.
+export interface Deployment {
+  id: string;
+  algorithm_id: string;
+  account_id: string;
+  worker_id: string;
+  algorithm_name: string;
+  account_name: string;
+  worker_name: string;
+  status: string;
+  active_run_id: string | null;
+  config_values: Record<string, unknown> | null;
+  lifetime_metrics: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface EquityPoint {
   timestamp: string;
   equity: number;
@@ -167,6 +185,8 @@ export interface SettingsStatus {
   discord_bot_token_set: boolean;
   polygon_api_key_set: boolean;
   theta_data_set: boolean;
+  tailscale_authkey_set: boolean;
+  coordinator_ip: string | null;
 }
 
 export interface HealthResponse {

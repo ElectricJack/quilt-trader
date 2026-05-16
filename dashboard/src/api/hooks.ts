@@ -39,6 +39,9 @@ export const keys = {
   events: (params: EventParams) => ["events", params] as const,
   settings: () => ["settings"] as const,
   repos: () => ["repos"] as const,
+  deployments: (params?: { algorithm_id?: string; worker_id?: string; account_id?: string }) => ["deployments", params] as const,
+  deployment: (id: string) => ["deployments", id] as const,
+  deploymentRuns: (id: string) => ["deployments", id, "runs"] as const,
 };
 
 // ─── Accounts ─────────────────────────────────────────────────────────────────
@@ -607,6 +610,46 @@ export function useDeleteThetaData() {
   });
 }
 
+export function useSetCoordinatorIp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (value: string) => api.setCoordinatorIp(value),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useDeleteCoordinatorIp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteCoordinatorIp(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useSetTailscaleAuthkey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (value: string) => api.setTailscaleAuthkey(value),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useDeleteTailscaleAuthkey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteTailscaleAuthkey(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
 // ─── Portfolio ────────────────────────────────────────────────────────────────
 
 export function usePortfolioEquity(range: "1d" | "1w" | "1m" | "all" = "1m") {
@@ -877,6 +920,53 @@ export function useDeleteBacktestRun() {
     mutationFn: (id: string) => api.deleteBacktestRun(id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["backtest-runs"] });
+    },
+  });
+}
+
+// ─── Deployments ──────────────────────────────────────────────────────────────
+
+export function useDeployments(params?: { algorithm_id?: string; worker_id?: string; account_id?: string }) {
+  return useQuery({
+    queryKey: keys.deployments(params),
+    queryFn: () => api.listDeployments(params),
+  });
+}
+
+export function useDeployment(id: string) {
+  return useQuery({
+    queryKey: keys.deployment(id),
+    queryFn: () => api.getDeployment(id),
+    enabled: !!id,
+  });
+}
+
+export function useDeploymentRuns(id: string) {
+  return useQuery({
+    queryKey: keys.deploymentRuns(id),
+    queryFn: () => api.listDeploymentRuns(id),
+    enabled: !!id,
+  });
+}
+
+export function useUpdateDeployment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: { config_values?: Record<string, unknown> } }) =>
+      api.updateDeployment(id, body),
+    onSuccess: (_data, { id }) => {
+      void qc.invalidateQueries({ queryKey: keys.deployment(id) });
+      void qc.invalidateQueries({ queryKey: ["deployments"] });
+    },
+  });
+}
+
+export function useDeleteDeployment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteDeployment(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["deployments"] });
     },
   });
 }

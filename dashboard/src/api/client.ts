@@ -4,6 +4,7 @@ import type {
   AlgorithmGitStatus,
   AlgorithmInstance,
   AlgorithmRun,
+  Deployment,
   InstalledAlgorithmResponse,
   Worker,
   SystemEvent,
@@ -144,8 +145,7 @@ export interface CustomDatasetResponse {
 
 export interface WorkerCreate {
   name: string;
-  tailscale_ip: string;
-  max_algorithms?: number;
+  tailscale_ip?: string | null;
 }
 
 export interface WorkerUpdate {
@@ -163,6 +163,10 @@ export interface InstanceCreate {
 export interface InstanceUpdate {
   config_values?: Record<string, unknown>;
   status?: string;
+}
+
+export interface DeploymentUpdate {
+  config_values?: Record<string, unknown>;
 }
 
 export interface CashFlowCreate {
@@ -363,6 +367,31 @@ export const api = {
     return request<AlgorithmRun>(`/api/runs/${runId}`);
   },
 
+  // Deployments
+  listDeployments(params?: { algorithm_id?: string; worker_id?: string; account_id?: string }): Promise<Deployment[]> {
+    const qs = new URLSearchParams();
+    if (params?.algorithm_id) qs.set("algorithm_id", params.algorithm_id);
+    if (params?.worker_id) qs.set("worker_id", params.worker_id);
+    if (params?.account_id) qs.set("account_id", params.account_id);
+    const query = qs.toString();
+    return request<Deployment[]>(`/api/deployments${query ? `?${query}` : ""}`);
+  },
+  getDeployment(id: string): Promise<Deployment> {
+    return request<Deployment>(`/api/deployments/${id}`);
+  },
+  updateDeployment(id: string, body: DeploymentUpdate): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(`/api/deployments/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  },
+  deleteDeployment(id: string): Promise<void> {
+    return request<void>(`/api/deployments/${id}`, { method: "DELETE" });
+  },
+  listDeploymentRuns(id: string): Promise<AlgorithmRun[]> {
+    return request<AlgorithmRun[]>(`/api/deployments/${id}/runs`);
+  },
+
   // Cash Flows
   listCashFlows(accountId: string): Promise<CashFlow[]> {
     return request<CashFlow[]>(`/api/accounts/${accountId}/cash-flows`);
@@ -500,6 +529,28 @@ export const api = {
   },
   deleteThetaData(): Promise<SettingsStatus> {
     return request<SettingsStatus>("/api/settings/theta-data", {
+      method: "DELETE",
+    });
+  },
+  setCoordinatorIp(value: string): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/coordinator-ip", {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
+  },
+  deleteCoordinatorIp(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/coordinator-ip", {
+      method: "DELETE",
+    });
+  },
+  setTailscaleAuthkey(value: string): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/tailscale-authkey", {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
+  },
+  deleteTailscaleAuthkey(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/tailscale-authkey", {
       method: "DELETE",
     });
   },
