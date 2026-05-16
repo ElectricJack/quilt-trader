@@ -1020,6 +1020,26 @@ export function useStopDeployment() {
   });
 }
 
+// ─── M4.5: Activity feeds ─────────────────────────────────────────────────────
+
+type ActivityParams = { limit?: number; before?: string; severity?: string; event_types?: string; kind?: string };
+
+export function useWorkerActivity(workerId: string, params?: ActivityParams) {
+  return useQuery({
+    queryKey: ["worker-activity", workerId, params] as const,
+    queryFn: () => api.listWorkerActivity(workerId, params),
+    enabled: !!workerId,
+  });
+}
+
+export function useDeploymentActivity(deploymentId: string, params?: ActivityParams) {
+  return useQuery({
+    queryKey: ["deployment-activity", deploymentId, params] as const,
+    queryFn: () => api.listDeploymentActivity(deploymentId, params),
+    enabled: !!deploymentId,
+  });
+}
+
 // ─── M3.3: WebSocket-driven deployment cache sync ─────────────────────────────
 
 export function useDeploymentStatusSync(): void {

@@ -26,6 +26,7 @@ import type {
   AccountSnapshotLatestItem,
   BacktestReport,
   BacktestEquityWindow,
+  ActivityRow,
 } from "../types";
 
 // ─── Request body types ────────────────────────────────────────────────────────
@@ -766,6 +767,39 @@ export const api = {
   },
   deleteBacktestRun(id: string): Promise<void> {
     return request<void>(`/api/backtest-runs/${id}`, { method: "DELETE" });
+  },
+
+  // ── M4.5: Activity feeds ──
+  listWorkerActivity(
+    workerId: string,
+    params?: { limit?: number; before?: string; severity?: string; event_types?: string; kind?: string },
+  ): Promise<{ items: ActivityRow[] }> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.before) qs.set("before", params.before);
+    if (params?.severity) qs.set("severity", params.severity);
+    if (params?.event_types) qs.set("event_types", params.event_types);
+    if (params?.kind && params.kind !== "all") qs.set("kind", params.kind);
+    const query = qs.toString();
+    return request<{ items: ActivityRow[] }>(
+      `/api/workers/${workerId}/activity${query ? `?${query}` : ""}`,
+    );
+  },
+
+  listDeploymentActivity(
+    deploymentId: string,
+    params?: { limit?: number; before?: string; severity?: string; event_types?: string; kind?: string },
+  ): Promise<{ items: ActivityRow[] }> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.before) qs.set("before", params.before);
+    if (params?.severity) qs.set("severity", params.severity);
+    if (params?.event_types) qs.set("event_types", params.event_types);
+    if (params?.kind && params.kind !== "all") qs.set("kind", params.kind);
+    const query = qs.toString();
+    return request<{ items: ActivityRow[] }>(
+      `/api/deployments/${deploymentId}/activity${query ? `?${query}` : ""}`,
+    );
   },
 };
 

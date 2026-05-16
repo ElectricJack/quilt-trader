@@ -463,3 +463,16 @@ export interface BacktestEquityWindow {
   resolution: "1min" | "1hour" | "1day";
   items: { ts: string; portfolio_value: number; cash: number }[];
 }
+
+export type ActivityRow = {
+  id: string;
+  worker_id: string;
+  instance_id: string | null;
+  timestamp: string; // ISO UTC
+  kind: "event" | "log";
+  event_type: string | null;
+  severity: "debug" | "info" | "warn" | "error";
+  logger_name: string | null;
+  message: string | null;
+  payload: Record<string, unknown> | null;
+};

@@ -13,6 +13,7 @@ import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { WorkerInstallCommand } from "../components/WorkerInstallCommand";
+import { ActivityPanel } from "../components/ActivityPanel";
 import { useUIStore } from "../stores/ui";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -224,6 +225,12 @@ export function WorkerDetail() {
             ))}
           </div>
         )}
+      </section>
+
+      {/* Activity */}
+      <section>
+        <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">Activity</h2>
+        <ActivityPanel target={`worker:${id ?? ""}` as const} />
       </section>
 
       {/* Edit modal */}
