@@ -426,3 +426,43 @@ class WorkerActivity(Base):
     logger_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+
+class AlgorithmDeploymentReport(Base):
+    __tablename__ = "algorithm_deployment_reports"
+    deployment_id: Mapped[str] = mapped_column(
+        String, ForeignKey("algorithm_instances.id"), primary_key=True
+    )
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+    # Scalar metrics — mirror BacktestRun
+    total_return: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cagr: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    volatility: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sharpe_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sortino_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    calmar_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    max_drawdown: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    max_drawdown_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    romad: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_fees_paid: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_slippage_dollars: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    trade_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    win_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    profit_factor: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    avg_win: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    avg_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    expectancy: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longest_drawdown_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    longest_winning_streak: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    longest_losing_streak: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Blob columns
+    equity_curve: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    drawdown_curve: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    drawdown_periods: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    key_metrics: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    rolling_metrics: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    monthly_returns_matrix: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    eoy_returns: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    runs_index: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
