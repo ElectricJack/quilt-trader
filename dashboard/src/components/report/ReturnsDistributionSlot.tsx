@@ -112,7 +112,7 @@ function Scatter({ equity }: { equity: BacktestReport["equity_curve"] }) {
     if (!ref.current) return;
     const chart: IChartApi = createChart(ref.current, {
       width: ref.current.clientWidth,
-      height: 220,
+      height: ref.current.clientHeight || 220,
       layout: { background: { type: ColorType.Solid, color: "#0f172a" }, textColor: "#9ca3af" },
       grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
     });
@@ -128,5 +128,5 @@ function Scatter({ equity }: { equity: BacktestReport["equity_curve"] }) {
     return () => { chart.remove(); chartRef.current = null; };
   }, [equity]);
   useChartResize(ref, chartRef.current);
-  return <div ref={ref} className="w-full" />;
+  return <div ref={ref} className="w-full h-full min-h-[200px]" />;
 }

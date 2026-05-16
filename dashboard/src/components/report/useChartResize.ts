@@ -12,10 +12,15 @@ export function useChartResize(
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !chart) return;
-    chart.applyOptions({ width: el.clientWidth });
+    chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
     const obs = new ResizeObserver((entries) => {
       const entry = entries[0];
-      if (entry) chart.applyOptions({ width: entry.contentRect.width });
+      if (entry) {
+        chart.applyOptions({
+          width: entry.contentRect.width,
+          height: entry.contentRect.height,
+        });
+      }
     });
     obs.observe(el);
     return () => obs.disconnect();
