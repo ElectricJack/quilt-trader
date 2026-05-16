@@ -66,6 +66,18 @@ export function useWebSocketSync(): void {
       }
     );
 
+    // ── M3.3: deployment status sync ──
+    const unsubscribeDeploymentStatus = wsManager.subscribe(
+      "deployment_status_changed",
+      (data) => {
+        const payload = data as { deployment_id?: string };
+        if (!payload.deployment_id) return;
+        void queryClient.invalidateQueries({ queryKey: keys.deployment(payload.deployment_id) });
+        void queryClient.invalidateQueries({ queryKey: ["deployments"] });
+        void queryClient.invalidateQueries({ queryKey: keys.deploymentRuns(payload.deployment_id) });
+      }
+    );
+
     return () => {
       unsubscribeInstanceStarted();
       unsubscribeInstanceStopped();
@@ -73,6 +85,7 @@ export function useWebSocketSync(): void {
       unsubscribeHeartbeat();
       unsubscribeTradeExecuted();
       unsubscribeStateCheckpoint();
+      unsubscribeDeploymentStatus();
       wsManager.disconnect();
     };
   }, [queryClient]);

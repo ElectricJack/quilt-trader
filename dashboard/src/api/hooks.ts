@@ -1,9 +1,12 @@
+import { useEffect } from "react";
 import {
   useQuery,
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "./client";
+import type { Deployment } from "../types";
+import { wsManager } from "./websocket";
 import type {
   AccountCreate,
   AccountUpdate,
@@ -969,4 +972,66 @@ export function useDeleteDeployment() {
       void qc.invalidateQueries({ queryKey: ["deployments"] });
     },
   });
+}
+
+// ─── M3.3: Start / Stop Deployment (optimistic) ───────────────────────────────
+
+export function useStartDeployment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.startDeployment(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: keys.deployment(id) });
+      const prev = qc.getQueryData<Deployment>(keys.deployment(id));
+      if (prev) {
+        qc.setQueryData<Deployment>(keys.deployment(id), { ...prev, status: "starting" });
+      }
+      return { prev };
+    },
+    onError: (_err, id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(keys.deployment(id), ctx.prev);
+    },
+    onSettled: (_data, _err, id) => {
+      void qc.invalidateQueries({ queryKey: keys.deployment(id) });
+      void qc.invalidateQueries({ queryKey: ["deployments"] });
+    },
+  });
+}
+
+export function useStopDeployment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.stopDeployment(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: keys.deployment(id) });
+      const prev = qc.getQueryData<Deployment>(keys.deployment(id));
+      if (prev) {
+        qc.setQueryData<Deployment>(keys.deployment(id), { ...prev, status: "stopping" });
+      }
+      return { prev };
+    },
+    onError: (_err, id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(keys.deployment(id), ctx.prev);
+    },
+    onSettled: (_data, _err, id) => {
+      void qc.invalidateQueries({ queryKey: keys.deployment(id) });
+      void qc.invalidateQueries({ queryKey: ["deployments"] });
+    },
+  });
+}
+
+// ─── M3.3: WebSocket-driven deployment cache sync ─────────────────────────────
+
+export function useDeploymentStatusSync(): void {
+  const qc = useQueryClient();
+  useEffect(() => {
+    const off = wsManager.subscribe("deployment_status_changed", (data: unknown) => {
+      const msg = data as { deployment_id?: string };
+      if (!msg.deployment_id) return;
+      void qc.invalidateQueries({ queryKey: keys.deployment(msg.deployment_id) });
+      void qc.invalidateQueries({ queryKey: ["deployments"] });
+      void qc.invalidateQueries({ queryKey: keys.deploymentRuns(msg.deployment_id) });
+    });
+    return off;
+  }, [qc]);
 }

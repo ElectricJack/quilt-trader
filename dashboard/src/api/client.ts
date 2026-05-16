@@ -391,6 +391,18 @@ export const api = {
   listDeploymentRuns(id: string): Promise<AlgorithmRun[]> {
     return request<AlgorithmRun[]>(`/api/deployments/${id}/runs`);
   },
+  startDeployment(id: string): Promise<{ ok: boolean; active_run_id: string }> {
+    return request<{ ok: boolean; active_run_id: string }>(`/api/deployments/${id}/start`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+  stopDeployment(id: string): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(`/api/deployments/${id}/stop`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
 
   // Cash Flows
   listCashFlows(accountId: string): Promise<CashFlow[]> {
