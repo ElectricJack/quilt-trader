@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from worker.agent import WorkerAgent
+from worker import live_instance_runtime
 
 
 @pytest.mark.asyncio
@@ -49,14 +50,26 @@ async def test_send_algo_log_emits_well_formed_message():
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_handlers_emit_activity_events():
+async def test_lifecycle_handlers_emit_activity_events(monkeypatch):
     """When _handle_start_instance / _handle_stop_instance run, they
     should send both the legacy 'instance_started' event AND a new
     'activity_event' with event_type='instance_started'."""
+    fake_runtime = MagicMock()
+    fake_runtime.is_healthy = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        live_instance_runtime.LiveInstanceRuntime, "bring_up",
+        AsyncMock(return_value=fake_runtime),
+    )
     ws = MagicMock()
     ws.send = AsyncMock()
     agent = WorkerAgent(worker_id="w1", worker_name="W", websocket=ws)
-    await agent._handle_start_instance({"instance_id": "d1", "config": {}, "persisted_state": None})
+    await agent._handle_start_instance({
+        "instance_id": "d1",
+        "run_id": "r1", "algorithm_id": "a", "algorithm_commit_sha": "s",
+        "manifest": {"entry_point": "x", "class_name": "Z", "requirements": {"data_dependencies": []}},
+        "broker_type": "alpaca", "environment": "paper",
+        "credentials": {}, "config": {}, "persisted_state": None,
+    })
 
     sent_msgs = [json.loads(c.args[0]) for c in ws.send.call_args_list]
     assert any(m["type"] == "instance_started" for m in sent_msgs)
@@ -91,7 +104,9 @@ async def test_stop_lifecycle_emits_activity_event():
     ws = MagicMock()
     ws.send = AsyncMock()
     agent = WorkerAgent(worker_id="w1", worker_name="W", websocket=ws)
-    agent._running_instances["d2"] = {"status": "running"}
+    mock_runtime = MagicMock()
+    mock_runtime.shut_down = AsyncMock(return_value={})
+    agent._running_instances["d2"] = mock_runtime
     await agent._handle_stop_instance({"instance_id": "d2"})
 
     sent_msgs = [json.loads(c.args[0]) for c in ws.send.call_args_list]

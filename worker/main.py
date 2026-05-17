@@ -42,6 +42,9 @@ async def run_worker(config: WorkerConfig) -> None:
                 worker_name=config.worker_name,
                 websocket=websocket,
                 tailscale_ip=tailscale_ip,
+                coordinator_http_url=config.coordinator_http_url,
+                worker_install_token=config.worker_install_token,
+                data_client=data_client,
             )
             logger.info("Connected to coordinator")
 

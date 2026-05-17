@@ -3,8 +3,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Optional
 
-from worker.runner import AlgorithmRunner
-
 logger = logging.getLogger(__name__)
 EventHandler = Callable[[dict], Coroutine[Any, Any, None]]
 
@@ -27,11 +25,17 @@ class MessageRouter:
 
 class WorkerAgent:
     def __init__(self, worker_id: str, worker_name: str, websocket: Any,
-                 tailscale_ip: Optional[str] = None) -> None:
+                 tailscale_ip: Optional[str] = None,
+                 coordinator_http_url: str = "",
+                 worker_install_token: str = "",
+                 data_client: Any = None) -> None:
         self.worker_id = worker_id
         self.worker_name = worker_name
         self.tailscale_ip = tailscale_ip
+        self.coordinator_http_url = coordinator_http_url
+        self.worker_install_token = worker_install_token
         self._ws = websocket
+        self._data_client = data_client
         self.router = MessageRouter()
         self._running_instances: dict[str, Any] = {}
         self.register_handlers()
@@ -102,29 +106,75 @@ class WorkerAgent:
         self.router.register("start_instance", self._handle_start_instance)
         self.router.register("stop_instance", self._handle_stop_instance)
         self.router.register("heartbeat_ack", self._handle_heartbeat_ack)
+        self.router.register("tick_batch", self._handle_tick_batch)
 
     async def _handle_start_instance(self, message: dict) -> None:
+        from worker.live_instance_runtime import LiveInstanceRuntime
+
         instance_id = message["instance_id"]
-        config = message.get("config", {})
-        persisted_state = message.get("persisted_state")
-        self._running_instances[instance_id] = {
-            "status": "starting",
-            "config": config,
-            "persisted_state": persisted_state,
-        }
+        existing = self._running_instances.get(instance_id)
+        if existing is not None and getattr(existing, "is_healthy", lambda: False)():
+            logger.info("Ignoring duplicate start_instance for %s (already healthy)", instance_id)
+            return
+        if existing is not None:
+            try:
+                await existing.shut_down()
+            except Exception:
+                logger.exception("Failed to shut down zombie runtime for %s", instance_id)
+            self._running_instances.pop(instance_id, None)
+
+        try:
+            runtime = await LiveInstanceRuntime.bring_up(
+                agent=self,
+                instance_id=instance_id,
+                run_id=message["run_id"],
+                algorithm_id=message["algorithm_id"],
+                algorithm_commit_sha=message["algorithm_commit_sha"],
+                manifest=message["manifest"],
+                config=message.get("config") or {},
+                persisted_state=message.get("persisted_state"),
+                broker_type=message["broker_type"],
+                environment=message["environment"],
+                credentials=message["credentials"],
+                data_client=self._data_client,
+            )
+        except Exception as e:
+            logger.exception("Failed to bring up instance %s", instance_id)
+            await self.send_event("instance_error", instance_id, payload={"error": str(e)})
+            await self.send_activity_event(
+                instance_id, "instance_error", severity="error",
+                payload={"error": str(e)},
+            )
+            return
+
+        self._running_instances[instance_id] = runtime
         await self.send_event("instance_started", instance_id)
         await self.send_activity_event(instance_id, "instance_started", severity="info")
         logger.info("Started instance %s", instance_id)
 
     async def _handle_stop_instance(self, message: dict) -> None:
         instance_id = message["instance_id"]
-        instance_info = self._running_instances.pop(instance_id, None)
-        if instance_info and isinstance(instance_info.get("runner"), AlgorithmRunner):
-            final_state = instance_info["runner"].stop()
-            await self.send_state_checkpoint(instance_id, final_state)
+        runtime = self._running_instances.pop(instance_id, None)
+        if runtime is not None:
+            try:
+                final_state = await runtime.shut_down()
+                await self.send_state_checkpoint(instance_id, final_state)
+            except Exception:
+                logger.exception("Error shutting down instance %s", instance_id)
         await self.send_event("instance_stopped", instance_id)
         await self.send_activity_event(instance_id, "instance_stopped", severity="info")
         logger.info("Stopped instance %s", instance_id)
 
     async def _handle_heartbeat_ack(self, message: dict) -> None:
         pass  # No action needed
+
+    async def _handle_tick_batch(self, message: dict) -> None:
+        import asyncio as _asyncio
+        for entry in (message.get("ticks") or []):
+            inst_id = entry.get("instance_id")
+            runtime = self._running_instances.get(inst_id)
+            if runtime is None:
+                logger.debug("tick_batch entry for unknown instance %s; ignoring", inst_id)
+                continue
+            # Per-instance task: a slow algorithm doesn't block sibling instances.
+            _asyncio.create_task(runtime.on_tick_batch_entry(entry))
