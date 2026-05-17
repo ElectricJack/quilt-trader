@@ -170,6 +170,14 @@ def create_app(
         )
         finalizer_task = asyncio.create_task(container.live_finalizer.run_loop())
 
+        from coordinator.services.tick_scheduler import TickScheduler
+        from coordinator.api.websocket import manager as ws_manager_obj
+
+        container.tick_scheduler = TickScheduler(
+            aggregator=container.live_feed_aggregator,
+            ws_manager=ws_manager_obj,
+        )
+
         try:
             from coordinator.services.backtest_runner import BacktestRunner
             container.backtest_runner = BacktestRunner(
@@ -215,6 +223,9 @@ def create_app(
             finalizer_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await finalizer_task
+            if container.tick_scheduler is not None:
+                with contextlib.suppress(Exception):
+                    await container.tick_scheduler.shutdown()
 
         if container.live_feed_aggregator:
             await container.live_feed_aggregator.stop()

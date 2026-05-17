@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from coordinator.services.data_service import DataService
     from coordinator.services.live_sample_sink import LiveSampleSink
     from coordinator.services.live_finalizer import LiveFinalizer
+    from coordinator.services.tick_scheduler import TickScheduler
 
 
 class ServiceContainer:
@@ -33,6 +34,7 @@ class ServiceContainer:
         self.data_service: Optional["DataService"] = None
         self.live_sample_sink: Optional["LiveSampleSink"] = None
         self.live_finalizer: Optional["LiveFinalizer"] = None
+        self.tick_scheduler: Optional["TickScheduler"] = None
 
 
 _container: ServiceContainer | None = None
