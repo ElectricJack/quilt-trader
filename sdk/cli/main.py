@@ -39,3 +39,24 @@ dev.add_command(validate_cmd)
 
 # Also register validate at the top level
 quilt.add_command(validate_cmd)
+
+from pathlib import Path
+from sdk.cli.commands.coord import coord_group, coord_start, coord_stop
+quilt.add_command(coord_group)
+
+
+@quilt.command("up")
+@click.pass_context
+def up_cmd(ctx):
+    """Shortcut for `quilt coord start`."""
+    dashboard_dist = Path("dashboard/dist/index.html")
+    if not dashboard_dist.exists():
+        from sdk.cli.output import print_status
+        print_status("warning: dashboard not built; run `quilt dashboard build`")
+    ctx.invoke(coord_start)
+
+
+@quilt.command("down")
+def down_cmd():
+    """Shortcut for `quilt coord stop`."""
+    coord_stop.callback()
