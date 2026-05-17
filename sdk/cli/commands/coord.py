@@ -17,8 +17,10 @@ def coord_group() -> None:
 @coord_group.command("start")
 @click.option("--foreground", "-f", is_flag=True, default=False)
 @click.option("--port", default=8000, type=int)
+@click.option("--host", default="0.0.0.0",
+              help="Bind interface (default 0.0.0.0 for WSL + Tailscale reachability).")
 @click.pass_context
-def coord_start(ctx, foreground, port):
+def coord_start(ctx, foreground, port, host):
     """Start the coordinator (daemonized by default)."""
     if foreground:
         import os
@@ -27,7 +29,7 @@ def coord_start(ctx, foreground, port):
             sys.executable,
             [sys.executable, "-m", "uvicorn",
              "--factory", "coordinator.main:create_app",
-             "--host", "127.0.0.1", "--port", str(port)],
+             "--host", host, "--port", str(port)],
         )
     existing = proc.read_pid()
     if existing is not None and proc.is_alive(existing):
@@ -36,6 +38,7 @@ def coord_start(ctx, foreground, port):
             return
     try:
         pid = proc.start_coord_daemon(
+            host=host,
             port=port,
             health_url=f"http://127.0.0.1:{port}/api/health",
         )

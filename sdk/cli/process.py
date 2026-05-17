@@ -72,7 +72,7 @@ def is_healthy_url(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
-def start_coord_daemon(*, host: str = "127.0.0.1", port: int = 8000,
+def start_coord_daemon(*, host: str = "0.0.0.0", port: int = 8000,
                        health_url: str = "http://127.0.0.1:8000/api/health",
                        startup_timeout: float = 30.0) -> int:
     """Spawn uvicorn detached. Return the child PID after health check passes.
