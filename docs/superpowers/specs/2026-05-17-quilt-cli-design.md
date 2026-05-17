@@ -437,7 +437,7 @@ A small number of endpoints don't exist today and are needed by the CLI:
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/api/health` | Already exists at `coordinator/main.py:238`. Used by `coord start` poll loop. |
+| `GET /api/health` | Already exists at `coordinator/main.py:238`. Used by `coord start` poll loop. |
 | `GET /api/diagnostics` | Powers `quilt doctor` checks that need runtime state: list of running tasks in `live_feed_aggregator`, finalizer last-tick timestamp per deployment, scheduler instance count, etc. |
 | `POST /api/algorithms/install` | Extend to accept local paths (§9). |
 | `GET /api/algorithms/{id}/source` | Returns whether the algorithm was installed from `github` or `local` plus its source path/url. Used by `quilt algorithm update` to decide which update path to take. |
