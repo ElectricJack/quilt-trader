@@ -37,8 +37,11 @@ def init_cmd(coord_url, data_dir, db_url, force, skip_migrate):
     Path(data_dir, "packages").mkdir(exist_ok=True)
 
     if not skip_migrate:
-        r = subprocess.run(["alembic", "-c", "alembic.ini", "upgrade", "head"],
-                            capture_output=True)
+        import sys as _sys
+        r = subprocess.run(
+            [_sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
+            capture_output=True,
+        )
         if r.returncode != 0:
             click.echo(r.stderr.decode(errors="replace"), err=True)
             fail(4, "alembic upgrade failed during init")

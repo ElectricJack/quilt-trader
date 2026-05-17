@@ -51,8 +51,11 @@ def _check_coord_reachable(url: str) -> dict:
 
 
 def _check_db_reachable() -> dict:
-    r = subprocess.run(["alembic", "-c", "alembic.ini", "current"],
-                        capture_output=True)
+    import sys as _sys
+    r = subprocess.run(
+        [_sys.executable, "-m", "alembic", "-c", "alembic.ini", "current"],
+        capture_output=True,
+    )
     if r.returncode == 0:
         msg = r.stdout.decode(errors="replace").strip() or "ok"
         return _check("db_reachable", "PASS", msg)

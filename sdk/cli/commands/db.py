@@ -1,5 +1,6 @@
 """db commands: migrate, status, revisions."""
 import subprocess
+import sys
 import click
 
 from sdk.cli.output import fail
@@ -11,8 +12,16 @@ def db_group() -> None:
 
 
 def _alembic(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["alembic", "-c", "alembic.ini"] + args,
-                          capture_output=True)
+    """Invoke alembic via `python -m alembic` so:
+    1. We use the same Python that runs the CLI (avoids `alembic` on PATH
+       resolving to a different Python version).
+    2. `python -m` prepends `.` to sys.path, so env.py's
+       `from coordinator.database.models import Base` resolves.
+    """
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini"] + args,
+        capture_output=True,
+    )
 
 
 @db_group.command("migrate")
