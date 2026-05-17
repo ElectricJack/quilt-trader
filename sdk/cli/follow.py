@@ -88,6 +88,28 @@ async def follow_target(
             backoff = min(backoff * 2, 30.0)
 
 
+def _summarize_payload(payload) -> str:
+    """Turn an activity_event payload into one human-readable line.
+
+    Rules:
+      - If `error` is present, that's the most important field — show it (first line).
+      - Otherwise concatenate key=value pairs (truncating long values).
+      - None / non-dict → empty string.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    if "error" in payload:
+        err = str(payload["error"]).strip().splitlines()[0]
+        return err[:200]
+    parts = []
+    for k, v in payload.items():
+        s = str(v)
+        if len(s) > 60:
+            s = s[:57] + "..."
+        parts.append(f"{k}={s}")
+    return " ".join(parts)[:200]
+
+
 def _render(row: dict, json_mode: bool) -> None:
     if json_mode:
         sys.stdout.write(json.dumps(row, default=str))
@@ -102,7 +124,7 @@ def _render(row: dict, json_mode: bool) -> None:
     sev = row.get("severity", "info")
     kind_label = row.get("event_type") or row.get("logger_name") or "?"
     inst_id = (row.get("instance_id") or "")[:8]
-    msg = row.get("message") or ""
+    msg = row.get("message") or _summarize_payload(row.get("payload"))
     line = f"[{ts_short}] {sev:<5}  {kind_label:<24}  {inst_id:<8}  {msg}"
     sys.stdout.write(line + "\n")
     sys.stdout.flush()

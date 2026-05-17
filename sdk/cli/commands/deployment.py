@@ -267,5 +267,32 @@ def deployment_activity(ctx, deployment_id, follow, severity, kind, limit, no_hi
     if ctx.obj.get("json_mode"):
         print_json(items)
     else:
+        # Synthesize a display message: prefer `message` (log records),
+        # fall back to a brief summary of `payload` (event records).
+        for r in items:
+            if not r.get("message") and r.get("payload"):
+                r["message"] = _summarize_payload(r["payload"])
         print_table(items, columns=["timestamp", "severity", "kind",
                                      "event_type", "logger_name", "message"])
+
+
+def _summarize_payload(payload: dict) -> str:
+    """Turn an activity_event payload into one human-readable line.
+
+    Rules:
+      - If `error` is present, that's the most important field — show it.
+      - Otherwise concatenate key=value pairs (truncating long values).
+    """
+    if not isinstance(payload, dict):
+        return str(payload)
+    if "error" in payload:
+        # First line of error only, to keep the table readable
+        err = str(payload["error"]).strip().splitlines()[0]
+        return err[:200]
+    parts = []
+    for k, v in payload.items():
+        s = str(v)
+        if len(s) > 60:
+            s = s[:57] + "..."
+        parts.append(f"{k}={s}")
+    return " ".join(parts)[:200]

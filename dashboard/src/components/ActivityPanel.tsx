@@ -10,6 +10,25 @@ const SEVERITY_DOT: Record<string, string> = {
   error: "bg-red-500",
 };
 
+
+function summarizePayload(payload: Record<string, unknown> | null): string {
+  // Turn an activity_event payload into one human-readable line.
+  // Prefers `error` if present (first line, truncated), else key=value pairs.
+  if (!payload || typeof payload !== "object") return "";
+  if ("error" in payload) {
+    const err = String(payload.error).trim().split("\n")[0];
+    return err.length > 200 ? err.slice(0, 197) + "..." : err;
+  }
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(payload)) {
+    let s = String(v);
+    if (s.length > 60) s = s.slice(0, 57) + "...";
+    parts.push(`${k}=${s}`);
+  }
+  const out = parts.join(" ");
+  return out.length > 200 ? out.slice(0, 197) + "..." : out;
+}
+
 interface ActivityPanelProps {
   target: `worker:${string}` | `deployment:${string}`;
   initialRows?: ActivityRow[]; // for tests only
@@ -129,14 +148,27 @@ export function ActivityPanel({ target, initialRows }: ActivityPanelProps) {
         </select>
       </div>
       <ul className="max-h-96 overflow-y-auto font-mono text-xs">
-        {rows.map((r) => (
-          <li key={r.id} className="px-3 py-1 border-b border-gray-800 last:border-b-0 flex items-baseline gap-2">
-            <span className="text-gray-500">{new Date(r.timestamp).toLocaleTimeString()}</span>
-            <span className={`inline-block w-2 h-2 rounded-full ${SEVERITY_DOT[r.severity] ?? "bg-gray-500"}`} />
-            <span className="text-gray-300">{r.event_type ?? r.logger_name}</span>
-            {r.message && <span className="text-gray-200 ml-1">{r.message}</span>}
-          </li>
-        ))}
+        {rows.map((r) => {
+          const summary = r.message ?? summarizePayload(r.payload);
+          return (
+            <li
+              key={r.id}
+              className="px-3 py-1 border-b border-gray-800 last:border-b-0 flex items-baseline gap-2"
+              title={r.payload ? JSON.stringify(r.payload, null, 2) : undefined}
+            >
+              <span className="text-gray-500">{new Date(r.timestamp).toLocaleTimeString()}</span>
+              <span className={`inline-block w-2 h-2 rounded-full ${SEVERITY_DOT[r.severity] ?? "bg-gray-500"}`} />
+              <span className="text-gray-300">{r.event_type ?? r.logger_name}</span>
+              {summary && (
+                <span
+                  className={r.severity === "error" ? "text-red-300 ml-1 truncate" : "text-gray-200 ml-1 truncate"}
+                >
+                  {summary}
+                </span>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
