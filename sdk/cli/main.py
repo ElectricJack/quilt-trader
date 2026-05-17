@@ -49,6 +49,11 @@ from sdk.cli.commands.db import db_group
 quilt.add_command(dashboard_group)
 quilt.add_command(db_group)
 
+from sdk.cli.commands.init import init_cmd
+from sdk.cli.commands.doctor import doctor_cmd
+quilt.add_command(init_cmd)
+quilt.add_command(doctor_cmd)
+
 
 @quilt.command("up")
 @click.pass_context
