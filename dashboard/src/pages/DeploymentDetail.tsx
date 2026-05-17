@@ -105,12 +105,13 @@ export function DeploymentDetail() {
   const stop = useStopDeployment();
   const addAlert = useUIStore((s) => s.addAlert);
 
-  if (isLoading) return <p className="text-gray-400 text-sm">Loading…</p>;
-  if (!dep) return <p className="text-gray-400 text-sm">Deployment not found.</p>;
-
-  const canStart = dep.status === "stopped" || dep.status === "error";
-  const isRunning = dep.status === "running" || dep.status === "starting";
-  const isLive = dep.status === "running" || dep.status === "starting" || dep.status === "stopping";
+  // Compute liveness defensively so hooks can run unconditionally on first render
+  // (before `dep` has loaded). Rules-of-hooks: every render must call the same
+  // hooks in the same order, so we cannot early-return between these.
+  const isLive =
+    dep?.status === "running" ||
+    dep?.status === "starting" ||
+    dep?.status === "stopping";
 
   const { data: report } = useDeploymentReport(id, { refetchInterval: isLive ? 2000 : false });
   const { data: runs } = useDeploymentRuns(id);
@@ -123,8 +124,13 @@ export function DeploymentDetail() {
     refetchInterval: isLive ? 2000 : false,
     run_id: runFilter || undefined,
   });
-  const trades = tradesData?.items ?? [];
 
+  if (isLoading) return <p className="text-gray-400 text-sm">Loading…</p>;
+  if (!dep) return <p className="text-gray-400 text-sm">Deployment not found.</p>;
+
+  const canStart = dep.status === "stopped" || dep.status === "error";
+  const isRunning = dep.status === "running" || dep.status === "starting";
+  const trades = tradesData?.items ?? [];
   const km = report?.key_metrics?.strategy;
 
   return (
