@@ -9,7 +9,6 @@ import { AccountDetail } from "./pages/AccountDetail";
 import { Algorithms } from "./pages/Algorithms";
 import { AlgorithmDetail } from "./pages/AlgorithmDetail";
 import { DeploymentDetail } from "./pages/DeploymentDetail";
-import { RunDetail } from "./pages/RunDetail";
 import { Workers } from "./pages/Workers";
 import { WorkerDetail } from "./pages/WorkerDetail";
 import { Data } from "./pages/Data";
@@ -57,7 +56,6 @@ export function App() {
             <Route path="/algorithms/:id" element={<AlgorithmDetail />} />
             <Route path="/deployments/:id" element={<DeploymentDetail />} />
             <Route path="/instances/:id" element={<InstanceRedirect />} />
-            <Route path="/runs/:id" element={<RunDetail />} />
             <Route path="/workers" element={<Workers />} />
             <Route path="/workers/:id" element={<WorkerDetail />} />
             <Route path="/data" element={<Data />} />

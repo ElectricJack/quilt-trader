@@ -163,11 +163,6 @@ export interface InstanceCreate {
   config_values?: Record<string, unknown>;
 }
 
-export interface InstanceUpdate {
-  config_values?: Record<string, unknown>;
-  status?: string;
-}
-
 export interface DeploymentUpdate {
   config_values?: Record<string, unknown>;
 }
@@ -346,28 +341,8 @@ export const api = {
       }
     );
   },
-  getInstance(instanceId: string): Promise<AlgorithmInstance> {
-    return request<AlgorithmInstance>(`/api/instances/${instanceId}`);
-  },
   listAllInstances(): Promise<AlgorithmInstance[]> {
     return request<AlgorithmInstance[]>("/api/instances");
-  },
-  updateInstance(id: string, body: InstanceUpdate): Promise<AlgorithmInstance> {
-    return request<AlgorithmInstance>(`/api/instances/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-    });
-  },
-  deleteInstance(id: string): Promise<void> {
-    return request<void>(`/api/instances/${id}`, { method: "DELETE" });
-  },
-
-  // Runs
-  listRuns(instanceId: string): Promise<AlgorithmRun[]> {
-    return request<AlgorithmRun[]>(`/api/instances/${instanceId}/runs`);
-  },
-  getRun(runId: string): Promise<AlgorithmRun> {
-    return request<AlgorithmRun>(`/api/runs/${runId}`);
   },
 
   // Deployments

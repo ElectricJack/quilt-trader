@@ -13,7 +13,6 @@ import type {
   WorkerCreate,
   WorkerUpdate,
   InstanceCreate,
-  InstanceUpdate,
   CashFlowCreate,
   DownloadCreate,
   EventParams,
@@ -31,8 +30,6 @@ export const keys = {
   instances: (algoId: string) => ["algorithms", algoId, "instances"] as const,
   instance: (id: string) => ["instances", id] as const,
   allInstances: () => ["instances"] as const,
-  runs: (instanceId: string) => ["instances", instanceId, "runs"] as const,
-  run: (id: string) => ["runs", id] as const,
   cashFlows: (accountId: string) => ["accounts", accountId, "cash-flows"] as const,
   backtests: () => ["backtests"] as const,
   backtest: (id: string) => ["backtests", id] as const,
@@ -253,22 +250,6 @@ export function useUpdateAlgorithm() {
 
 // ─── Instances ────────────────────────────────────────────────────────────────
 
-export function useInstances(algorithmId: string) {
-  return useQuery({
-    queryKey: keys.instances(algorithmId),
-    queryFn: () => api.listInstances(algorithmId),
-    enabled: !!algorithmId,
-  });
-}
-
-export function useInstance(instanceId: string) {
-  return useQuery({
-    queryKey: keys.instance(instanceId),
-    queryFn: () => api.getInstance(instanceId),
-    enabled: !!instanceId,
-  });
-}
-
 export function useCreateInstance(algorithmId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -276,28 +257,6 @@ export function useCreateInstance(algorithmId: string) {
       api.createInstance(algorithmId, body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.instances(algorithmId) });
-    },
-  });
-}
-
-export function useUpdateInstance() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: InstanceUpdate }) =>
-      api.updateInstance(id, body),
-    onSuccess: (_data, { id }) => {
-      void qc.invalidateQueries({ queryKey: keys.instance(id) });
-      void qc.invalidateQueries({ queryKey: keys.allInstances() });
-    },
-  });
-}
-
-export function useDeleteInstance() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api.deleteInstance(id),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: keys.allInstances() });
     },
   });
 }
@@ -336,24 +295,6 @@ export function useGithubRepos(enabled = false) {
     queryKey: keys.repos(),
     queryFn: api.listRepos,
     enabled,
-  });
-}
-
-// ─── Runs ─────────────────────────────────────────────────────────────────────
-
-export function useRuns(instanceId: string) {
-  return useQuery({
-    queryKey: keys.runs(instanceId),
-    queryFn: () => api.listRuns(instanceId),
-    enabled: !!instanceId,
-  });
-}
-
-export function useRun(id: string) {
-  return useQuery({
-    queryKey: keys.run(id),
-    queryFn: () => api.getRun(id),
-    enabled: !!id,
   });
 }
 
