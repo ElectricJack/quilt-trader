@@ -115,10 +115,12 @@ async def test_tick_batch_results_in_algo_tick_and_equity_sample_emission(tmp_pa
     # The algorithm received exactly one tick.
     assert len(FakeAlgo.ticks) == 1
 
-    # The agent emitted an equity sample and a state checkpoint after the tick.
+    # The agent emitted exactly one equity sample and one state checkpoint after the tick.
     types_sent = [m.get("type") for m in sent_jsons]
-    assert "equity_sample" in types_sent, f"Expected equity_sample in {types_sent}"
-    assert "state_checkpoint" in types_sent, f"Expected state_checkpoint in {types_sent}"
+    equity_count = sum(1 for m in sent_jsons if m.get("type") == "equity_sample")
+    assert equity_count == 1, f"Expected exactly 1 equity_sample, got {equity_count} in {types_sent}"
+    checkpoint_count = sum(1 for m in sent_jsons if m.get("type") == "state_checkpoint")
+    assert checkpoint_count == 1, f"Expected exactly 1 state_checkpoint, got {checkpoint_count} in {types_sent}"
 
 
 @pytest.mark.asyncio

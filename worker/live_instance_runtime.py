@@ -158,12 +158,7 @@ class LiveInstanceRuntime:
                 )
                 await self.shut_down()
                 return
-        # 3. Emit equity sample (LiveObserver fetches account state via broker).
-        try:
-            await self._observer.on_tick(timestamp=ts.isoformat())
-        except Exception:
-            logger.exception("Equity-sample emission failed for %s", self._instance_id)
-        # 4. Checkpoint state after every tick (best-effort).
+        # 3. Checkpoint state after every tick (best-effort).
         try:
             state = self._runner.save_state()
             await self._agent.send_state_checkpoint(self._instance_id, state)
