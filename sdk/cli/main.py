@@ -54,6 +54,16 @@ from sdk.cli.commands.doctor import doctor_cmd
 quilt.add_command(init_cmd)
 quilt.add_command(doctor_cmd)
 
+from sdk.cli.commands.algorithm import algorithm_group
+from sdk.cli.commands.worker import worker_group
+from sdk.cli.commands.account import account_group
+from sdk.cli.commands.settings import settings_group
+quilt.add_command(algorithm_group)
+quilt.add_command(algorithm_group, name="algo")
+quilt.add_command(worker_group)
+quilt.add_command(account_group)
+quilt.add_command(settings_group)
+
 
 @quilt.command("up")
 @click.pass_context
