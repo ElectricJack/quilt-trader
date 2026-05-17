@@ -31,6 +31,7 @@ from coordinator.database.models import (
 from coordinator.services.github_service import GitHubService
 from coordinator.services.package_manager import PackageError, PackageManager
 from sdk.manifest import ManifestError, QuiltManifest
+from sdk.validation import validate_algorithm_package
 
 router = APIRouter(tags=["algorithms"])
 
@@ -525,6 +526,16 @@ async def install_from_url(body: InstallFromUrlRequest, db: AsyncSession = Depen
         commit_hash = pm.get_commit_hash(name)
     except PackageError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+    pkg_dir = Path(pm.package_path(name))
+    val_errors = validate_algorithm_package(pkg_dir)
+    if val_errors:
+        import shutil
+        shutil.rmtree(pkg_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Algorithm validation failed: {'; '.join(str(e) for e in val_errors)}",
+        )
 
     algo = Algorithm(
         repo_url=public_url,
