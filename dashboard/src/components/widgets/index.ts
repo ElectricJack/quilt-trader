@@ -22,7 +22,7 @@ export const WIDGET_REGISTRY: Record<string, React.ComponentType> = {
 export const WIDGET_TITLES: Record<string, string> = {
   "portfolio-equity": "Portfolio Equity",
   "kpi-strip": "Today's KPIs",
-  "algorithms": "Algorithms",
+  "algorithms": "Running Algorithms",
   "open-positions": "Open Positions",
   "recent-trades": "Recent Trades",
   "account-balances": "Account Balances",

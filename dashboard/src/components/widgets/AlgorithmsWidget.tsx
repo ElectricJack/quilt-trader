@@ -1,7 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Widget } from "../Widget";
 import { Sparkline } from "../Sparkline";
-import { useAllInstances } from "../../api/hooks";
+import { useDeployments } from "../../api/hooks";
 
 function formatMoney(v: number): string {
   const sign = v >= 0 ? "+" : "";
@@ -12,7 +12,7 @@ function formatMoney(v: number): string {
 
 export function AlgorithmsWidget() {
   const navigate = useNavigate();
-  const { data: instances, isLoading } = useAllInstances();
+  const { data: instances, isLoading } = useDeployments();
 
   const rows = (instances ?? []).map((inst) => {
     const metrics = inst.lifetime_metrics ?? {};
@@ -24,8 +24,8 @@ export function AlgorithmsWidget() {
       name: inst.algorithm_name ?? inst.id.slice(0, 8),
       account: inst.account_name ?? "—",
       status: inst.status,
-      today: inst.today_pnl ?? 0,
-      sparkline: inst.pnl_sparkline ?? [],
+      today: 0,
+      sparkline: [],
       trades: tradeCount,
       win_rate: winRate,
       lifetime,
@@ -38,7 +38,7 @@ export function AlgorithmsWidget() {
   const stopped = rows.length - running;
 
   return (
-    <Widget title="Algorithms" isLoading={isLoading} bodyClass="">
+    <Widget title="Running Algorithms" isLoading={isLoading} bodyClass="">
       <div className="px-3.5 py-3 border-b border-gray-800">
         <div className={`text-xl font-bold ${total >= 0 ? "text-emerald-400" : "text-red-400"}`}>
           {formatMoney(total)}
@@ -54,7 +54,7 @@ export function AlgorithmsWidget() {
       {rows.map((r) => (
         <div
           key={r.id}
-          onClick={() => navigate(`/instances/${r.id}`)}
+          onClick={() => navigate(`/deployments/${r.id}`)}
           className="grid grid-cols-[1fr_80px_44px_44px_76px] gap-2 px-3.5 py-2.5 border-b border-gray-800 last:border-b-0 hover:bg-gray-800 cursor-pointer items-center"
         >
           <div>

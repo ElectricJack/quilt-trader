@@ -31,7 +31,7 @@ export function OpenPositionsWidget() {
           return (
             <div
               key={p.id}
-              onClick={() => p.instance_id && navigate(`/instances/${p.instance_id}`)}
+              onClick={() => p.instance_id && navigate(`/deployments/${p.instance_id}`)}
               className="px-3.5 py-2.5 border-b border-gray-800 last:border-b-0 cursor-pointer hover:bg-gray-800"
             >
               <div className="flex items-center justify-between">

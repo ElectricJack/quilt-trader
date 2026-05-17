@@ -26,7 +26,7 @@ export function RecentTradesWidget() {
           return (
             <div
               key={t.id}
-              onClick={() => t.instance_id && navigate(`/instances/${t.instance_id}`)}
+              onClick={() => t.instance_id && navigate(`/deployments/${t.instance_id}`)}
               className="grid grid-cols-[50px_44px_80px_1fr_80px_auto] gap-2.5 items-center px-3.5 py-2 border-b border-gray-800 last:border-b-0 hover:bg-gray-800 cursor-pointer text-xs"
             >
               <span className="text-gray-500">{fmtTime(t.timestamp)}</span>
