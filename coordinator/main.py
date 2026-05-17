@@ -309,6 +309,27 @@ def create_app(
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
     if os.path.isdir(dashboard_dir):
         from fastapi.staticfiles import StaticFiles
-        app.mount("/", StaticFiles(directory=dashboard_dir, html=True), name="dashboard")
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        class SPAStaticFiles(StaticFiles):
+            """StaticFiles that falls back to index.html on 404.
+
+            Without this, refreshing on any client-side React Router path
+            (e.g. /accounts/<id>) returns a JSON 404 from FastAPI. With it,
+            unmatched paths under the mount return index.html so React Router
+            can render the correct view on page load.
+
+            API and WS routes are unaffected because they're registered as
+            explicit routes BEFORE this mount.
+            """
+            async def get_response(self, path, scope):
+                try:
+                    return await super().get_response(path, scope)
+                except StarletteHTTPException as exc:
+                    if exc.status_code == 404:
+                        return await super().get_response("index.html", scope)
+                    raise
+
+        app.mount("/", SPAStaticFiles(directory=dashboard_dir, html=True), name="dashboard")
 
     return app
