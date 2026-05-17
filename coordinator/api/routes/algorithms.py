@@ -1,6 +1,8 @@
 import base64
+import hashlib
 import io
 import re
+import shutil
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +89,7 @@ def _algo_to_response(algo: Algorithm) -> dict:
     return {
         "id": algo.id,
         "repo_url": algo.repo_url,
+        "source_path": algo.source_path,
         "name": algo.name,
         "description": algo.description,
         "version": algo.version,
@@ -449,8 +452,29 @@ async def delete_instance(instance_id: str, db: AsyncSession = Depends(get_db)):
     await db.delete(inst)
 
 
+def _hash_directory(path: Path) -> str:
+    """Recursive content hash, excluding __pycache__ / .git directories."""
+    h = hashlib.sha256()
+    for entry in sorted(path.rglob("*")):
+        if entry.is_dir():
+            continue
+        rel = entry.relative_to(path)
+        if any(p.startswith(".") or p == "__pycache__" for p in rel.parts):
+            continue
+        h.update(str(rel).encode())
+        h.update(entry.read_bytes())
+    return h.hexdigest()[:12]
+
+
 class InstallFromUrlRequest(BaseModel):
     repo_url: str
+
+
+class InstallRequest(BaseModel):
+    source: Optional[str] = None
+    repo_url: Optional[str] = None  # backwards compat alias
+    name_override: Optional[str] = None
+    ref: Optional[str] = None  # branch or commit SHA for GitHub
 
 
 async def _fetch_manifest_yaml(owner: str, repo: str, db: AsyncSession) -> str:
@@ -530,7 +554,6 @@ async def install_from_url(body: InstallFromUrlRequest, db: AsyncSession = Depen
     pkg_dir = Path(pm.package_path(name))
     val_errors = validate_algorithm_package(pkg_dir)
     if val_errors:
-        import shutil
         shutil.rmtree(pkg_dir, ignore_errors=True)
         raise HTTPException(
             status_code=400,
@@ -548,3 +571,142 @@ async def install_from_url(body: InstallFromUrlRequest, db: AsyncSession = Depen
     db.add(algo)
     await db.flush()
     return _algo_to_response(algo)
+
+
+@router.post("/api/algorithms/install", status_code=201)
+async def install_algorithm(body: InstallRequest, db: AsyncSession = Depends(get_db)):
+    """Install an algorithm from a local directory path or a GitHub URL.
+
+    Accepts either ``source`` (preferred) or ``repo_url`` (backwards compat).
+    For local paths, ``source`` must be an absolute or relative path to a
+    directory on disk that contains a valid ``quilt.yaml``.
+    """
+    source = body.source or body.repo_url
+    if not source:
+        raise HTTPException(status_code=400, detail="Either `source` or `repo_url` is required")
+
+    is_url = source.startswith("http://") or source.startswith("https://")
+
+    if is_url:
+        # --- GitHub / URL path: delegate to existing install-from-url logic ---
+        full_name = _full_name_from_url(source)
+        if not full_name:
+            raise HTTPException(status_code=400, detail=f"Unsupported repo URL: {source}")
+        owner, repo = full_name.split("/", 1)
+
+        yaml_text = await _fetch_manifest_yaml(owner, repo, db)
+        try:
+            manifest = QuiltManifest.from_string(yaml_text)
+        except ManifestError as e:
+            raise HTTPException(status_code=422, detail=f"Invalid manifest: {e}")
+        if manifest.type != "algorithm":
+            raise HTTPException(
+                status_code=422, detail=f"That repo is a {manifest.type}, not an algorithm."
+            )
+
+        public_url = f"https://github.com/{owner}/{repo}.git"
+        clone_url = public_url
+        setting = (await db.execute(
+            select(Setting).where(Setting.key == "github_pat")
+        )).scalar_one_or_none()
+        if setting is not None:
+            container = get_container()
+            pat = container.encryption.decrypt(setting.value)
+            clone_url = f"https://{pat}@github.com/{owner}/{repo}.git"
+
+        name = body.name_override or repo
+        pm = PackageManager(packages_dir="data/packages")
+        try:
+            pm.clone_repo(clone_url, name)
+            pm.create_venv(name)
+            pm.install_requirements(name)
+            manifest_disk = pm.validate_package(name)
+            commit_hash = pm.get_commit_hash(name)
+        except PackageError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        pkg_dir = Path(pm.package_path(name))
+        val_errors = validate_algorithm_package(pkg_dir)
+        if val_errors:
+            shutil.rmtree(pkg_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Algorithm validation failed: {'; '.join(str(e) for e in val_errors)}",
+            )
+
+        algo = Algorithm(
+            repo_url=public_url,
+            source_path=None,
+            name=manifest_disk.get("name", manifest.name),
+            description=manifest_disk.get("description") or manifest.description,
+            version=manifest_disk.get("version") or manifest.version,
+            commit_hash=commit_hash,
+            install_status="installed",
+        )
+        db.add(algo)
+        await db.flush()
+        return _algo_to_response(algo)
+
+    else:
+        # --- Local directory path ---
+        src = Path(source).resolve()
+        if not src.is_dir():
+            raise HTTPException(
+                status_code=400, detail=f"local source path is not a directory: {source}"
+            )
+
+        # Determine name: name_override > manifest name > directory name
+        name = body.name_override
+        if not name:
+            try:
+                mf_preview = QuiltManifest.from_file(src / "quilt.yaml")
+                name = mf_preview.name
+            except Exception:
+                name = src.name
+
+        dest = PACKAGE_ROOT / name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+
+        commit_hash = "local:" + _hash_directory(dest)
+
+        val_errors = validate_algorithm_package(dest)
+        if val_errors:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Validation failed: {'; '.join(str(e) for e in val_errors)}",
+            )
+
+        try:
+            mf = QuiltManifest.from_file(dest / "quilt.yaml")
+        except ManifestError as e:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise HTTPException(status_code=422, detail=f"Invalid manifest: {e}")
+
+        if mf.type != "algorithm":
+            shutil.rmtree(dest, ignore_errors=True)
+            raise HTTPException(
+                status_code=422, detail=f"That package is a {mf.type}, not an algorithm."
+            )
+
+        algo = Algorithm(
+            repo_url="",
+            source_path=str(src),
+            name=name,
+            description=mf.description or None,
+            version=mf.version or None,
+            commit_hash=commit_hash,
+            required_asset_types=mf.requirements.asset_types or None,
+            required_options_level=mf.requirements.options_level,
+            required_account_features=mf.requirements.account_features or None,
+            supported_brokers=mf.requirements.brokers,
+            data_dependencies=mf.requirements.data_dependencies or None,
+            config_schema={"parameters": mf.config_parameters} if mf.config_parameters else None,
+            custom_events=mf.custom_events or None,
+            install_status="installed",
+        )
+        db.add(algo)
+        await db.flush()
+        return _algo_to_response(algo)

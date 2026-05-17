@@ -58,6 +58,7 @@ class Algorithm(Base):
     __tablename__ = "algorithms"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     repo_url: Mapped[str] = mapped_column(String, nullable=False)
+    source_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
