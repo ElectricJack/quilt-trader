@@ -16,7 +16,7 @@ from coordinator.api.dependencies import get_db
 from coordinator.api.websocket import manager as ws_manager
 from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
-    Account, Algorithm, AlgorithmInstance, AlgorithmRun, Worker,
+    Account, Algorithm, AlgorithmDeploymentReport, AlgorithmInstance, AlgorithmRun, Worker,
 )
 
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
@@ -225,6 +225,97 @@ async def list_deployment_activity(
                 "payload": r.payload,
             }
             for r in rows
+        ]
+    }
+
+
+@router.get("/{deployment_id}/report")
+async def get_report(deployment_id: str, db: AsyncSession = Depends(get_db)):
+    rep = (await db.execute(
+        select(AlgorithmDeploymentReport).where(
+            AlgorithmDeploymentReport.deployment_id == deployment_id
+        )
+    )).scalar_one_or_none()
+    if rep is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No report yet — deployment has not produced samples",
+        )
+    return {
+        "deployment_id": rep.deployment_id,
+        "generated_at": to_iso_utc(rep.generated_at),
+        "total_return": rep.total_return,
+        "cagr": rep.cagr,
+        "volatility": rep.volatility,
+        "sharpe_ratio": rep.sharpe_ratio,
+        "sortino_ratio": rep.sortino_ratio,
+        "calmar_ratio": rep.calmar_ratio,
+        "max_drawdown": rep.max_drawdown,
+        "romad": rep.romad,
+        "trade_count": rep.trade_count,
+        "win_rate": rep.win_rate,
+        "profit_factor": rep.profit_factor,
+        "avg_win": rep.avg_win,
+        "avg_loss": rep.avg_loss,
+        "expectancy": rep.expectancy,
+        "longest_drawdown_days": rep.longest_drawdown_days,
+        "equity_curve": rep.equity_curve,
+        "drawdown_curve": rep.drawdown_curve,
+        "drawdown_periods": rep.drawdown_periods,
+        "key_metrics": rep.key_metrics,
+        "rolling_metrics": rep.rolling_metrics,
+        "monthly_returns_matrix": rep.monthly_returns_matrix,
+        "eoy_returns": rep.eoy_returns,
+        "runs_index": rep.runs_index,
+    }
+
+
+@router.get("/{deployment_id}/trades")
+async def list_deployment_trades(
+    deployment_id: str,
+    limit: int = 500,
+    offset: int = 0,
+    run_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    from coordinator.database.models import TradeLog
+    limit = max(1, min(1000, limit))
+    stmt = (
+        select(TradeLog)
+        .where(TradeLog.instance_id == deployment_id)
+        .order_by(TradeLog.timestamp.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    # run_id filter: TradeLog has no run_id column, so we filter by timestamp
+    # boundaries of the run (started_at / stopped_at).
+    if run_id:
+        from coordinator.database.models import AlgorithmRun
+        run = (await db.execute(
+            select(AlgorithmRun).where(AlgorithmRun.id == run_id)
+        )).scalar_one_or_none()
+        if run is not None and run.started_at is not None:
+            stmt = stmt.where(TradeLog.timestamp >= run.started_at)
+            if run.stopped_at is not None:
+                stmt = stmt.where(TradeLog.timestamp < run.stopped_at)
+
+    rows = (await db.execute(stmt)).scalars().all()
+    return {
+        "items": [
+            {
+                "id": t.id,
+                "timestamp": to_iso_utc(t.timestamp),
+                "symbol": t.symbol,
+                "asset_type": t.asset_type,
+                "side": t.side,
+                "quantity": t.quantity,
+                "requested_price": t.requested_price,
+                "fill_price": t.filled_price,
+                "fees": t.fees,
+                "slippage_dollars": t.slippage,
+                "realized_pnl": None,  # TradeLog doesn't track realized_pnl
+            }
+            for t in rows
         ]
     }
 
