@@ -83,7 +83,8 @@ def start_coord_daemon(*, host: str = "127.0.0.1", port: int = 8000,
     log_p.parent.mkdir(parents=True, exist_ok=True)
     log_fd = open(log_p, "ab")
     cmd = [
-        sys.executable, "-m", "uvicorn", "coordinator.main:app",
+        sys.executable, "-m", "uvicorn",
+        "--factory", "coordinator.main:create_app",
         "--host", host, "--port", str(port),
     ]
     proc = subprocess.Popen(

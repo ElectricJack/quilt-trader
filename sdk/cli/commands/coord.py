@@ -25,7 +25,8 @@ def coord_start(ctx, foreground, port):
         import sys
         os.execvp(
             sys.executable,
-            [sys.executable, "-m", "uvicorn", "coordinator.main:app",
+            [sys.executable, "-m", "uvicorn",
+             "--factory", "coordinator.main:create_app",
              "--host", "127.0.0.1", "--port", str(port)],
         )
     existing = proc.read_pid()
