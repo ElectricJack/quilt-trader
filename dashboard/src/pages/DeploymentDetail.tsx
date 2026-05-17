@@ -118,7 +118,7 @@ export function DeploymentDetail() {
           )}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-            <EquitySlot report={report as any} trades={[]} />
+            <EquitySlot report={report as any} trades={[]} runsIndex={report.runs_index ?? undefined} />
             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
             <DrawdownSlot report={report as any} />
             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}

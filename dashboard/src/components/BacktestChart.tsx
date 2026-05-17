@@ -33,6 +33,7 @@ interface BacktestChartProps {
   equity: BacktestEquityPoint[];
   benchmark?: BacktestBenchmarkPoint[];
   trades?: BacktestTradeMarker[];
+  runMarkers?: SeriesMarker<Time>[];
   benchmarkLabel?: string;
   height?: number;
   logScale?: boolean;
@@ -67,6 +68,7 @@ export function BacktestChart({
   equity,
   benchmark = [],
   trades = [],
+  runMarkers,
   benchmarkLabel = "Benchmark",
   height = 360,
   logScale = false,
@@ -265,27 +267,26 @@ export function BacktestChart({
   // Trade markers anchored to the portfolio series
   useEffect(() => {
     if (!portfolioSeriesRef.current) return;
-    if (!enabled.trades || trades.length === 0) {
-      portfolioSeriesRef.current.setMarkers([]);
-      return;
-    }
+    const tradeMarkers: SeriesMarker<Time>[] = (enabled.trades && trades.length > 0)
+      ? trades
+          .map((t) => {
+            const time = toUnix(t.timestamp) as Time;
+            const isBuy = t.side === "buy";
+            return {
+              time,
+              position: isBuy ? ("belowBar" as const) : ("aboveBar" as const),
+              color: isBuy ? "#34d399" : "#f87171",
+              shape: isBuy ? ("arrowUp" as const) : ("arrowDown" as const),
+              text: `${t.side.toUpperCase()} ${t.quantity} ${t.symbol} @ ${t.fill_price.toFixed(2)}`,
+            };
+          })
+          .filter((m) => Number.isFinite(m.time as number))
+      : [];
     // Build markers; lightweight-charts requires markers sorted by time.
-    const markers: SeriesMarker<Time>[] = trades
-      .map((t) => {
-        const time = toUnix(t.timestamp) as Time;
-        const isBuy = t.side === "buy";
-        return {
-          time,
-          position: isBuy ? ("belowBar" as const) : ("aboveBar" as const),
-          color: isBuy ? "#34d399" : "#f87171",
-          shape: isBuy ? ("arrowUp" as const) : ("arrowDown" as const),
-          text: `${t.side.toUpperCase()} ${t.quantity} ${t.symbol} @ ${t.fill_price.toFixed(2)}`,
-        };
-      })
-      .filter((m) => Number.isFinite(m.time as number))
-      .sort((a, b) => (a.time as number) - (b.time as number));
-    portfolioSeriesRef.current.setMarkers(markers);
-  }, [trades, enabled.trades]);
+    const combined = [...tradeMarkers, ...(runMarkers ?? [])];
+    combined.sort((a, b) => (a.time as number) - (b.time as number));
+    portfolioSeriesRef.current.setMarkers(combined);
+  }, [trades, runMarkers, enabled.trades]);
 
   return (
     <div className="space-y-2">

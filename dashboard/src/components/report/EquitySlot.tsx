@@ -1,17 +1,55 @@
 import { useMemo, useState } from "react";
+import type { SeriesMarker, Time } from "lightweight-charts";
 import { BacktestChart, type BacktestEquityPoint, type BacktestBenchmarkPoint, type BacktestTradeMarker } from "../BacktestChart";
 import { MaximizableCard } from "./MaximizableCard";
 import type { BacktestReport } from "../../types";
 import { useBacktestEquityWindow } from "../../api/hooks";
 
+interface RunEntry {
+  run_id: string;
+  run_number: number;
+  started_at: string | null;
+  stopped_at: string | null;
+  status: string;
+}
+
 interface Props {
   report: BacktestReport;
   trades: { timestamp: string; symbol: string; side: string; quantity: number; fill_price: number | null }[];
+  runsIndex?: RunEntry[];
+}
+
+export function buildRunMarkers(
+  runsIndex: RunEntry[] | null | undefined,
+): SeriesMarker<Time>[] {
+  if (!runsIndex) return [];
+  const out: SeriesMarker<Time>[] = [];
+  for (const r of runsIndex) {
+    if (r.started_at) {
+      out.push({
+        time: (Date.parse(r.started_at) / 1000) as Time,
+        position: "aboveBar",
+        color: "#22c55e",
+        shape: "arrowUp",
+        text: `Run #${r.run_number} start`,
+      });
+    }
+    if (r.stopped_at) {
+      out.push({
+        time: (Date.parse(r.stopped_at) / 1000) as Time,
+        position: "belowBar",
+        color: "#6b7280",
+        shape: "arrowDown",
+        text: `Run #${r.run_number} stop`,
+      });
+    }
+  }
+  return out;
 }
 
 interface VisibleRange { from: string | null; to: string | null; }
 
-export function EquitySlot({ report, trades }: Props) {
+export function EquitySlot({ report, trades, runsIndex }: Props) {
   const [logScale, setLogScale] = useState(false);
   const [showVolMatched, setShowVolMatched] = useState(false);
   const [visible, setVisible] = useState<VisibleRange>({ from: null, to: null });
@@ -90,6 +128,8 @@ export function EquitySlot({ report, trades }: Props) {
       fill_price: t.fill_price as number,
     }));
 
+  const runMarkers = useMemo(() => buildRunMarkers(runsIndex), [runsIndex]);
+
   const toolbar = (
     <div className="flex gap-2 text-xs">
       <label className="flex items-center gap-1 text-gray-400">
@@ -110,6 +150,7 @@ export function EquitySlot({ report, trades }: Props) {
           equity={equityPoints}
           benchmark={benchmarkPoints}
           trades={tradeMarkers}
+          runMarkers={runMarkers}
           benchmarkLabel={
             report.benchmark_symbol
               ? `Benchmark${showVolMatched ? " (vol-matched)" : ""} (${report.benchmark_symbol})`
