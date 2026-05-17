@@ -4,13 +4,13 @@ import { ChevronLeft } from "lucide-react";
 import { z } from "zod";
 import {
   useAlgorithm,
-  useInstances,
+  useDeployments,
   useDeleteAlgorithm,
   useCreateInstance,
   useAccounts,
   useWorkers,
 } from "../api/hooks";
-import type { AlgorithmInstance } from "../types";
+import type { Deployment } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormModal } from "../components/FormModal";
@@ -29,24 +29,10 @@ const createInstanceSchema = z.object({
 });
 type CreateInstanceForm = z.infer<typeof createInstanceSchema>;
 
-// ─── Instances table columns ───────────────────────────────────────────────────
+// ─── Deployments table columns ─────────────────────────────────────────────────
 
-function buildColumns(): ColumnDef<AlgorithmInstance, unknown>[] {
+function buildColumns(): ColumnDef<Deployment, unknown>[] {
   return [
-    {
-      id: "id",
-      header: "ID",
-      accessorKey: "id",
-      cell: ({ row }) => (
-        <Link
-          to={`/instances/${row.original.id}`}
-          className="text-indigo-400 hover:underline font-mono text-xs"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {row.original.id.slice(0, 8)}…
-        </Link>
-      ),
-    },
     {
       id: "status",
       header: "Status",
@@ -54,27 +40,31 @@ function buildColumns(): ColumnDef<AlgorithmInstance, unknown>[] {
       cell: ({ row }) => <StatusBadge status={row.original.status} />,
     },
     {
-      id: "account_id",
+      id: "account",
       header: "Account",
-      accessorKey: "account_id",
+      accessorKey: "account_name",
       cell: ({ row }) => (
         <Link
           to={`/accounts/${row.original.account_id}`}
-          className="text-indigo-400 hover:underline text-xs"
+          className="text-indigo-400 hover:underline text-sm"
           onClick={(e) => e.stopPropagation()}
         >
-          {row.original.account_id.slice(0, 8)}…
+          {row.original.account_name}
         </Link>
       ),
     },
     {
-      id: "worker_id",
+      id: "worker",
       header: "Worker",
-      accessorKey: "worker_id",
+      accessorKey: "worker_name",
       cell: ({ row }) => (
-        <span className="text-xs text-gray-400">
-          {row.original.worker_id.slice(0, 8)}…
-        </span>
+        <Link
+          to={`/workers/${row.original.worker_id}`}
+          className="text-indigo-400 hover:underline text-sm"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {row.original.worker_name}
+        </Link>
       ),
     },
     {
@@ -87,10 +77,26 @@ function buildColumns(): ColumnDef<AlgorithmInstance, unknown>[] {
         </span>
       ),
     },
+    {
+      id: "lifetime_pnl",
+      header: "Lifetime P&L",
+      cell: ({ row }) => {
+        const m = row.original.lifetime_metrics as { total_pnl?: number } | null;
+        const pnl = m?.total_pnl ?? null;
+        const cls = pnl == null ? "text-gray-400" : pnl >= 0 ? "text-green-400" : "text-red-400";
+        return (
+          <span className={`text-sm font-mono ${cls}`}>
+            {pnl == null
+              ? "—"
+              : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(pnl)}
+          </span>
+        );
+      },
+    },
   ];
 }
 
-const instanceColumns = buildColumns();
+const deploymentColumns = buildColumns();
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -100,8 +106,8 @@ export function AlgorithmDetail() {
   const addAlert = useUIStore((s) => s.addAlert);
 
   const { data: algorithm, isLoading: loadingAlgo } = useAlgorithm(id ?? "");
-  const { data: instances, isLoading: loadingInstances } = useInstances(
-    id ?? ""
+  const { data: deployments, isLoading: loadingDeployments } = useDeployments(
+    { algorithm_id: id ?? "" }
   );
   const { data: accounts } = useAccounts();
   const { data: workers } = useWorkers();
@@ -293,25 +299,25 @@ export function AlgorithmDetail() {
         </div>
       )}
 
-      {/* Instances */}
+      {/* Running Algorithm Deployments */}
       <section>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-gray-200">Instances</h2>
+          <h2 className="text-lg font-semibold text-gray-200">Running Algorithm Deployments</h2>
           <button
             onClick={() => setCreateOpen(true)}
             className="px-4 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
           >
-            Create Instance
+            Deploy
           </button>
         </div>
 
         <DataTable
-          data={instances ?? []}
-          columns={instanceColumns}
-          isLoading={loadingInstances}
+          data={deployments ?? []}
+          columns={deploymentColumns}
+          isLoading={loadingDeployments}
           enableSorting
-          emptyMessage="No instances found."
-          onRowClick={(inst) => navigate(`/instances/${inst.id}`)}
+          emptyMessage="No deployments found."
+          onRowClick={(dep) => navigate(`/deployments/${dep.id}`)}
         />
       </section>
 
@@ -325,15 +331,15 @@ export function AlgorithmDetail() {
         onCancel={() => setDeleteOpen(false)}
       />
 
-      {/* Create instance modal */}
+      {/* Deploy algorithm modal */}
       <FormModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        title="Create Instance"
+        title="Deploy Algorithm"
         schema={createInstanceSchema}
         defaultValues={{ account_id: "", worker_id: "", config_values: "" }}
         onSubmit={handleCreateInstance}
-        submitLabel="Create Instance"
+        submitLabel="Deploy"
         isSubmitting={isCreating}
       >
         {(form) => (
