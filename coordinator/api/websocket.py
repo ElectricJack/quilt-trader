@@ -211,6 +211,12 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
                         "tailscale_ip": worker.tailscale_ip,
                         "install_status": worker.install_status,
                     })
+                    # Reconcile running instances: re-send start_instance for
+                    # every status='running' AlgorithmInstance on this worker.
+                    try:
+                        await _reconcile_worker_instances(worker_id, websocket)
+                    except Exception:
+                        logger.exception("Worker reconcile failed for %s", worker_id)
         except Exception:
             logger.exception("Failed to update heartbeat for worker %s", worker_id)
 
@@ -436,6 +442,88 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
             await manager.broadcast_to_target(f"deployment:{instance_id}", broadcast_msg)
 
 
+async def _reconcile_worker_instances(worker_id: str, worker_ws) -> None:
+    """Re-send start_instance to a freshly-reconnected worker for every
+    running instance assigned to it."""
+    from sqlalchemy import select
+    from coordinator.database.models import (
+        Algorithm, Account, AlgorithmInstance, AlgorithmRun,
+    )
+    container = get_container()
+    async with container.session_factory() as session:
+        result = await session.execute(
+            select(AlgorithmInstance).where(
+                AlgorithmInstance.worker_id == worker_id,
+                AlgorithmInstance.status == "running",
+            )
+        )
+        running_insts = result.scalars().all()
+        for inst in running_insts:
+            algo = (await session.execute(select(Algorithm).where(Algorithm.id == inst.algorithm_id))).scalar_one()
+            account = (await session.execute(select(Account).where(Account.id == inst.account_id))).scalar_one()
+            run = None
+            if inst.active_run_id:
+                run = (await session.execute(select(AlgorithmRun).where(AlgorithmRun.id == inst.active_run_id))).scalar_one_or_none()
+            if run is None:
+                logger.warning("Skipping reconcile for instance %s: no active_run_id", inst.id)
+                continue
+            try:
+                import json as _json
+                encryption = container.encryption
+                creds = _json.loads(encryption.decrypt(account.credentials))
+            except Exception:
+                logger.exception("Reconcile: failed to decrypt creds for %s", inst.id)
+                continue
+            try:
+                manifest_dict = _load_manifest_dict_for_reconcile(algo)
+            except Exception:
+                logger.exception("Reconcile: failed to load manifest for %s", inst.id)
+                continue
+            payload = {
+                "type": "start_instance",
+                "instance_id": inst.id,
+                "run_id": run.id,
+                "algorithm_id": algo.id,
+                "algorithm_commit_sha": algo.commit_hash,
+                "manifest": manifest_dict,
+                "broker_type": account.broker_type,
+                "environment": account.environment,
+                "credentials": creds,
+                "config": inst.config_values or {},
+                "persisted_state": inst.persisted_state,
+            }
+            try:
+                await worker_ws.send_json(payload)
+                if getattr(container, "tick_scheduler", None) is not None:
+                    await container.tick_scheduler.start_instance({
+                        "instance_id": inst.id,
+                        "run_id": run.id,
+                        "worker_id": worker_id,
+                        "broker_type": account.broker_type,
+                        "asset_type": (account.supported_asset_types or ["equities"])[0],
+                        "trigger": manifest_dict.get("trigger", "bar:1min"),
+                        "symbols": (manifest_dict.get("requirements") or {}).get("data_dependencies") or [],
+                    })
+            except Exception:
+                logger.exception("Reconcile send_json failed for instance %s", inst.id)
+
+
+def _load_manifest_dict_for_reconcile(algo) -> dict:
+    """Same shape as deployments.py:_load_manifest_dict but local to avoid import cycle."""
+    import re
+    from pathlib import Path
+    import yaml
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", algo.repo_url or "")
+    if not m:
+        raise ValueError(f"Cannot derive package dir from {algo.repo_url!r}")
+    pkg_dir = m.group(1).split("/", 1)[1]
+    path = Path("data/packages") / pkg_dir / "quilt.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"Manifest not on disk for algorithm {algo.id}")
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
 async def handle_worker_disconnect(websocket: WebSocket) -> None:
     """Mark a worker offline when its websocket disconnects and broadcast."""
     from sqlalchemy import select
@@ -464,6 +552,12 @@ async def handle_worker_disconnect(websocket: WebSocket) -> None:
                 })
     except Exception:
         logger.exception("Failed to mark worker %s offline on disconnect", worker_id)
+    container = get_container()
+    if getattr(container, "tick_scheduler", None) is not None:
+        try:
+            await container.tick_scheduler.drop_worker(worker_id)
+        except Exception:
+            logger.exception("Failed to drop worker %s from TickScheduler", worker_id)
 
 
 @router.websocket("/ws/worker")

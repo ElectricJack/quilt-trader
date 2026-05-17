@@ -537,3 +537,132 @@ async def test_instance_error_broadcasts_deployment_status_changed(running_app, 
         )
         updated_inst = result.scalar_one()
         assert updated_inst.active_run_id == run_id
+
+
+@pytest.mark.asyncio
+async def test_worker_reconnect_resends_start_instance_for_running_instances(running_app, db_session):
+    """After a worker disconnects then reconnects (sends heartbeat with prior_status='offline'),
+    the coordinator should re-send start_instance for every status='running' AlgorithmInstance
+    on that worker."""
+    from coordinator.database.models import (
+        Algorithm, Account, Worker, AlgorithmInstance, AlgorithmRun,
+    )
+    from coordinator.api.websocket import manager, handle_worker_message
+    from coordinator.api.dependencies import get_container
+
+    encryption = get_container().encryption
+    import json as _json
+    algo = Algorithm(repo_url="https://github.com/x/test-algo", name="A", commit_hash="sha-abc")
+    acct = Account(
+        name="A", broker_type="alpaca", environment="paper",
+        credentials=encryption.encrypt(_json.dumps({"api_key": "k", "secret_key": "s"})),
+        supported_asset_types=["equities"],
+    )
+    w = Worker(name="W", status="offline")  # was offline; reconnecting now
+    db_session.add_all([algo, acct, w])
+    await db_session.flush()
+    inst = AlgorithmInstance(
+        algorithm_id=algo.id, account_id=acct.id, worker_id=w.id,
+        status="running",
+    )
+    db_session.add(inst); await db_session.flush()
+    run = AlgorithmRun(instance_id=inst.id, run_number=1, status="running")
+    db_session.add(run)
+    await db_session.flush()
+    inst.active_run_id = run.id
+    await db_session.commit()
+
+    # Stash manifest on disk so the reconcile can load it.
+    import pathlib
+    pkg_dir = pathlib.Path("data/packages/test-algo")
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "quilt.yaml").write_text(
+        "name: A\ntype: algorithm\nversion: 1.0\nentry_point: a.b\nclass_name: A\n"
+        "trigger: bar:1min\nrequirements: {asset_types: [equities], data_dependencies: []}\n"
+    )
+
+    worker_ws = FakeWebSocket()
+    try:
+        await handle_worker_message(worker_ws, {
+            "type": "heartbeat",
+            "worker_id": w.id, "worker_name": w.name,
+        })
+    finally:
+        (pkg_dir / "quilt.yaml").unlink(missing_ok=True)
+        try:
+            pkg_dir.rmdir()
+        except Exception:
+            pass
+
+    sent_types = [m.get("type") for m in worker_ws.sent]
+    assert "start_instance" in sent_types
+    start_msg = next(m for m in worker_ws.sent if m.get("type") == "start_instance")
+    assert start_msg["instance_id"] == inst.id
+    assert start_msg["run_id"] == run.id
+
+
+@pytest.mark.asyncio
+async def test_worker_reconnect_resends_start_instance_for_running_instances_full(running_app, db_session):
+    """After a worker disconnects then reconnects (heartbeat with
+    prior_status='offline'), the coordinator re-sends start_instance for
+    every status='running' AlgorithmInstance on that worker."""
+    from coordinator.database.models import (
+        Algorithm, Account, Worker, AlgorithmInstance, AlgorithmRun,
+    )
+    from coordinator.api.websocket import handle_worker_message
+    from coordinator.api.dependencies import get_container
+    import json as _json
+    import pathlib
+
+    encryption = get_container().encryption
+    algo = Algorithm(
+        repo_url="https://github.com/x/test-algo-reconnect",
+        name="A", commit_hash="sha-abc",
+    )
+    acct = Account(
+        name="A", broker_type="alpaca", environment="paper",
+        credentials=encryption.encrypt(_json.dumps({"api_key": "k", "secret_key": "s"})),
+        supported_asset_types=["equities"],
+    )
+    w = Worker(name="W", status="offline")
+    db_session.add_all([algo, acct, w])
+    await db_session.flush()
+    inst = AlgorithmInstance(
+        algorithm_id=algo.id, account_id=acct.id, worker_id=w.id,
+        status="running",
+    )
+    db_session.add(inst); await db_session.flush()
+    run = AlgorithmRun(instance_id=inst.id, run_number=1, status="running")
+    db_session.add(run)
+    await db_session.flush()
+    inst.active_run_id = run.id
+    await db_session.commit()
+
+    pkg_dir = pathlib.Path("data/packages/test-algo-reconnect")
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "quilt.yaml").write_text(
+        "name: A\ntype: algorithm\nversion: 1.0\nentry_point: a.b\nclass_name: A\n"
+        "trigger: bar:1min\nrequirements:\n  asset_types: [equities]\n  data_dependencies: []\n"
+    )
+
+    worker_ws = FakeWebSocket()
+    try:
+        await handle_worker_message(worker_ws, {
+            "type": "heartbeat",
+            "worker_id": w.id, "worker_name": w.name,
+        })
+    finally:
+        (pkg_dir / "quilt.yaml").unlink(missing_ok=True)
+        try:
+            pkg_dir.rmdir()
+        except Exception:
+            pass
+
+    sent_types = [m.get("type") for m in worker_ws.sent]
+    assert "start_instance" in sent_types
+    start_msg = next(m for m in worker_ws.sent if m.get("type") == "start_instance")
+    assert start_msg["instance_id"] == inst.id
+    assert start_msg["run_id"] == run.id
+    assert start_msg["algorithm_id"] == algo.id
+    assert start_msg["credentials"]["api_key"] == "k"
+    assert start_msg["manifest"]["entry_point"] == "a.b"
