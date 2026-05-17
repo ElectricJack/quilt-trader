@@ -28,6 +28,8 @@ vi.mock("../api/hooks", () => ({
   useDeploymentTrades: () => ({ data: { items: [] } }),
   useStartDeployment: () => ({ mutate: vi.fn(), isPending: false }),
   useStopDeployment: () => ({ mutate: vi.fn(), isPending: false }),
+  useWorkerActivity: () => ({ data: null, isLoading: false }),
+  useDeploymentActivity: () => ({ data: null, isLoading: false }),
 }));
 
 vi.mock("../stores/ui", () => ({

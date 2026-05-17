@@ -22,6 +22,7 @@ import { MetricsTable } from "../components/report/MetricsTable";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { fmtPct, fmtInt, fmtNum } from "../lib/formatNumbers";
 import type { AlgorithmRun } from "../types";
+import { ActivityPanel } from "../components/ActivityPanel";
 
 // ── Runs table column definitions ────────────────────────────────────────────
 
@@ -355,6 +356,15 @@ export function DeploymentDetail() {
           }}
         />
       </section>
+
+      <details className="bg-gray-900 border border-gray-800 rounded">
+        <summary className="cursor-pointer text-sm font-semibold text-gray-300 px-4 py-2 hover:bg-gray-800">
+          Activity
+        </summary>
+        <div className="p-4">
+          <ActivityPanel target={`deployment:${id}` as const} />
+        </div>
+      </details>
     </div>
   );
 }
