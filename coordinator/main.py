@@ -302,6 +302,9 @@ def create_app(
     from coordinator.api.routes import deployments as deployments_routes
     app.include_router(deployments_routes.router)
 
+    from coordinator.api.routes.diagnostics import router as diagnostics_router
+    app.include_router(diagnostics_router)
+
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
     if os.path.isdir(dashboard_dir):
