@@ -17,11 +17,15 @@ class FakeWebSocket:
 
 @pytest_asyncio.fixture
 async def running_app():
+    import asyncio
     app = create_app(
         database_url="sqlite+aiosqlite:///file::memory:?cache=shared&uri=true",
         encryption_key="test-key-32-bytes-long!!!!!!!!",
     )
     async with app.router.lifespan_context(app):
+        # Drain so background tasks' first iterations finish before fixtures
+        # start writing — avoids SQLite "table is locked" under shared-cache.
+        await asyncio.sleep(0.05)
         yield app
 
 
