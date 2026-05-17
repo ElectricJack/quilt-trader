@@ -12,7 +12,6 @@ once and assert:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import threading
 from dataclasses import dataclass
@@ -28,8 +27,11 @@ from sqlalchemy import select
 from coordinator.database.connection import create_engine, create_session_factory
 from coordinator.database.models import Account, Base, LiveSubscription, Setting
 from coordinator.services.data_service import DataService
+from coordinator.services.encryption import EncryptionService
 from coordinator.services.live_feed_aggregator import LiveFeedAggregator
 from worker.broker_adapter import MarketDataStreamHandle
+
+_TEST_ENCRYPTION = EncryptionService("test-key-for-live-feed-aggregator")
 
 
 @dataclass
@@ -79,7 +81,7 @@ async def test_aggregator_writes_tick_parquets_and_bars(tmp_path, engine_and_fac
             name="fake",
             broker_type="fakebroker",
             environment="paper",
-            credentials=json.dumps({"api_key": "x", "secret_key": "y"}),
+            credentials=_TEST_ENCRYPTION.encrypt_json({"api_key": "x", "secret_key": "y"}),
             supported_asset_types=["equities"],
         )
         session.add(acct)
@@ -123,6 +125,7 @@ async def test_aggregator_writes_tick_parquets_and_bars(tmp_path, engine_and_fac
 
     agg = LiveFeedAggregator(
         session_factory=sf,
+        encryption=_TEST_ENCRYPTION,
         data_service=data_service,
         adapter_factory=lambda b, e, c: fake,
         market_dir=market_dir,
@@ -176,6 +179,7 @@ async def test_aggregator_idles_when_no_account(tmp_path, engine_and_factory):
     market_dir = str(tmp_path / "market")
     agg = LiveFeedAggregator(
         session_factory=sf,
+        encryption=_TEST_ENCRYPTION,
         adapter_factory=lambda b, e, c: _FakeAdapter([], []),
         market_dir=market_dir,
         flush_interval_s=0.05,
@@ -206,7 +210,7 @@ async def test_aggregator_updates_rate_and_last_tick(tmp_path, engine_and_factor
             name="fake",
             broker_type="fakebroker",
             environment="paper",
-            credentials=json.dumps({"api_key": "x", "secret_key": "y"}),
+            credentials=_TEST_ENCRYPTION.encrypt_json({"api_key": "x", "secret_key": "y"}),
             supported_asset_types=["equities"],
         ))
         session.add(Setting(
@@ -249,6 +253,7 @@ async def test_aggregator_updates_rate_and_last_tick(tmp_path, engine_and_factor
     market_dir = str(tmp_path / "market")
     agg = LiveFeedAggregator(
         session_factory=sf,
+        encryption=_TEST_ENCRYPTION,
         adapter_factory=lambda b, e, c: fake,
         market_dir=market_dir,
         flush_interval_s=0.05,
@@ -268,3 +273,74 @@ async def test_aggregator_updates_rate_and_last_tick(tmp_path, engine_and_factor
         assert sub.last_tick_at is not None
         # tick_rate_per_min should be non-None after the rate-update branch.
         assert sub.tick_rate_per_min is not None
+
+
+@pytest.mark.asyncio
+async def test_subscribe_bars_receives_callback_on_dispatch():
+    from coordinator.services.live_feed_aggregator import LiveFeedAggregator
+    agg = LiveFeedAggregator.__new__(LiveFeedAggregator)
+    agg._bar_subscribers = {}
+    agg._event_subscribers = {}
+    received: list = []
+    async def cb(bar):
+        received.append(bar)
+    agg.subscribe_bars("alpaca", "AAPL", "1min", cb)
+    await agg._dispatch_bar("alpaca", "AAPL", "1min", {"close": 100.0})
+    assert received == [{"close": 100.0}]
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_bars_stops_callbacks():
+    from coordinator.services.live_feed_aggregator import LiveFeedAggregator
+    agg = LiveFeedAggregator.__new__(LiveFeedAggregator)
+    agg._bar_subscribers = {}
+    agg._event_subscribers = {}
+    received: list = []
+    async def cb(bar):
+        received.append(bar)
+    agg.subscribe_bars("alpaca", "AAPL", "1min", cb)
+    agg.unsubscribe_bars("alpaca", "AAPL", "1min", cb)
+    await agg._dispatch_bar("alpaca", "AAPL", "1min", {"close": 100.0})
+    assert received == []
+
+
+@pytest.mark.asyncio
+async def test_subscribe_events_receives_callback_on_dispatch():
+    from coordinator.services.live_feed_aggregator import LiveFeedAggregator
+    agg = LiveFeedAggregator.__new__(LiveFeedAggregator)
+    agg._bar_subscribers = {}
+    agg._event_subscribers = {}
+    received: list = []
+    async def cb(evt):
+        received.append(evt)
+    agg.subscribe_events("alpaca", "AAPL", cb)
+    await agg._dispatch_event("alpaca", "AAPL", {"price": 100.0, "size": 10})
+    assert len(received) == 1
+
+
+@pytest.mark.asyncio
+async def test_subscriber_exception_does_not_break_other_subscribers():
+    from coordinator.services.live_feed_aggregator import LiveFeedAggregator
+    agg = LiveFeedAggregator.__new__(LiveFeedAggregator)
+    agg._bar_subscribers = {}
+    agg._event_subscribers = {}
+    received: list = []
+    async def bad_cb(bar):
+        raise RuntimeError("boom")
+    async def good_cb(bar):
+        received.append(bar)
+    agg.subscribe_bars("alpaca", "AAPL", "1min", bad_cb)
+    agg.subscribe_bars("alpaca", "AAPL", "1min", good_cb)
+    await agg._dispatch_bar("alpaca", "AAPL", "1min", {"close": 100.0})
+    assert received == [{"close": 100.0}]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_with_empty_subscribers_for_target_is_noop():
+    """Dispatch with no subscribers does not raise."""
+    from coordinator.services.live_feed_aggregator import LiveFeedAggregator
+    agg = LiveFeedAggregator.__new__(LiveFeedAggregator)
+    agg._bar_subscribers = {}
+    agg._event_subscribers = {}
+    await agg._dispatch_bar("alpaca", "AAPL", "1min", {"close": 100.0})  # no raise
+    await agg._dispatch_event("alpaca", "AAPL", {"x": 1})  # no raise

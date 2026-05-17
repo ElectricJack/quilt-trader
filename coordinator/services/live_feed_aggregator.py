@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coordinator.database.models import Account, LiveSubscription, Setting
 from coordinator.services.data_service import DataService
+from coordinator.services.encryption import EncryptionService
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +132,11 @@ class LiveFeedAggregator:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
+        *,
+        encryption: EncryptionService,
         data_service: Optional[DataService] = None,
         adapter_factory: Optional[AdapterFactory] = None,
         market_dir: str = "data/market",
-        encryption=None,
         flush_interval_s: float = 5.0,
         now_fn: NowFn = _default_now,
     ) -> None:
@@ -151,12 +153,49 @@ class LiveFeedAggregator:
         self._states: dict[tuple[str, str], _SubState] = {}
         self._retention_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._bar_subscribers: dict[tuple[str, str, str], set[Callable]] = {}
+        self._event_subscribers: dict[tuple[str, str], set[Callable]] = {}
 
     @staticmethod
     def _default_adapter_factory(broker_type: str, environment: str, credentials: dict):
         from worker.adapter_factory import make_broker_adapter
 
         return make_broker_adapter(broker_type, environment, credentials)
+
+    # ------- subscriber API -------
+    def subscribe_bars(self, broker: str, symbol: str, timeframe: str, callback: Callable) -> None:
+        self._bar_subscribers.setdefault((broker, symbol, timeframe), set()).add(callback)
+
+    def unsubscribe_bars(self, broker: str, symbol: str, timeframe: str, callback: Callable) -> None:
+        s = self._bar_subscribers.get((broker, symbol, timeframe))
+        if s:
+            s.discard(callback)
+            if not s:
+                self._bar_subscribers.pop((broker, symbol, timeframe), None)
+
+    def subscribe_events(self, broker: str, symbol: str, callback: Callable) -> None:
+        self._event_subscribers.setdefault((broker, symbol), set()).add(callback)
+
+    def unsubscribe_events(self, broker: str, symbol: str, callback: Callable) -> None:
+        s = self._event_subscribers.get((broker, symbol))
+        if s:
+            s.discard(callback)
+            if not s:
+                self._event_subscribers.pop((broker, symbol), None)
+
+    async def _dispatch_bar(self, broker: str, symbol: str, timeframe: str, bar: dict) -> None:
+        for cb in list(self._bar_subscribers.get((broker, symbol, timeframe), ())):
+            try:
+                await cb(bar)
+            except Exception:
+                logger.exception("Bar subscriber failed for %s/%s/%s", broker, symbol, timeframe)
+
+    async def _dispatch_event(self, broker: str, symbol: str, event: dict) -> None:
+        for cb in list(self._event_subscribers.get((broker, symbol), ())):
+            try:
+                await cb(event)
+            except Exception:
+                logger.exception("Event subscriber failed for %s/%s", broker, symbol)
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -275,6 +314,10 @@ class LiveFeedAggregator:
                 if closed is not None:
                     state.pending_bars.append(closed)
                 state.bar.add(ts, price, size)
+            if self._loop is not None:
+                asyncio.run_coroutine_threadsafe(
+                    self._dispatch_event(broker, symbol, tick), self._loop
+                )
 
         def _on_quote(tick: dict) -> None:
             with state.lock:
@@ -367,13 +410,6 @@ class LiveFeedAggregator:
             ).scalar_one_or_none()
 
     def _decrypt_creds(self, account: Account) -> dict:
-        if self._encryption is None:
-            # In tests we sometimes pre-store credentials as plaintext JSON.
-            try:
-                import json as _json
-                return _json.loads(account.credentials)
-            except Exception:  # noqa: BLE001
-                return {}
         try:
             return self._encryption.decrypt_json(account.credentials)
         except Exception:  # noqa: BLE001
@@ -461,6 +497,7 @@ class LiveFeedAggregator:
             self._data_service.save_market_data(provider, symbol, "1min", df)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to save 1min bar for %s/%s", broker, symbol)
+        asyncio.create_task(self._dispatch_bar(broker, symbol, "1min", bar_row))
 
     async def _update_rate(
         self, broker: str, symbol: str, state: _SubState, now: datetime
