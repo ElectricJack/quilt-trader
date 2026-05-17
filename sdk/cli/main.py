@@ -58,11 +58,14 @@ from sdk.cli.commands.algorithm import algorithm_group
 from sdk.cli.commands.worker import worker_group
 from sdk.cli.commands.account import account_group
 from sdk.cli.commands.settings import settings_group
+from sdk.cli.commands.deployment import deployment_group
 quilt.add_command(algorithm_group)
 quilt.add_command(algorithm_group, name="algo")
 quilt.add_command(worker_group)
 quilt.add_command(account_group)
 quilt.add_command(settings_group)
+quilt.add_command(deployment_group)
+quilt.add_command(deployment_group, name="deploy")
 
 
 @quilt.command("up")
