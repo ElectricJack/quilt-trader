@@ -39,3 +39,10 @@ def test_quilt_dev_validate_still_works():
     runner = CliRunner()
     result = runner.invoke(quilt, ["dev", "validate", "--help"])
     assert result.exit_code == 0
+
+
+def test_quilt_validate_at_top_level_exists():
+    runner = CliRunner()
+    result = runner.invoke(quilt, ["validate", "--help"])
+    assert result.exit_code == 0
+    assert "Validate" in result.output or "validate" in result.output.lower()

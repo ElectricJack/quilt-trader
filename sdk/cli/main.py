@@ -36,3 +36,6 @@ def dev() -> None:
 
 from sdk.cli.validate import validate_cmd
 dev.add_command(validate_cmd)
+
+# Also register validate at the top level
+quilt.add_command(validate_cmd)
