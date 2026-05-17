@@ -6,7 +6,7 @@ import {
   useWorker,
   useUpdateWorker,
   useDeleteWorker,
-  useAllInstances,
+  useDeployments,
 } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
 import { FormModal } from "../components/FormModal";
@@ -68,15 +68,12 @@ export function WorkerDetail() {
   const addAlert = useUIStore((s) => s.addAlert);
 
   const { data: worker, isLoading } = useWorker(id ?? "");
-  const { data: allInstances, isLoading: loadingInstances } = useAllInstances();
+  const { data: deployments, isLoading: loadingDeployments } = useDeployments({ worker_id: id });
   const updateWorker = useUpdateWorker();
   const deleteWorker = useDeleteWorker();
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-
-  // Filter instances assigned to this worker
-  const instances = (allInstances ?? []).filter((i) => i.worker_id === id);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
@@ -179,51 +176,56 @@ export function WorkerDetail() {
         </div>
       </section>
 
-      {/* Assigned instances */}
+      {/* Running Algorithms */}
       <section>
         <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
-          Assigned Instances
+          Running Algorithms
         </h2>
-        {loadingInstances ? (
+        {loadingDeployments ? (
           <p className="text-gray-400 text-sm">Loading…</p>
-        ) : instances.length === 0 ? (
-          <p className="text-gray-500 text-sm">
-            No instances assigned to this worker.
-          </p>
-        ) : (
+        ) : deployments && deployments.length > 0 ? (
           <div className="space-y-2">
-            {instances.map((inst) => (
-              <div
-                key={inst.id}
-                onClick={() => navigate(`/instances/${inst.id}`)}
-                className="bg-gray-900 border border-gray-800 rounded-lg p-4 cursor-pointer hover:border-gray-600 transition-colors"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="space-y-1 min-w-0">
-                    <p className="text-xs text-gray-500 uppercase">Instance</p>
-                    <p className="text-sm font-mono text-gray-200 truncate">
-                      {inst.id}
-                    </p>
+            {deployments.map((d) => {
+              const pnl = (d.lifetime_metrics as { total_pnl?: number } | null)?.total_pnl ?? null;
+              const pnlClass =
+                pnl == null ? "text-gray-400" : pnl >= 0 ? "text-green-400" : "text-red-400";
+              return (
+                <div
+                  key={d.id}
+                  onClick={() => navigate(`/deployments/${d.id}`)}
+                  className="bg-gray-900 border border-gray-800 rounded-lg p-4 cursor-pointer hover:border-gray-600 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex items-center gap-3">
+                      <StatusBadge status={d.status} />
+                      <Link
+                        to={`/algorithms/${d.algorithm_id}`}
+                        className="text-indigo-400 hover:underline text-sm font-medium"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {d.algorithm_name}
+                      </Link>
+                      <span className="text-gray-500">·</span>
+                      <Link
+                        to={`/accounts/${d.account_id}`}
+                        className="text-gray-300 hover:text-gray-100 text-sm"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {d.account_name}
+                      </Link>
+                    </div>
+                    <div className={`text-sm font-mono ${pnlClass}`}>
+                      {pnl == null
+                        ? "—"
+                        : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(pnl)}
+                    </div>
                   </div>
-                  <StatusBadge status={inst.status} />
                 </div>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-3 text-xs text-gray-400">
-                  <div className="flex justify-between">
-                    <span>Algorithm</span>
-                    <span className="text-gray-300 font-mono truncate ml-2">
-                      {inst.algorithm_id}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Account</span>
-                    <span className="text-gray-300 font-mono truncate ml-2">
-                      {inst.account_id}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
+        ) : (
+          <p className="text-gray-500 text-sm">No algorithms deployed to this worker.</p>
         )}
       </section>
 
