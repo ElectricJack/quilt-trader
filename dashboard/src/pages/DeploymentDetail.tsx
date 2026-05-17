@@ -1,5 +1,6 @@
-import { useParams, Link, useSearchParams } from "react-router-dom";
-import { ChevronLeft } from "lucide-react";
+import { useState } from "react";
+import { useParams, Link, useSearchParams, useNavigate } from "react-router-dom";
+import { ChevronLeft, Trash2 } from "lucide-react";
 import {
   useDeployment,
   useDeploymentReport,
@@ -7,7 +8,9 @@ import {
   useDeploymentTrades,
   useStartDeployment,
   useStopDeployment,
+  useDeleteDeployment,
 } from "../api/hooks";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusBadge } from "../components/StatusBadge";
 import { useUIStore } from "../stores/ui";
 import { KpiCard } from "../components/report/KpiCard";
@@ -97,13 +100,16 @@ const runsColumns: ColumnDef<AlgorithmRun, unknown>[] = [
 
 export function DeploymentDetail() {
   const { id = "" } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const runFilter = searchParams.get("run") ?? "";
 
   const { data: dep, isLoading } = useDeployment(id);
   const start = useStartDeployment();
   const stop = useStopDeployment();
+  const del = useDeleteDeployment();
   const addAlert = useUIStore((s) => s.addAlert);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Compute liveness defensively so hooks can run unconditionally on first render
   // (before `dep` has loaded). Rules-of-hooks: every render must call the same
@@ -203,8 +209,37 @@ export function DeploymentDetail() {
               Stop
             </button>
           )}
+          <button
+            onClick={() => setDeleteOpen(true)}
+            disabled={isRunning}
+            title={isRunning ? "Stop the deployment first" : "Delete deployment"}
+            className="inline-flex items-center gap-1.5 bg-red-800 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-red-100 text-sm px-3 py-1.5 rounded"
+          >
+            <Trash2 size={14} />
+            Delete
+          </button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        title="Delete deployment"
+        message={`Permanently delete this deployment of "${dep.algorithm_name}" on ${dep.worker_name}? Run history will also be removed. This cannot be undone.`}
+        confirmLabel="Delete"
+        onConfirm={() => {
+          del.mutate(id, {
+            onSuccess: () => {
+              addAlert({ message: "Deployment deleted.", severity: "success" });
+              navigate(`/algorithms/${dep.algorithm_id}`);
+            },
+            onError: () => {
+              addAlert({ message: "Failed to delete deployment.", severity: "error" });
+              setDeleteOpen(false);
+            },
+          });
+        }}
+        onCancel={() => setDeleteOpen(false)}
+      />
 
       {/* Run filter dropdown — placed ABOVE the KPI row.
           NOTE: currently only filters the trades table; see TODO above. */}
