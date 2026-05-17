@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+TRIGGER_REGEX = re.compile(r"^(bar:[a-z0-9]+|event|interval:\d+[smh])$")
 
 
 class ManifestError(Exception):
@@ -33,6 +36,7 @@ class QuiltManifest:
     custom_events: list[dict] = field(default_factory=list)
     schedule: str = ""
     jitter_seconds: Optional[int] = None
+    trigger: str = "bar:1min"
 
     @staticmethod
     def from_file(path: Path) -> QuiltManifest:
@@ -98,6 +102,24 @@ class QuiltManifest:
                     f"jitter_seconds must be non-negative, got {jitter_seconds}"
                 )
 
+        trigger = data.get("trigger", "bar:1min")
+        if not TRIGGER_REGEX.match(trigger):
+            raise ManifestError(
+                f"trigger must match {TRIGGER_REGEX.pattern!r}, got {trigger!r}"
+            )
+
+        # Validate history_bars on each data_dependency entry
+        for dep in (reqs_data.get("data_dependencies") or []):
+            if not isinstance(dep, dict):
+                continue
+            hb = dep.get("history_bars")
+            if hb is None:
+                continue
+            if not isinstance(hb, int) or hb <= 0:
+                raise ManifestError(
+                    f"data_dependencies entry history_bars must be a positive integer, got {hb!r}"
+                )
+
         return QuiltManifest(
             name=data["name"],
             type=data["type"],
@@ -110,4 +132,5 @@ class QuiltManifest:
             custom_events=custom_events,
             schedule=data.get("schedule", ""),
             jitter_seconds=jitter_seconds,
+            trigger=trigger,
         )

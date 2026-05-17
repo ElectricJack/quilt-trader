@@ -141,3 +141,91 @@ version: 1.0.0
     def test_file_not_found(self):
         with pytest.raises(FileNotFoundError):
             QuiltManifest.from_file(Path("/nonexistent/quilt.yaml"))
+
+
+def _base_yaml(extra: str = "") -> str:
+    return f"""
+name: test-algo
+type: algorithm
+version: 1.0.0
+entry_point: my_algo.algorithm
+class_name: MyAlgo
+requirements:
+  asset_types: [equities]
+  brokers: [alpaca]
+  data_dependencies:
+    - {{ symbol: "AAPL", timeframe: "1min" }}
+{extra}
+"""
+
+
+def test_trigger_defaults_to_bar_1min_when_omitted():
+    m = QuiltManifest.from_string(_base_yaml())
+    assert m.trigger == "bar:1min"
+
+
+def test_trigger_accepts_bar_timeframe():
+    m = QuiltManifest.from_string(_base_yaml("trigger: bar:5min"))
+    assert m.trigger == "bar:5min"
+
+
+def test_trigger_accepts_event():
+    m = QuiltManifest.from_string(_base_yaml("trigger: event"))
+    assert m.trigger == "event"
+
+
+def test_trigger_accepts_interval_with_duration_suffix():
+    m = QuiltManifest.from_string(_base_yaml("trigger: interval:30s"))
+    assert m.trigger == "interval:30s"
+    m2 = QuiltManifest.from_string(_base_yaml("trigger: interval:5m"))
+    assert m2.trigger == "interval:5m"
+
+
+def test_trigger_rejects_unknown_format():
+    with pytest.raises(ManifestError):
+        QuiltManifest.from_string(_base_yaml("trigger: not_a_trigger"))
+
+
+def test_trigger_rejects_invalid_interval():
+    with pytest.raises(ManifestError):
+        QuiltManifest.from_string(_base_yaml("trigger: interval:abc"))
+
+
+def test_data_dependencies_history_bars_default():
+    m = QuiltManifest.from_string(_base_yaml())
+    deps = m.requirements.data_dependencies
+    assert deps[0].get("history_bars", 200) == 200
+
+
+def test_data_dependencies_history_bars_explicit():
+    yaml_text = """
+name: test-algo
+type: algorithm
+version: 1.0.0
+entry_point: my_algo.algorithm
+class_name: MyAlgo
+requirements:
+  asset_types: [equities]
+  brokers: [alpaca]
+  data_dependencies:
+    - { symbol: "AAPL", timeframe: "1min", history_bars: 500 }
+"""
+    m = QuiltManifest.from_string(yaml_text)
+    assert m.requirements.data_dependencies[0]["history_bars"] == 500
+
+
+def test_history_bars_rejects_non_positive():
+    yaml_text = """
+name: test-algo
+type: algorithm
+version: 1.0.0
+entry_point: my_algo.algorithm
+class_name: MyAlgo
+requirements:
+  asset_types: [equities]
+  brokers: [alpaca]
+  data_dependencies:
+    - { symbol: "AAPL", timeframe: "1min", history_bars: -5 }
+"""
+    with pytest.raises(ManifestError):
+        QuiltManifest.from_string(yaml_text)
