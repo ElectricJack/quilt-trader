@@ -6,20 +6,44 @@ routes still exist for one release for backwards compatibility.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from coordinator.api.dependencies import get_db
+from coordinator.api.dependencies import get_db, get_container
 from coordinator.api.websocket import manager as ws_manager
 from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     Account, Algorithm, AlgorithmDeploymentReport, AlgorithmInstance, AlgorithmRun, Worker,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
+
+
+def _load_manifest_dict(algo) -> dict:
+    """Read the algorithm's manifest YAML from disk as a plain dict.
+
+    Workers parse this on bring-up. We send the raw YAML structure rather
+    than the QuiltManifest dataclass so worker code doesn't have to depend
+    on sdk.manifest internals.
+    """
+    import re as _re
+    from pathlib import Path
+    import yaml
+    m = _re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", algo.repo_url or "")
+    if not m:
+        raise HTTPException(status_code=500, detail=f"Cannot derive package dir from {algo.repo_url!r}")
+    pkg_dir = m.group(1).split("/", 1)[1]
+    path = Path("data/packages") / pkg_dir / "quilt.yaml"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Manifest not on disk for algorithm {algo.id}")
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
 
 
 def _deployment_to_response(
@@ -108,19 +132,67 @@ async def start_deployment(deployment_id: str, db: AsyncSession = Depends(get_db
     await db.commit()
 
     await _broadcast_status_changed(inst.id, "starting", run.id)
+
+    # Load Algorithm + Account for the enriched payload.
+    algo = (await db.execute(
+        select(Algorithm).where(Algorithm.id == inst.algorithm_id)
+    )).scalar_one()
+    account = (await db.execute(
+        select(Account).where(Account.id == inst.account_id)
+    )).scalar_one()
+
+    # Decrypt credentials.
+    import json as _json
+    encryption = get_container().encryption
     try:
-        await worker_ws.send_json({
-            "type": "start_instance",
-            "instance_id": inst.id,
-            "config": inst.config_values or {},
-            "persisted_state": inst.persisted_state,
-        })
+        creds = _json.loads(encryption.decrypt(account.credentials))
+    except Exception:
+        inst.status = "error"
+        run.status = "error"
+        await db.commit()
+        await _broadcast_status_changed(inst.id, "error", run.id)
+        raise HTTPException(status_code=500, detail="Failed to decrypt account credentials")
+
+    # Load manifest YAML for the worker.
+    manifest_dict = _load_manifest_dict(algo)
+
+    payload = {
+        "type": "start_instance",
+        "instance_id": inst.id,
+        "run_id": run.id,
+        "algorithm_id": algo.id,
+        "algorithm_commit_sha": algo.commit_hash,
+        "manifest": manifest_dict,
+        "broker_type": account.broker_type,
+        "environment": account.environment,
+        "credentials": creds,
+        "config": inst.config_values or {},
+        "persisted_state": inst.persisted_state,
+    }
+    try:
+        await worker_ws.send_json(payload)
     except Exception:
         inst.status = "error"
         run.status = "error"
         await db.commit()
         await _broadcast_status_changed(inst.id, "error", run.id)
         raise HTTPException(status_code=502, detail="Failed to reach worker")
+
+    container = get_container()
+    if getattr(container, "tick_scheduler", None) is not None:
+        try:
+            await container.tick_scheduler.start_instance({
+                "instance_id": inst.id,
+                "run_id": run.id,
+                "worker_id": inst.worker_id,
+                "broker_type": account.broker_type,
+                "asset_type": (account.supported_asset_types or ["equities"])[0],
+                "trigger": manifest_dict.get("trigger", "bar:1min"),
+                "symbols": (manifest_dict.get("requirements") or {}).get("data_dependencies") or [],
+            })
+        except Exception:
+            logger.exception("Failed to register instance with TickScheduler")
+
     return {"ok": True, "active_run_id": run.id}
 
 
@@ -143,6 +215,14 @@ async def stop_deployment(deployment_id: str, db: AsyncSession = Depends(get_db)
             await worker_ws.send_json({"type": "stop_instance", "instance_id": inst.id})
         except Exception:
             pass
+
+    container = get_container()
+    if getattr(container, "tick_scheduler", None) is not None:
+        try:
+            await container.tick_scheduler.stop_instance(deployment_id)
+        except Exception:
+            logger.exception("Failed to unregister instance from TickScheduler")
+
     return {"ok": True}
 
 
