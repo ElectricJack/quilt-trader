@@ -78,6 +78,23 @@ async def test_ensure_cache_hit_skips_download(tmp_path, monkeypatch):
     assert result_path == cached
 
 
+def test_load_algorithm_class_accepts_literal_py_entry_point(tmp_path):
+    """Manifests sometimes use `entry_point: algorithm.py` (literal filename
+    with extension) rather than `entry_point: my_pkg.algorithm` (dotted module).
+    Both must work — they used to break here when `.replace('.', '/') + '.py'`
+    turned `algorithm.py` into `algorithm/py.py`."""
+    from worker import package_cache
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "algorithm.py").write_text(
+        "class MyAlgo:\n    def hello(self): return 'hi-literal'\n"
+    )
+    cls = package_cache.load_algorithm_class(
+        pkg_dir=pkg_dir, entry_point="algorithm.py", class_name="MyAlgo",
+    )
+    assert cls().hello() == "hi-literal"
+
+
 def test_load_algorithm_class_imports_module_and_returns_class(tmp_path):
     from worker import package_cache
     pkg_dir = tmp_path / "pkg"

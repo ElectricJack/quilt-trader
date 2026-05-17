@@ -52,17 +52,27 @@ async def ensure(*, agent: Any, algorithm_id: str, commit_sha: str) -> Path:
     return target
 
 
+def _entry_point_to_relpath(entry_point: str) -> str:
+    """Accept both manifest conventions:
+      - dotted module path: "my_pkg.algorithm" → "my_pkg/algorithm.py"
+      - literal filename:   "algorithm.py"     → "algorithm.py"
+    """
+    if entry_point.endswith(".py"):
+        return entry_point
+    return entry_point.replace(".", "/") + ".py"
+
+
 def load_algorithm_class(*, pkg_dir: Path, entry_point: str, class_name: str) -> type:
-    """Load `class_name` from `entry_point` (e.g. "my_pkg.algorithm") within `pkg_dir`.
+    """Load `class_name` from `entry_point` (e.g. "my_pkg.algorithm" OR "algorithm.py").
 
     Uses importlib.util.spec_from_file_location so we don't pollute global sys.path
     or risk colliding with other algorithms loaded into the same worker process.
 
     Falls back to looking one directory deeper, since coordinator tarballs are
-    extracted as `<repo_name>/<entry_point>.py` rather than `<entry_point>.py`.
+    extracted as `<repo_name>/<entry_point>` rather than `<entry_point>`.
     """
     pkg_dir = Path(pkg_dir)
-    module_relpath = Path(entry_point.replace(".", "/") + ".py")
+    module_relpath = Path(_entry_point_to_relpath(entry_point))
     module_path = pkg_dir / module_relpath
     effective_pkg_dir = pkg_dir
 
@@ -77,19 +87,20 @@ def load_algorithm_class(*, pkg_dir: Path, entry_point: str, class_name: str) ->
                     break
 
     if not module_path.exists():
-        # Try package init form: <entry_point>/__init__.py
-        init_path = pkg_dir / entry_point.replace(".", "/") / "__init__.py"
-        if init_path.exists():
-            module_path = init_path
-            effective_pkg_dir = pkg_dir
-        else:
-            for sub in pkg_dir.iterdir():
-                if sub.is_dir():
-                    candidate = sub / entry_point.replace(".", "/") / "__init__.py"
-                    if candidate.exists():
-                        module_path = candidate
-                        effective_pkg_dir = sub
-                        break
+        # Try package init form: <entry_point>/__init__.py (only for dotted form)
+        if not entry_point.endswith(".py"):
+            init_path = pkg_dir / entry_point.replace(".", "/") / "__init__.py"
+            if init_path.exists():
+                module_path = init_path
+                effective_pkg_dir = pkg_dir
+            else:
+                for sub in pkg_dir.iterdir():
+                    if sub.is_dir():
+                        candidate = sub / entry_point.replace(".", "/") / "__init__.py"
+                        if candidate.exists():
+                            module_path = candidate
+                            effective_pkg_dir = sub
+                            break
 
     if not module_path.exists():
         raise FileNotFoundError(
