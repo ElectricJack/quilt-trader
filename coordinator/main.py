@@ -161,6 +161,15 @@ def create_app(
             flush_interval_seconds=int(os.environ.get("QT_LIVE_SAMPLE_FLUSH_INTERVAL_SECONDS", "10")),
         )
 
+        from coordinator.services.live_finalizer import LiveFinalizer
+        container.live_finalizer = LiveFinalizer(
+            session_factory=container.session_factory,
+            sink=container.live_sample_sink,
+            base_dir=Path(os.environ.get("QT_LIVE_DATA_DIR", "data/live")),
+            interval_seconds=int(os.environ.get("QT_LIVE_FINALIZE_INTERVAL_SECONDS", "15")),
+        )
+        finalizer_task = asyncio.create_task(container.live_finalizer.run_loop())
+
         try:
             from coordinator.services.backtest_runner import BacktestRunner
             container.backtest_runner = BacktestRunner(
@@ -203,6 +212,9 @@ def create_app(
             activity_retention_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await activity_retention_task
+            finalizer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await finalizer_task
 
         if container.live_feed_aggregator:
             await container.live_feed_aggregator.stop()

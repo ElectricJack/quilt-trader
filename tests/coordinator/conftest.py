@@ -1,6 +1,9 @@
 import asyncio
+import os
 
 import pytest_asyncio
+
+os.environ.setdefault("QT_LIVE_FINALIZE_INTERVAL_SECONDS", "999999")
 
 from coordinator.database.connection import create_engine
 from coordinator.database.models import Base
