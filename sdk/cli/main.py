@@ -44,6 +44,11 @@ from pathlib import Path
 from sdk.cli.commands.coord import coord_group, coord_start, coord_stop
 quilt.add_command(coord_group)
 
+from sdk.cli.commands.dashboard import dashboard_group
+from sdk.cli.commands.db import db_group
+quilt.add_command(dashboard_group)
+quilt.add_command(db_group)
+
 
 @quilt.command("up")
 @click.pass_context
