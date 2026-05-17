@@ -41,3 +41,43 @@ class TestQuiltDevConfig:
         config = QuiltDevConfig.load(config_file)
         assert config.theta_data_username == "user1"
         assert config.theta_data_password == "pass1"
+
+
+import os
+from pathlib import Path
+from sdk.cli.config import resolve_coordinator_url
+
+
+def test_resolve_default_when_nothing_set(tmp_path, monkeypatch):
+    monkeypatch.delenv("QUILT_COORDINATOR_URL", raising=False)
+    monkeypatch.delenv("QUILT_CONFIG", raising=False)
+    monkeypatch.setattr("sdk.cli.config.DEFAULT_CONFIG_PATH",
+                        tmp_path / "nope" / "config.yaml")
+    assert resolve_coordinator_url(flag_value=None) == "http://localhost:8000"
+
+
+def test_resolve_uses_config_file(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("coordinator_url: http://from-file:9000\n")
+    monkeypatch.setenv("QUILT_CONFIG", str(cfg))
+    monkeypatch.delenv("QUILT_COORDINATOR_URL", raising=False)
+    assert resolve_coordinator_url(flag_value=None) == "http://from-file:9000"
+
+
+def test_resolve_env_var_overrides_config(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("coordinator_url: http://from-file:9000\n")
+    monkeypatch.setenv("QUILT_CONFIG", str(cfg))
+    monkeypatch.setenv("QUILT_COORDINATOR_URL", "http://from-env:9001")
+    assert resolve_coordinator_url(flag_value=None) == "http://from-env:9001"
+
+
+def test_resolve_flag_beats_everything(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUILT_COORDINATOR_URL", "http://from-env:9001")
+    assert resolve_coordinator_url(flag_value="http://from-flag:9002") == "http://from-flag:9002"
+
+
+def test_quilt_home_respects_env_override(tmp_path, monkeypatch):
+    from sdk.cli.config import quilt_home
+    monkeypatch.setenv("QUILT_HOME", str(tmp_path / "alt"))
+    assert quilt_home() == tmp_path / "alt"
