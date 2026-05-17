@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { AlertToast } from "./components/AlertToast";
 import { Layout } from "./components/Layout";
 import { useWebSocketSync } from "./hooks/useWebSocketSync";
@@ -8,7 +8,7 @@ import { Accounts } from "./pages/Accounts";
 import { AccountDetail } from "./pages/AccountDetail";
 import { Algorithms } from "./pages/Algorithms";
 import { AlgorithmDetail } from "./pages/AlgorithmDetail";
-import { InstanceDetail } from "./pages/InstanceDetail";
+import { DeploymentDetail } from "./pages/DeploymentDetail";
 import { RunDetail } from "./pages/RunDetail";
 import { Workers } from "./pages/Workers";
 import { WorkerDetail } from "./pages/WorkerDetail";
@@ -30,6 +30,11 @@ const queryClient = new QueryClient({
   },
 });
 
+function InstanceRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/deployments/${id ?? ""}`} replace />;
+}
+
 function WebSocketSync(): null {
   useWebSocketSync();
   return null;
@@ -50,7 +55,8 @@ export function App() {
             <Route path="/accounts/:id/strategies" element={<Strategies />} />
             <Route path="/algorithms" element={<Algorithms />} />
             <Route path="/algorithms/:id" element={<AlgorithmDetail />} />
-            <Route path="/instances/:id" element={<InstanceDetail />} />
+            <Route path="/deployments/:id" element={<DeploymentDetail />} />
+            <Route path="/instances/:id" element={<InstanceRedirect />} />
             <Route path="/runs/:id" element={<RunDetail />} />
             <Route path="/workers" element={<Workers />} />
             <Route path="/workers/:id" element={<WorkerDetail />} />
