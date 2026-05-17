@@ -34,11 +34,11 @@ def test_quilt_quiet_flag_is_accepted():
     assert result.exit_code == 0
 
 
-def test_quilt_dev_validate_still_works():
-    """Backwards compat — dev validate still works during transition."""
+def test_dev_group_no_longer_exists():
     runner = CliRunner()
     result = runner.invoke(quilt, ["dev", "validate", "--help"])
-    assert result.exit_code == 0
+    # Click returns exit code 2 for unknown commands
+    assert result.exit_code != 0
 
 
 def test_quilt_validate_at_top_level_exists():
