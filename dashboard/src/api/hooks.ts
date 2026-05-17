@@ -1020,6 +1020,19 @@ export function useStopDeployment() {
   });
 }
 
+export function useDeploymentReport(
+  id: string,
+  opts?: { refetchInterval?: number | false },
+) {
+  return useQuery({
+    queryKey: ["deployment-report", id] as const,
+    queryFn: () => api.getDeploymentReport(id),
+    enabled: !!id,
+    refetchInterval: opts?.refetchInterval,
+    retry: false,
+  });
+}
+
 // ─── M4.5: Activity feeds ─────────────────────────────────────────────────────
 
 type ActivityParams = { limit?: number; before?: string; severity?: string; event_types?: string; kind?: string };

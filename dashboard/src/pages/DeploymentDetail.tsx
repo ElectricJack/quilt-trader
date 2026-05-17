@@ -2,11 +2,18 @@ import { useParams, Link } from "react-router-dom";
 import { ChevronLeft } from "lucide-react";
 import {
   useDeployment,
+  useDeploymentReport,
   useStartDeployment,
   useStopDeployment,
 } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
 import { useUIStore } from "../stores/ui";
+import { KpiCard } from "../components/report/KpiCard";
+import { EquitySlot } from "../components/report/EquitySlot";
+import { DrawdownSlot } from "../components/report/DrawdownSlot";
+import { ReturnsDistributionSlot } from "../components/report/ReturnsDistributionSlot";
+import { RollingMetricsSlot } from "../components/report/RollingMetricsSlot";
+import { fmtPct, fmtInt, fmtNum } from "../lib/formatNumbers";
 
 export function DeploymentDetail() {
   const { id = "" } = useParams<{ id: string }>();
@@ -20,6 +27,9 @@ export function DeploymentDetail() {
 
   const canStart = dep.status === "stopped" || dep.status === "error";
   const isRunning = dep.status === "running" || dep.status === "starting";
+  const isLive = dep.status === "running" || dep.status === "starting" || dep.status === "stopping";
+  const { data: report } = useDeploymentReport(id, { refetchInterval: isLive ? 2000 : false });
+  const km = report?.key_metrics?.strategy;
 
   return (
     <div className="space-y-6">
@@ -93,10 +103,35 @@ export function DeploymentDetail() {
         </div>
       </div>
 
-      {/* KPIs / chart grid / tables / activity panel will be added by M6.2–M6.5 */}
-      <p className="text-gray-500 text-sm">
-        Live report visualization coming soon.
-      </p>
+      {report ? (
+        <>
+          {km && (
+            <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
+              <KpiCard variant="hero" label="Annual Return" value={fmtPct(km.cagr)} hint="CAGR" />
+              <KpiCard label="Total Return" value={fmtPct(km.total_return)} />
+              <KpiCard label="Max Drawdown" value={fmtPct(km.max_drawdown)} />
+              <KpiCard label="RoMaD" value={fmtNum(km.romad)} hint="CAGR / Max Drawdown" />
+              <KpiCard label="Sharpe" value={fmtNum(km.sharpe_ratio)} />
+              <KpiCard label="Sortino" value={fmtNum(km.sortino_ratio)} />
+              <KpiCard label="Longest DD Days" value={fmtInt(km.longest_drawdown_days)} />
+            </div>
+          )}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <EquitySlot report={report as any} trades={[]} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <DrawdownSlot report={report as any} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <ReturnsDistributionSlot report={report as any} />
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <RollingMetricsSlot report={report as any} />
+          </div>
+        </>
+      ) : (
+        <p className="text-gray-500 text-sm">
+          No samples yet — start the deployment to begin recording.
+        </p>
+      )}
     </div>
   );
 }

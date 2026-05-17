@@ -27,6 +27,7 @@ import type {
   BacktestReport,
   BacktestEquityWindow,
   ActivityRow,
+  DeploymentReport,
 } from "../types";
 
 // ─── Request body types ────────────────────────────────────────────────────────
@@ -403,6 +404,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     });
+  },
+  getDeploymentReport(id: string): Promise<DeploymentReport> {
+    return request<DeploymentReport>(`/api/deployments/${id}/report`);
   },
 
   // Cash Flows

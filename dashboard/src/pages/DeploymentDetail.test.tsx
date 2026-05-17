@@ -23,6 +23,7 @@ vi.mock("../api/hooks", () => ({
     },
     isLoading: false,
   }),
+  useDeploymentReport: () => ({ data: null }),
   useStartDeployment: () => ({ mutate: vi.fn(), isPending: false }),
   useStopDeployment: () => ({ mutate: vi.fn(), isPending: false }),
 }));

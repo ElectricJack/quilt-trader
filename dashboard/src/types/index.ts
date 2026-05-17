@@ -464,6 +464,45 @@ export interface BacktestEquityWindow {
   items: { ts: string; portfolio_value: number; cash: number }[];
 }
 
+// ── Deployment Report (M6.2) ──
+
+export interface DeploymentReport {
+  deployment_id: string;
+  generated_at: string;
+  total_return: number | null;
+  cagr: number | null;
+  volatility: number | null;
+  sharpe_ratio: number | null;
+  sortino_ratio: number | null;
+  calmar_ratio: number | null;
+  max_drawdown: number | null;
+  romad: number | null;
+  trade_count: number | null;
+  win_rate: number | null;
+  profit_factor: number | null;
+  avg_win: number | null;
+  avg_loss: number | null;
+  expectancy: number | null;
+  longest_drawdown_days: number | null;
+  equity_curve: { timestamp: string | null; portfolio_value: number | null }[] | null;
+  drawdown_curve: unknown[] | null;
+  drawdown_periods: unknown[] | null;
+  key_metrics: {
+    strategy?: Record<string, number | null | undefined>;
+    benchmark?: Record<string, number | null | undefined>;
+  } | null;
+  rolling_metrics: Record<string, unknown> | null;
+  monthly_returns_matrix: Record<string, unknown> | null;
+  eoy_returns: unknown[] | null;
+  runs_index: {
+    run_id: string;
+    run_number: number;
+    started_at: string | null;
+    stopped_at: string | null;
+    status: string;
+  }[] | null;
+}
+
 export type ActivityRow = {
   id: string;
   worker_id: string;

@@ -19,25 +19,11 @@ import { EquitySlot } from "../components/report/EquitySlot";
 import { DrawdownSlot } from "../components/report/DrawdownSlot";
 import { ReturnsDistributionSlot } from "../components/report/ReturnsDistributionSlot";
 import { RollingMetricsSlot } from "../components/report/RollingMetricsSlot";
+import { fmtPct, fmtInt, fmtNum } from "../lib/formatNumbers";
 
 const INFLIGHT_STATUSES = ["queued", "downloading_data", "running"];
 function inflight(status: string | undefined | null): boolean {
   return !!status && INFLIGHT_STATUSES.includes(status);
-}
-
-function fmtPct(v: number | null | undefined): string {
-  if (v == null) return "—";
-  return `${(v * 100).toFixed(2)}%`;
-}
-
-function fmtInt(v: number | null | undefined): string {
-  if (v == null) return "—";
-  return Math.round(v).toString();
-}
-
-function fmtNum(v: number | null | undefined, digits = 2): string {
-  if (v == null) return "—";
-  return v.toLocaleString("en-US", { maximumFractionDigits: digits });
 }
 
 interface BacktestTradeRow {
