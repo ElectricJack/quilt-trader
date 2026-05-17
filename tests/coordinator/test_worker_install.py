@@ -39,13 +39,14 @@ async def test_install_command_renders_one_liner(client):
 async def test_install_command_requires_token(client):
     create = await client.post("/api/workers", json={"name": "pi-3", "tailscale_ip": "100.64.0.12"})
     wid = create.json()["id"]
-    # Burn the token via claim.
+    # Claim the worker — token is retained after claim so install-command still works.
     token = create.json()["install_token"]
     claim = await client.post(f"/api/workers/install/claim/{wid}?token={token}")
     assert claim.status_code == 200
 
+    # install-command returns 200 because the token is still present (retained after claim).
     resp = await client.get(f"/api/workers/{wid}/install-command")
-    assert resp.status_code == 409
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -74,7 +75,8 @@ async def test_package_rejects_invalid_token(client):
 
 
 @pytest.mark.asyncio
-async def test_claim_invalidates_token(client):
+async def test_claim_retains_token(client):
+    """After claim the install_token persists so the worker can use it for subsequent auth."""
     create = await client.post("/api/workers", json={"name": "pi-5", "tailscale_ip": "100.64.0.14"})
     wid = create.json()["id"]
     token = create.json()["install_token"]
@@ -85,18 +87,19 @@ async def test_claim_invalidates_token(client):
     assert body["ok"] is True
     assert body["already_claimed"] is False
 
-    # Token should now be invalid for package downloads.
+    # Token is still valid for package downloads (retained after claim).
     pkg = await client.get(f"/api/workers/install/package.tar.gz?token={token}")
-    assert pkg.status_code == 401
+    assert pkg.status_code == 200
 
-    # Re-claim with the same token should fail (token cleared from worker row).
+    # Re-claim with the same token returns already_claimed (token still matches).
     again = await client.post(f"/api/workers/install/claim/{wid}?token={token}")
-    assert again.status_code == 401
+    assert again.status_code == 200
+    assert again.json()["already_claimed"] is True
 
-    # Worker row reflects claimed status.
+    # Worker row reflects claimed status and token is still present.
     get = await client.get(f"/api/workers/{wid}")
     assert get.json()["install_status"] == "claimed"
-    assert get.json()["install_token"] is None
+    assert get.json()["install_token"] == token
 
 
 @pytest.mark.asyncio

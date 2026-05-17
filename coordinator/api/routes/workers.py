@@ -128,8 +128,10 @@ async def worker_install_package(token: str, db: AsyncSession = Depends(get_db))
 
 @router.post("/install/claim/{worker_id}")
 async def claim_worker(worker_id: str, token: str, db: AsyncSession = Depends(get_db)):
-    """Called by the install script once the worker is up. Invalidates the install token.
+    """Called by the install script once the worker is up.
 
+    The install token is intentionally kept after claim so the worker can use it
+    to authenticate subsequent requests (e.g. downloading algorithm packages).
     Lives under /install/ so it can be auth-exempt (the Pi has the install token, not an API key).
     """
     worker = (await db.execute(
@@ -142,7 +144,8 @@ async def claim_worker(worker_id: str, token: str, db: AsyncSession = Depends(ge
     if worker.install_status == "claimed":
         return {"ok": True, "already_claimed": True}
     worker.install_status = "claimed"
-    worker.install_token = None
+    # Note: install_token is intentionally NOT cleared here — the worker reuses it
+    # as an auth token for subsequent API calls (e.g. /api/algorithms/{id}/package.tar.gz).
     await db.flush()
     return {"ok": True, "already_claimed": False}
 

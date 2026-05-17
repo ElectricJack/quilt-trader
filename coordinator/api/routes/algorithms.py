@@ -1,10 +1,14 @@
 import base64
+import io
 import re
+import tarfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,12 +26,39 @@ from coordinator.database.models import (
     Position,
     Setting,
     TradeLog,
+    Worker,
 )
 from coordinator.services.github_service import GitHubService
 from coordinator.services.package_manager import PackageError, PackageManager
 from sdk.manifest import ManifestError, QuiltManifest
 
 router = APIRouter(tags=["algorithms"])
+
+# Override in tests via monkeypatch.
+PACKAGE_ROOT = Path("data/packages")
+
+
+def _derive_package_dir_name(repo_url: str) -> str:
+    """Derive the on-disk directory name from a GitHub repo URL (last path segment)."""
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url or "")
+    if not m:
+        raise ValueError(f"Cannot derive package directory from repo_url: {repo_url!r}")
+    return m.group(1).split("/", 1)[1]
+
+
+def _build_algorithm_tarball(pkg_dir: Path) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(
+            pkg_dir,
+            arcname=pkg_dir.name,
+            filter=lambda ti: None if (
+                "__pycache__" in ti.name
+                or ti.name.endswith(".pyc")
+                or ti.name.endswith(".pyo")
+            ) else ti,
+        )
+    return buf.getvalue()
 
 
 class AlgorithmCreate(BaseModel):
@@ -168,6 +199,47 @@ async def get_algorithm(algorithm_id: str, db: AsyncSession = Depends(get_db)):
     if algo is None:
         raise HTTPException(status_code=404, detail="Algorithm not found")
     return _algo_to_response(algo)
+
+
+@router.get("/api/algorithms/{algorithm_id}/package.tar.gz")
+async def algorithm_package(
+    algorithm_id: str,
+    sha: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve a gzipped tarball of the algorithm package directory to authenticated workers."""
+    token = request.headers.get("X-Worker-Install-Token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing X-Worker-Install-Token")
+    worker = (await db.execute(
+        select(Worker).where(Worker.install_token == token)
+    )).scalar_one_or_none()
+    if worker is None:
+        raise HTTPException(status_code=401, detail="Invalid worker token")
+    algo = (await db.execute(
+        select(Algorithm).where(Algorithm.id == algorithm_id)
+    )).scalar_one_or_none()
+    if algo is None:
+        raise HTTPException(status_code=404, detail="Algorithm not found")
+    if algo.commit_hash != sha:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Algorithm SHA mismatch: have {algo.commit_hash}, requested {sha}",
+        )
+    try:
+        pkg_dir_name = _derive_package_dir_name(algo.repo_url)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    src_path = PACKAGE_ROOT / pkg_dir_name
+    if not src_path.exists():
+        raise HTTPException(status_code=404, detail="Algorithm package not on disk")
+    data = _build_algorithm_tarball(src_path)
+    return Response(
+        content=data,
+        media_type="application/gzip",
+        headers={"Content-Disposition": f"attachment; filename={pkg_dir_name}.tar.gz"},
+    )
 
 
 def _full_name_from_url(repo_url: str) -> str | None:
