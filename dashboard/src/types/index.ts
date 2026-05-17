@@ -503,6 +503,22 @@ export interface DeploymentReport {
   }[] | null;
 }
 
+// ── Deployment Trade (M6.4) ──
+
+export interface DeploymentTrade {
+  id: string;
+  timestamp: string;
+  symbol: string;
+  asset_type: string;
+  side: string;
+  quantity: number;
+  requested_price: number | null;
+  fill_price: number | null;
+  fees: number | null;
+  slippage_dollars: number | null;
+  realized_pnl: number | null;
+}
+
 export type ActivityRow = {
   id: string;
   worker_id: string;

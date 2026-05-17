@@ -1053,6 +1053,20 @@ export function useDeploymentActivity(deploymentId: string, params?: ActivityPar
   });
 }
 
+// ── M6.4: Deployment trades ──
+
+export function useDeploymentTrades(
+  id: string,
+  opts?: { limit?: number; run_id?: string; refetchInterval?: number | false },
+) {
+  return useQuery({
+    queryKey: ["deployment-trades", id, opts?.limit, opts?.run_id] as const,
+    queryFn: () => api.listDeploymentTrades(id, { limit: opts?.limit, run_id: opts?.run_id }),
+    enabled: !!id,
+    refetchInterval: opts?.refetchInterval,
+  });
+}
+
 // ─── M3.3: WebSocket-driven deployment cache sync ─────────────────────────────
 
 export function useDeploymentStatusSync(): void {

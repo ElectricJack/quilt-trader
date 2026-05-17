@@ -28,6 +28,7 @@ import type {
   BacktestEquityWindow,
   ActivityRow,
   DeploymentReport,
+  DeploymentTrade,
 } from "../types";
 
 // ─── Request body types ────────────────────────────────────────────────────────
@@ -804,6 +805,19 @@ export const api = {
     return request<{ items: ActivityRow[] }>(
       `/api/deployments/${deploymentId}/activity${query ? `?${query}` : ""}`,
     );
+  },
+
+  // ── M6.4: Deployment trades ──
+  listDeploymentTrades(
+    id: string,
+    params?: { limit?: number; offset?: number; run_id?: string },
+  ): Promise<{ items: DeploymentTrade[] }> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params?.run_id) qs.set("run_id", params.run_id);
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return request<{ items: DeploymentTrade[] }>(`/api/deployments/${id}/trades${suffix}`);
   },
 };
 
