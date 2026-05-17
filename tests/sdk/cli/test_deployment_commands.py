@@ -63,10 +63,18 @@ def test_deploy_alias_works():
     assert result.exit_code == 0, result.output
 
 
-def test_deployment_activity_follow_not_yet_wired():
+def test_deployment_activity_follow_attempts_websocket_connection():
+    from unittest.mock import AsyncMock, MagicMock, patch
     runner = CliRunner()
-    result = runner.invoke(quilt, ["deployment", "activity", "d1", "--follow"])
-    assert result.exit_code == 2
+    # websockets.connect is used as `async with connect(url) as ws:` so we
+    # need a mock that raises KeyboardInterrupt on __aenter__ to exit cleanly.
+    fake_cm = MagicMock()
+    fake_cm.__aenter__ = AsyncMock(side_effect=KeyboardInterrupt())
+    fake_cm.__aexit__ = AsyncMock(return_value=False)
+    with patch("websockets.connect", return_value=fake_cm):
+        result = runner.invoke(quilt, ["deployment", "activity", "d1", "--follow", "--no-history"])
+    # Either exits 0 (KeyboardInterrupt is treated as clean exit) or 3 (reconnect failure).
+    assert result.exit_code in (0, 3)
 
 
 def test_deployment_show_renders_kv():

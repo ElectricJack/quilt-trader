@@ -225,17 +225,36 @@ def deployment_trades(ctx, deployment_id, limit, run_id):
 
 @deployment_group.command("activity")
 @click.argument("deployment_id")
-@click.option("--follow", "-f", is_flag=True, default=False,
-              help="Tail live activity (not yet implemented; see C6.1).")
+@click.option("--follow", "-f", is_flag=True, default=False)
 @click.option("--severity", default="info")
 @click.option("--kind", default="all", type=click.Choice(["all", "event", "log"]))
 @click.option("-n", "limit", default=100, type=int)
+@click.option("--no-history", is_flag=True, default=False)
 @click.pass_context
-def deployment_activity(ctx, deployment_id, follow, severity, kind, limit):
-    """Show activity events for a deployment."""
+def deployment_activity(ctx, deployment_id, follow, severity, kind, limit, no_history):
+    """Show or follow activity events for a deployment."""
+    coord_url = resolve_coordinator_url(ctx.obj.get("coord_url"))
+
     if follow:
-        # The --follow path is implemented in C6.1. For now, emit a clear note.
-        fail(2, "--follow is not yet wired; use the non-follow path or wait for C6.1")
+        from sdk.cli.follow import follow_target
+        ws_url = (coord_url.replace("http://", "ws://")
+                            .replace("https://", "wss://")
+                            + "/ws/dashboard")
+        history_url = (None if no_history
+                        else f"{coord_url}/api/deployments/{deployment_id}/activity"
+                              f"?limit=50&severity={severity}&kind={kind}")
+        code = asyncio.run(follow_target(
+            ws_url=ws_url,
+            target=f"deployment:{deployment_id}",
+            severity_floor=severity,
+            kind=kind,
+            json_mode=ctx.obj.get("json_mode", False),
+            print_history=not no_history,
+            history_url=history_url,
+        ))
+        raise SystemExit(code)
+
+    # Non-follow path (unchanged from C5.1)
     params = {"limit": limit, "severity": severity, "kind": kind}
     async def go():
         c = _client(ctx)
