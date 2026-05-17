@@ -186,7 +186,7 @@ export function BacktestDetail() {
             <span className="text-xs text-gray-500 uppercase">Instance</span>
             <p className="text-gray-200 mt-0.5">
               <Link
-                to={`/instances/${bt.instance_id}`}
+                to={`/deployments/${bt.instance_id}`}
                 className="text-indigo-400 hover:underline font-mono text-xs"
               >
                 {bt.instance_id.slice(0, 8)}…

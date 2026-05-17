@@ -374,7 +374,7 @@ export function AccountDetail() {
       accessorKey: "id",
       cell: ({ row }) => (
         <Link
-          to={`/instances/${row.original.id}`}
+          to={`/deployments/${row.original.id}`}
           className="text-indigo-400 hover:underline font-mono text-xs"
           onClick={(e) => e.stopPropagation()}
         >
@@ -476,7 +476,7 @@ export function AccountDetail() {
           <StatusBadge status={account.locked_by ? "locked" : "available"} />
           {account.locked_by && (
             <Link
-              to={`/instances/${account.locked_by}`}
+              to={`/deployments/${account.locked_by}`}
               className="text-xs px-2 py-0.5 rounded border bg-amber-900/40 text-amber-300 border-amber-800 hover:underline"
             >
               Locked by instance {account.locked_by.slice(0, 8)}…
@@ -722,7 +722,7 @@ export function AccountDetail() {
             data={accountInstances}
             columns={instanceColumns}
             emptyMessage="No instances running on this account."
-            onRowClick={(row) => navigate(`/instances/${row.id}`)}
+            onRowClick={(row) => navigate(`/deployments/${row.id}`)}
             enableSorting
           />
         )}

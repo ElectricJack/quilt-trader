@@ -61,7 +61,7 @@ const comparisonColumns: ColumnDef<BacktestComparison, unknown>[] = [
     header: "Instance",
     cell: ({ row }) => (
       <Link
-        to={`/instances/${row.original.instance_id}`}
+        to={`/deployments/${row.original.instance_id}`}
         className="text-indigo-400 hover:underline font-mono text-xs"
         onClick={(e) => e.stopPropagation()}
       >
