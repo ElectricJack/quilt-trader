@@ -119,6 +119,25 @@ async def start_deployment(deployment_id: str, db: AsyncSession = Depends(get_db
     if worker_ws is None:
         raise HTTPException(status_code=502, detail="Worker offline")
 
+    # Load Algorithm + Account before run creation so lifecycle hooks and the
+    # WS payload both have access to them.
+    algo = (await db.execute(
+        select(Algorithm).where(Algorithm.id == inst.algorithm_id)
+    )).scalar_one_or_none()
+    account = (await db.execute(
+        select(Account).where(Account.id == inst.account_id)
+    )).scalar_one_or_none()
+    if algo is None or account is None:
+        raise HTTPException(status_code=500, detail="Algorithm or account missing")
+
+    # Run pre-start lifecycle checks (auto-subscribe, compatibility).
+    lifecycle = getattr(get_container(), "lifecycle_service", None)
+    if lifecycle is not None:
+        try:
+            await lifecycle.pre_start_checks(account, algo, inst)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"pre-start checks failed: {e}")
+
     next_n = (await db.execute(
         select(func.coalesce(func.max(AlgorithmRun.run_number), 0))
         .where(AlgorithmRun.instance_id == inst.id)
@@ -132,14 +151,6 @@ async def start_deployment(deployment_id: str, db: AsyncSession = Depends(get_db
     await db.commit()
 
     await _broadcast_status_changed(inst.id, "starting", run.id)
-
-    # Load Algorithm + Account for the enriched payload.
-    algo = (await db.execute(
-        select(Algorithm).where(Algorithm.id == inst.algorithm_id)
-    )).scalar_one()
-    account = (await db.execute(
-        select(Account).where(Account.id == inst.account_id)
-    )).scalar_one()
 
     # Decrypt credentials.
     import json as _json
@@ -222,6 +233,20 @@ async def stop_deployment(deployment_id: str, db: AsyncSession = Depends(get_db)
             await container.tick_scheduler.stop_instance(deployment_id)
         except Exception:
             logger.exception("Failed to unregister instance from TickScheduler")
+
+    # Post-stop lifecycle cleanup (release consumers, auto-delete subscriptions).
+    algo = (await db.execute(
+        select(Algorithm).where(Algorithm.id == inst.algorithm_id)
+    )).scalar_one_or_none()
+    account = (await db.execute(
+        select(Account).where(Account.id == inst.account_id)
+    )).scalar_one_or_none()
+    lifecycle = getattr(container, "lifecycle_service", None)
+    if lifecycle is not None and algo is not None and account is not None:
+        try:
+            await lifecycle.post_stop_actions(account, algo, inst)
+        except Exception:
+            pass  # best-effort cleanup, don't block stop
 
     return {"ok": True}
 

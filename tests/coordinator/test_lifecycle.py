@@ -1,19 +1,17 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
-from coordinator.services.lifecycle import LifecycleManager, CompatibilityError
+from unittest.mock import MagicMock
+from coordinator.services.lifecycle import LifecycleService, CompatibilityError
 
 
 @pytest.fixture
 def lifecycle():
-    return LifecycleManager(
-        worker_manager=AsyncMock(),
+    return LifecycleService(
         scraper_manager=MagicMock(),
-        event_bus=AsyncMock(),
     )
 
 
 def test_check_compatibility_passes():
-    result = LifecycleManager.check_compatibility(
+    result = LifecycleService.check_compatibility(
         {
             "supported_asset_types": ["equities", "options"],
             "options_level": 3,
@@ -31,7 +29,7 @@ def test_check_compatibility_passes():
 
 
 def test_check_compatibility_missing_asset_type():
-    result = LifecycleManager.check_compatibility(
+    result = LifecycleService.check_compatibility(
         {
             "supported_asset_types": ["equities"],
             "options_level": None,
@@ -50,7 +48,7 @@ def test_check_compatibility_missing_asset_type():
 
 
 def test_check_compatibility_insufficient_options_level():
-    result = LifecycleManager.check_compatibility(
+    result = LifecycleService.check_compatibility(
         {
             "supported_asset_types": ["equities", "options"],
             "options_level": 1,
@@ -69,7 +67,7 @@ def test_check_compatibility_insufficient_options_level():
 
 
 def test_check_compatibility_missing_feature():
-    result = LifecycleManager.check_compatibility(
+    result = LifecycleService.check_compatibility(
         {
             "supported_asset_types": ["equities"],
             "options_level": None,
@@ -88,7 +86,7 @@ def test_check_compatibility_missing_feature():
 
 
 def test_check_compatibility_unsupported_broker():
-    result = LifecycleManager.check_compatibility(
+    result = LifecycleService.check_compatibility(
         {
             "supported_asset_types": ["equities"],
             "options_level": None,
@@ -107,7 +105,7 @@ def test_check_compatibility_unsupported_broker():
 
 
 def test_check_compatibility_any_broker_ok():
-    result = LifecycleManager.check_compatibility(
+    result = LifecycleService.check_compatibility(
         {
             "supported_asset_types": ["equities"],
             "options_level": None,
@@ -146,6 +144,6 @@ async def test_pre_start_checks_pass(lifecycle):
         required_options_level=None,
         required_account_features=[],
         supported_brokers=None,
-        data_dependencies=None,
+        assets=None,
     )
     await lifecycle.pre_start_checks(account, algorithm, MagicMock(id="inst-1"))

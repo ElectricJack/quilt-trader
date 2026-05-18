@@ -153,6 +153,14 @@ def create_app(
         container.live_feed_aggregator = LiveFeedAggregator(session_factory, encryption=encryption)
         await container.live_feed_aggregator.start()
 
+        from coordinator.services.lifecycle import LifecycleService
+        from coordinator.services.scraper_manager import ScraperManager
+        container.lifecycle_service = LifecycleService(
+            scraper_manager=ScraperManager(),
+            live_feed_manager=container.live_feed_manager,
+            session_factory=session_factory,
+        )
+
         from coordinator.services.live_sample_sink import LiveSampleSink
         from pathlib import Path
         container.live_sample_sink = LiveSampleSink(
