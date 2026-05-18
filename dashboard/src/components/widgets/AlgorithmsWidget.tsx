@@ -34,7 +34,8 @@ export function AlgorithmsWidget() {
   rows.sort((a, b) => b.lifetime - a.lifetime);
 
   const total = rows.reduce((s, r) => s + r.lifetime, 0);
-  const running = rows.filter((r) => r.status === "running").length;
+  const runningRows = rows.filter((r) => r.status === "running");
+  const running = runningRows.length;
   const stopped = rows.length - running;
 
   return (
@@ -51,7 +52,12 @@ export function AlgorithmsWidget() {
         <span>Algorithm</span><span>P&L Curve</span>
         <span className="text-right">Trades</span><span className="text-right">Win %</span><span className="text-right">Lifetime</span>
       </div>
-      {rows.map((r) => (
+      {runningRows.length === 0 && (
+        <div className="px-3.5 py-4 text-xs text-gray-500 text-center">
+          No running deployments.
+        </div>
+      )}
+      {runningRows.map((r) => (
         <div
           key={r.id}
           onClick={() => navigate(`/deployments/${r.id}`)}
