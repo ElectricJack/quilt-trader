@@ -65,6 +65,14 @@ def upgrade() -> None:
     with op.batch_alter_table("live_subscriptions") as batch_op:
         batch_op.drop_column("dependent_count")
 
+    # 5. Rename algorithms.data_dependencies -> algorithms.assets. Reset content
+    # to NULL — existing rows have the old {symbol, timeframe, source} shape that
+    # doesn't map cleanly to {broker, symbol, asset_class}; the user re-installs
+    # affected algorithms after the migration to populate with new-format data.
+    with op.batch_alter_table("algorithms") as batch_op:
+        batch_op.alter_column("data_dependencies", new_column_name="assets")
+    op.execute("UPDATE algorithms SET assets = NULL")
+
 
 def downgrade() -> None:
     # Forward-only migration per spec; no rollback path implemented.

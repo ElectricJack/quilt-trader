@@ -67,7 +67,7 @@ class Algorithm(Base):
     required_options_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     required_account_features: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     supported_brokers: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    data_dependencies: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    assets: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     config_schema: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     custom_events: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     install_status: Mapped[str] = mapped_column(String, nullable=False, default="installed")
