@@ -98,7 +98,7 @@ def _algo_to_response(algo: Algorithm) -> dict:
         "required_options_level": algo.required_options_level,
         "required_account_features": algo.required_account_features,
         "supported_brokers": algo.supported_brokers,
-        "data_dependencies": algo.data_dependencies,
+        "data_dependencies": algo.assets,
         "config_schema": algo.config_schema,
         "custom_events": algo.custom_events,
         "install_status": algo.install_status,
@@ -180,7 +180,7 @@ async def create_algorithm(body: AlgorithmCreate, db: AsyncSession = Depends(get
         required_options_level=body.required_options_level,
         required_account_features=body.required_account_features,
         supported_brokers=body.supported_brokers,
-        data_dependencies=body.data_dependencies,
+        assets=body.data_dependencies,
         config_schema=body.config_schema,
         custom_events=body.custom_events,
         install_status="installed",
@@ -560,12 +560,41 @@ async def install_from_url(body: InstallFromUrlRequest, db: AsyncSession = Depen
             detail=f"Algorithm validation failed: {'; '.join(str(e) for e in val_errors)}",
         )
 
+    # Populate `assets` from the new top-level manifest block if present.
+    # Falls back to a best-effort conversion from the legacy
+    # requirements.data_dependencies (deprecated) — the legacy entries lack
+    # broker / asset_class so the conversion fills them from the manifest's
+    # supported_brokers + asset_types defaults. Entries that can't be resolved
+    # cleanly are dropped (the deploy-time _parse_assets filters strictly).
+    assets_list = list(manifest.assets) if manifest.assets else []
+    if not assets_list and manifest.requirements.data_dependencies:
+        default_broker = (manifest.requirements.brokers or ["alpaca"])[0]
+        default_class = (manifest.requirements.asset_types or ["equities"])[0]
+        for dep in manifest.requirements.data_dependencies:
+            if not isinstance(dep, dict):
+                continue
+            sym = dep.get("symbol")
+            if not sym:
+                continue
+            assets_list.append({
+                "broker": dep.get("broker") or default_broker,
+                "symbol": sym,
+                "asset_class": dep.get("asset_class") or default_class,
+            })
+
     algo = Algorithm(
         repo_url=public_url,
         name=manifest_disk.get("name", manifest.name),
         description=manifest_disk.get("description") or manifest.description,
         version=manifest_disk.get("version") or manifest.version,
         commit_hash=commit_hash,
+        required_asset_types=manifest.requirements.asset_types or None,
+        required_options_level=manifest.requirements.options_level,
+        required_account_features=manifest.requirements.account_features or None,
+        supported_brokers=manifest.requirements.brokers,
+        assets=assets_list or None,
+        config_schema={"parameters": manifest.config_parameters} if manifest.config_parameters else None,
+        custom_events=manifest.custom_events or None,
         install_status="installed",
     )
     db.add(algo)
@@ -691,6 +720,22 @@ async def install_algorithm(body: InstallRequest, db: AsyncSession = Depends(get
                 status_code=422, detail=f"That package is a {mf.type}, not an algorithm."
             )
 
+        assets_list = list(mf.assets) if mf.assets else []
+        if not assets_list and mf.requirements.data_dependencies:
+            default_broker = (mf.requirements.brokers or ["alpaca"])[0]
+            default_class = (mf.requirements.asset_types or ["equities"])[0]
+            for dep in mf.requirements.data_dependencies:
+                if not isinstance(dep, dict):
+                    continue
+                sym = dep.get("symbol")
+                if not sym:
+                    continue
+                assets_list.append({
+                    "broker": dep.get("broker") or default_broker,
+                    "symbol": sym,
+                    "asset_class": dep.get("asset_class") or default_class,
+                })
+
         algo = Algorithm(
             repo_url="",
             source_path=str(src),
@@ -702,7 +747,7 @@ async def install_algorithm(body: InstallRequest, db: AsyncSession = Depends(get
             required_options_level=mf.requirements.options_level,
             required_account_features=mf.requirements.account_features or None,
             supported_brokers=mf.requirements.brokers,
-            data_dependencies=mf.requirements.data_dependencies or None,
+            assets=assets_list or None,
             config_schema={"parameters": mf.config_parameters} if mf.config_parameters else None,
             custom_events=mf.custom_events or None,
             install_status="installed",

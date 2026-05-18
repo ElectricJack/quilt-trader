@@ -32,6 +32,10 @@ class QuiltManifest:
     entry_point: str = ""
     class_name: str = ""
     requirements: ManifestRequirements = field(default_factory=ManifestRequirements)
+    # Top-level `assets:` block (post-2026-05-18 manifest format). Each entry
+    # is {broker, symbol, asset_class}. Replaces the legacy
+    # `requirements.data_dependencies` for live-data subscription declaration.
+    assets: list[dict] = field(default_factory=list)
     config_parameters: list[dict] = field(default_factory=list)
     custom_events: list[dict] = field(default_factory=list)
     schedule: str = ""
@@ -120,6 +124,16 @@ class QuiltManifest:
                     f"data_dependencies entry history_bars must be a positive integer, got {hb!r}"
                 )
 
+        # Parse top-level `assets:` block. Each entry must have broker, symbol,
+        # and asset_class. Entries missing required keys are dropped silently —
+        # the deploy-time _parse_assets helper does the strict filtering.
+        raw_assets = data.get("assets") or []
+        assets: list[dict] = []
+        if isinstance(raw_assets, list):
+            for a in raw_assets:
+                if isinstance(a, dict):
+                    assets.append(a)
+
         return QuiltManifest(
             name=data["name"],
             type=data["type"],
@@ -128,6 +142,7 @@ class QuiltManifest:
             entry_point=data.get("entry_point", ""),
             class_name=data.get("class_name", ""),
             requirements=requirements,
+            assets=assets,
             config_parameters=config_parameters,
             custom_events=custom_events,
             schedule=data.get("schedule", ""),
