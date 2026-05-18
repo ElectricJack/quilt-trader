@@ -548,3 +548,16 @@ class TestTradierStreamReconnect:
         # The trade got delivered.
         assert received_trades[0]["symbol"] == "SPY"
         assert received_trades[0]["price"] == 521.5
+
+
+class TestTradierRejectsCrypto:
+    def test_start_market_data_stream_raises_on_crypto(self):
+        import pytest
+        adapter = TradierAdapter(access_token="t", account_id="A1")
+        with pytest.raises(ValueError, match="crypto"):
+            adapter.start_market_data_stream(
+                symbols=["BTCUSD"],
+                on_trade=lambda t: None,
+                on_quote=lambda q: None,
+                asset_class="crypto",
+            )
