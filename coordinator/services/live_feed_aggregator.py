@@ -234,7 +234,7 @@ class LiveFeedAggregator:
         self._tasks.clear()
         self._states.clear()
 
-    async def start_subscription(self, broker: str, symbol: str) -> None:
+    async def start_subscription(self, broker: str, symbol: str, asset_class: str = "equities") -> None:
         key = (broker, symbol)
         if key in self._tasks:
             return
