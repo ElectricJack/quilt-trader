@@ -280,3 +280,45 @@ async def test_close_propagates_adapter_error_as_500(
     r = await client.post(f"/api/accounts/{account.id}/positions/close", json=body)
     assert r.status_code == 500
     assert "insufficient buying power" in r.text
+
+
+@pytest.mark.asyncio
+async def test_close_succeeds_even_when_account_is_locked(
+    client: AsyncClient, db_session, monkeypatch
+):
+    """The close endpoint is a safety valve and must work even when an
+    algorithm currently holds the account lock. Unlike open_position
+    (which returns 423), close ignores locked_by."""
+    from worker.broker_adapter import OrderResult
+    from coordinator.api.routes import accounts as accounts_routes
+
+    account = Account(
+        name="A", broker_type="alpaca", environment="paper",
+        credentials="{}", supported_asset_types=["equities"],
+        pdt_mode="off",
+        locked_by="instance-running",
+    )
+    db_session.add(account)
+    await db_session.flush()
+    await db_session.commit()
+
+    class FakeAdapter:
+        def submit_order(self, symbol, side, quantity, order_type,
+                         limit_price=None, stop_price=None):
+            return OrderResult(
+                symbol=symbol, side=side, quantity=quantity,
+                order_type=order_type, filled_price=100.0,
+                broker_order_id="ord-locked",
+            )
+        def close(self): pass
+
+    async def fake_adapter_for_account(acct):
+        return FakeAdapter()
+    monkeypatch.setattr(
+        accounts_routes, "_adapter_for_account", fake_adapter_for_account
+    )
+
+    body = {"symbol": "SPY", "asset_type": "equities",
+            "side": "long", "quantity": 1}
+    r = await client.post(f"/api/accounts/{account.id}/positions/close", json=body)
+    assert r.status_code == 200, r.text
