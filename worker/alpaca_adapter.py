@@ -360,13 +360,32 @@ class AlpacaAdapter(BrokerAdapter):
     ) -> "MarketDataStreamHandle":
         from alpaca.data.live import StockDataStream, CryptoDataStream
 
+        # Alpaca's crypto streaming requires base/quote format (BTC/USD), while
+        # the order endpoints accept BTCUSD. Normalize here so callers can use
+        # either form. Heuristic: insert a slash before the last 3 chars if no
+        # slash is present — covers BTC/USD, ETH/USD, LTC/USD, SOL/USD etc.
+        # (Multi-char quote currencies like USDT/USDC would need explicit
+        # handling — not covered here; documented as a follow-up.)
+        # Build a map from streamed-symbol → caller-facing symbol so inbound
+        # ticks dispatch into the aggregator's _SubState keyed by the original
+        # form (without slash). For equities this is identity.
+        if asset_class == "crypto":
+            original_by_streamed = {
+                (s if "/" in s else f"{s[:-3]}/{s[-3:]}"): s
+                for s in symbols
+            }
+            symbols = list(original_by_streamed.keys())
+        else:
+            original_by_streamed = {s: s for s in symbols}
+
         stream_cls = CryptoDataStream if asset_class == "crypto" else StockDataStream
         stream = stream_cls(self._api_key, self._secret_key)
 
         async def _trade_handler(data):
             try:
+                streamed_symbol = getattr(data, "symbol", None)
                 tick = {
-                    "symbol": getattr(data, "symbol", None),
+                    "symbol": original_by_streamed.get(streamed_symbol, streamed_symbol),
                     "timestamp": getattr(data, "timestamp", None) or datetime.now(timezone.utc),
                     "price": float(getattr(data, "price", 0.0) or 0.0),
                     "size": float(getattr(data, "size", 0.0) or 0.0),
@@ -377,8 +396,9 @@ class AlpacaAdapter(BrokerAdapter):
 
         async def _quote_handler(data):
             try:
+                streamed_symbol = getattr(data, "symbol", None)
                 tick = {
-                    "symbol": getattr(data, "symbol", None),
+                    "symbol": original_by_streamed.get(streamed_symbol, streamed_symbol),
                     "timestamp": getattr(data, "timestamp", None) or datetime.now(timezone.utc),
                     "bid": float(getattr(data, "bid_price", 0.0) or 0.0),
                     "ask": float(getattr(data, "ask_price", 0.0) or 0.0),
