@@ -701,6 +701,22 @@ export function useOpenPosition(accountId: string) {
   });
 }
 
+// ── U3: close position ──
+
+export function useClosePosition(accountId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof api.closePosition>[1]) =>
+      api.closePosition(accountId, body),
+    onSuccess: () => {
+      // Match the actual query key used by useBrokerInfo so the table refetches.
+      void qc.invalidateQueries({
+        queryKey: ["accounts", accountId, "broker-info"],
+      });
+    },
+  });
+}
+
 // ── U5: live subscriptions + compare ──
 
 export function useLiveSubscriptions() {

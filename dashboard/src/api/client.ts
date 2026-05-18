@@ -642,6 +642,26 @@ export const api = {
     });
   },
 
+  // ── U3: close position ──
+  closePosition(
+    accountId: string,
+    body: {
+      symbol: string;
+      asset_type: string;
+      side: "long" | "short";
+      quantity: number;
+    }
+  ): Promise<{
+    broker_order_id: string | null;
+    filled_price: number | null;
+    status: "filled" | "pending";
+  }> {
+    return request(`/api/accounts/${accountId}/positions/close`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
   // ── U1: broker asset-type catalog ──
   getBrokerAssetTypes(brokerType: string): Promise<{ asset_types: string[] }> {
     return request<{ asset_types: string[] }>(`/api/brokers/${brokerType}/asset-types`);
