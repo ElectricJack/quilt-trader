@@ -32,9 +32,9 @@ class QuiltManifest:
     entry_point: str = ""
     class_name: str = ""
     requirements: ManifestRequirements = field(default_factory=ManifestRequirements)
-    # Top-level `assets:` block (post-2026-05-18 manifest format). Each entry
-    # is {broker, symbol, asset_class}. Replaces the legacy
-    # `requirements.data_dependencies` for live-data subscription declaration.
+    # Top-level `assets:` block. Each entry is {symbol, asset_class}. The
+    # deployment's account decides which broker handles routing; `broker:`
+    # in a manifest is parsed for back-compat but silently stripped.
     assets: list[dict] = field(default_factory=list)
     config_parameters: list[dict] = field(default_factory=list)
     custom_events: list[dict] = field(default_factory=list)
