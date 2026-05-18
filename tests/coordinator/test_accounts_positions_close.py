@@ -192,3 +192,48 @@ async def test_close_marks_internal_position_closed_and_writes_trade(
     assert trades[0].filled_price == 520.0
     assert trades[0].broker_txn_id == "ord-xyz"
     assert trades[0].source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_close_succeeds_when_no_internal_position_record(
+    client: AsyncClient, db_session, monkeypatch
+):
+    """If the user opened a position directly in the broker (no internal
+    Position row), the close should still succeed — just submit the broker
+    order and skip the DB update."""
+    from worker.broker_adapter import OrderResult
+    from coordinator.api.routes import accounts as accounts_routes
+    from coordinator.database.models import TradeLog
+    from sqlalchemy import select
+
+    account = Account(
+        name="A", broker_type="alpaca", environment="paper",
+        credentials="{}", supported_asset_types=["equities"], pdt_mode="off",
+    )
+    db_session.add(account)
+    await db_session.flush()
+    await db_session.commit()
+
+    class FakeAdapter:
+        def submit_order(self, symbol, side, quantity, order_type,
+                         limit_price=None, stop_price=None):
+            return OrderResult(
+                symbol=symbol, side=side, quantity=quantity,
+                order_type=order_type, filled_price=42.0,
+                broker_order_id="ord-1",
+            )
+        def close(self): pass
+
+    async def fake_adapter_for_account(acct):
+        return FakeAdapter()
+    monkeypatch.setattr(
+        accounts_routes, "_adapter_for_account", fake_adapter_for_account
+    )
+
+    body = {"symbol": "AAPL", "asset_type": "equities",
+            "side": "long", "quantity": 1}
+    r = await client.post(f"/api/accounts/{account.id}/positions/close", json=body)
+    assert r.status_code == 200
+    # No TradeLog rows should be written if there was no Position to attribute to.
+    trades = (await db_session.execute(select(TradeLog))).scalars().all()
+    assert trades == []
