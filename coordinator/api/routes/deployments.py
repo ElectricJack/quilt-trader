@@ -130,6 +130,12 @@ async def start_deployment(deployment_id: str, db: AsyncSession = Depends(get_db
     if algo is None or account is None:
         raise HTTPException(status_code=500, detail="Algorithm or account missing")
 
+    if not getattr(account, "can_trade", True):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Account '{account.name}' is a data-only provider and cannot run algorithms",
+        )
+
     # Run pre-start lifecycle checks (auto-subscribe, compatibility).
     lifecycle = getattr(get_container(), "lifecycle_service", None)
     if lifecycle is not None:
