@@ -225,7 +225,7 @@ class LiveFeedAggregator:
                 )
             ).scalars().all()
             for r in rows:
-                await self.start_subscription(r.broker, r.symbol)
+                await self.start_subscription(r.broker, r.symbol, r.asset_class)
         self._retention_task = asyncio.create_task(self._retention_loop())
 
     async def stop(self) -> None:
@@ -257,7 +257,7 @@ class LiveFeedAggregator:
         if key in self._tasks:
             return
         self._states[key] = _SubState()
-        self._tasks[key] = asyncio.create_task(self._run(broker, symbol))
+        self._tasks[key] = asyncio.create_task(self._run(broker, symbol, asset_class))
 
     async def stop_subscription(self, broker: str, symbol: str) -> None:
         key = (broker, symbol)
@@ -277,16 +277,40 @@ class LiveFeedAggregator:
                 except Exception:  # noqa: BLE001
                     pass
 
+    async def _adapter_for_broker(self, broker: str) -> Optional[object]:
+        """Resolve credentials and construct the broker adapter.
+
+        Returns the adapter, or None if the account/credentials could not be
+        resolved. Extracted so tests can monkeypatch this method to inject a
+        fake adapter without a real DB or credential store.
+        """
+        account = await self._resolve_live_feed_account(broker)
+        if account is None:
+            return None
+        creds = self._decrypt_creds(account)
+        return self._adapter_factory(account.broker_type, account.environment, creds)
+
     # ------- main task -------
-    async def _run(self, broker: str, symbol: str) -> None:
+    async def _run(self, broker: str, symbol: str, asset_class: str = "equities") -> None:
         key = (broker, symbol)
         state = self._states[key]
         logger.info("LiveFeedAggregator starting for %s/%s", broker, symbol)
         loop = asyncio.get_running_loop()
 
-        # Resolve which account's creds power the broker's live feed.
-        account = await self._resolve_live_feed_account(broker)
-        if account is None:
+        # Resolve credentials and construct the adapter via _adapter_for_broker
+        # so tests can monkeypatch that single seam.
+        try:
+            adapter = await self._adapter_for_broker(broker)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Failed to construct adapter for %s", broker)
+            await self._mark_subscription_error(broker, symbol, f"adapter init failed: {e}")
+            try:
+                while True:
+                    await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                return
+
+        if adapter is None:
             logger.warning(
                 "No live_feed_account.%s setting (or account); aggregator idles for %s/%s",
                 broker, broker, symbol,
@@ -295,20 +319,6 @@ class LiveFeedAggregator:
                 broker, symbol,
                 f"No live_feed_account.{broker} configured",
             )
-            try:
-                while True:
-                    await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                return
-
-        creds = self._decrypt_creds(account)
-        try:
-            adapter = self._adapter_factory(
-                account.broker_type, account.environment, creds
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Failed to construct adapter for %s", broker)
-            await self._mark_subscription_error(broker, symbol, f"adapter init failed: {e}")
             try:
                 while True:
                     await asyncio.sleep(60)
@@ -343,7 +353,7 @@ class LiveFeedAggregator:
 
         try:
             state.handle = adapter.start_market_data_stream(
-                [symbol], _on_trade, _on_quote
+                [symbol], _on_trade, _on_quote, asset_class=asset_class,
             )
         except NotImplementedError:
             logger.warning(
