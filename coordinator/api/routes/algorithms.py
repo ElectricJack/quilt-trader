@@ -40,6 +40,27 @@ router = APIRouter(tags=["algorithms"])
 # Override in tests via monkeypatch.
 PACKAGE_ROOT = Path("data/packages")
 
+_VALID_ASSET_CLASSES = {"equities", "crypto", "options"}
+
+
+def _validate_assets(raw: list) -> list[dict]:
+    """Validate and normalize a list of asset entries.
+
+    - Rejects entries without 'symbol'.
+    - Rejects entries with an unrecognised 'asset_class'.
+    - Defaults missing 'asset_class' to 'equities'.
+    - Returns the normalised list (copies of the input dicts, never mutates).
+    """
+    result = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry.get("symbol"):
+            raise ValueError("missing 'symbol'")
+        ac = entry.get("asset_class", "equities")
+        if ac not in _VALID_ASSET_CLASSES:
+            raise ValueError(f"invalid asset_class: {ac!r}")
+        result.append({**entry, "asset_class": ac})
+    return result
+
 
 def _derive_package_dir_name(repo_url: str) -> str:
     """Derive the on-disk directory name from a GitHub repo URL (last path segment)."""
@@ -582,6 +603,11 @@ async def install_from_url(body: InstallFromUrlRequest, db: AsyncSession = Depen
                 "asset_class": dep.get("asset_class") or default_class,
             })
 
+    try:
+        assets_list = _validate_assets(assets_list)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
     algo = Algorithm(
         repo_url=public_url,
         name=manifest_disk.get("name", manifest.name),
@@ -735,6 +761,11 @@ async def install_algorithm(body: InstallRequest, db: AsyncSession = Depends(get
                     "symbol": sym,
                     "asset_class": dep.get("asset_class") or default_class,
                 })
+
+        try:
+            assets_list = _validate_assets(assets_list)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
         algo = Algorithm(
             repo_url="",
