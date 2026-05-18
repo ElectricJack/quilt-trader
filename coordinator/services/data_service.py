@@ -79,6 +79,31 @@ class DataService:
             return pd.read_parquet(path)
         return pd.read_csv(path)
 
+    @staticmethod
+    def aggregate_bars(df_1min: pd.DataFrame, target: str) -> pd.DataFrame:
+        """Lazily aggregate 1-min OHLCV bars to a higher timeframe.
+
+        target: "1min" (pass-through) | "5min" | "15min" | "1h" | "1d".
+        df_1min must have columns: timestamp, open, high, low, close, volume.
+        Returns the aggregated DataFrame, same column shape.
+        """
+        if target == "1min":
+            return df_1min
+        pandas_rule = {"5min": "5min", "15min": "15min", "1h": "1h", "1d": "1D"}.get(target)
+        if pandas_rule is None:
+            raise ValueError(f"unsupported target timeframe: {target!r}")
+        df = df_1min.copy()
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        df = df.set_index("timestamp")
+        out = df.resample(pandas_rule, label="left", closed="left").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }).dropna(subset=["open"]).reset_index()
+        return out
+
     def list_available_market_data(self) -> list[dict]:
         results = []
         if not os.path.exists(self._market_dir):
