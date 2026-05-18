@@ -229,3 +229,47 @@ requirements:
 """
     with pytest.raises(ManifestError):
         QuiltManifest.from_string(yaml_text)
+
+
+def test_manifest_assets_without_broker_field():
+    """Asset entries no longer need `broker:` — only symbol + asset_class."""
+    from sdk.manifest import QuiltManifest
+    yaml_text = """
+name: test
+type: algorithm
+version: 1.0.0
+entry_point: a.py
+class_name: A
+requirements:
+  asset_types: [equities, crypto]
+assets:
+  - symbol: SPY
+    asset_class: equities
+  - symbol: BTCUSD
+    asset_class: crypto
+"""
+    m = QuiltManifest.from_string(yaml_text)
+    assert len(m.assets) == 2
+    assert m.assets[0] == {"symbol": "SPY", "asset_class": "equities"}
+    assert m.assets[1] == {"symbol": "BTCUSD", "asset_class": "crypto"}
+
+
+def test_manifest_assets_strips_broker_field_for_backwards_compat():
+    """If an old manifest still has `broker:` in an asset entry, it's parsed
+    but the broker field is stripped (the deployment's account decides routing)."""
+    from sdk.manifest import QuiltManifest
+    yaml_text = """
+name: test
+type: algorithm
+version: 1.0.0
+entry_point: a.py
+class_name: A
+requirements:
+  asset_types: [equities]
+assets:
+  - broker: alpaca
+    symbol: SPY
+    asset_class: equities
+"""
+    m = QuiltManifest.from_string(yaml_text)
+    assert m.assets == [{"symbol": "SPY", "asset_class": "equities"}]

@@ -124,15 +124,22 @@ class QuiltManifest:
                     f"data_dependencies entry history_bars must be a positive integer, got {hb!r}"
                 )
 
-        # Parse top-level `assets:` block. Each entry must have broker, symbol,
-        # and asset_class. Entries missing required keys are dropped silently —
-        # the deploy-time _parse_assets helper does the strict filtering.
+        # Parse top-level `assets:` block. Only symbol + asset_class are kept;
+        # broker (and any other legacy fields) are stripped — the deployment's
+        # account decides routing. Entries without a symbol are dropped silently.
         raw_assets = data.get("assets") or []
         assets: list[dict] = []
         if isinstance(raw_assets, list):
             for a in raw_assets:
-                if isinstance(a, dict):
-                    assets.append(a)
+                if not isinstance(a, dict):
+                    continue
+                symbol = a.get("symbol")
+                if not symbol:
+                    continue
+                assets.append({
+                    "symbol": symbol,
+                    "asset_class": a.get("asset_class", "equities"),
+                })
 
         return QuiltManifest(
             name=data["name"],
