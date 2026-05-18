@@ -187,9 +187,11 @@ class LiveFeedAggregator:
         self._states: dict[tuple[str, str], _SubState] = {}
         self._streams: dict[tuple[str, str], _StreamConn] = {}
         self._retention_task: Optional[asyncio.Task] = None
+        self._sweep_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._bar_subscribers: dict[tuple[str, str, str], set[Callable]] = {}
         self._event_subscribers: dict[tuple[str, str], set[Callable]] = {}
+        self._coord_worker_id: Optional[str] = None
 
     @staticmethod
     def _default_adapter_factory(broker_type: str, environment: str, credentials: dict):
@@ -244,8 +246,15 @@ class LiveFeedAggregator:
             for r in rows:
                 await self.start_subscription(r.broker, r.symbol, r.asset_class)
         self._retention_task = asyncio.create_task(self._retention_loop())
+        self._sweep_task = asyncio.create_task(self._stale_stream_sweep())
 
     async def stop(self) -> None:
+        if self._sweep_task:
+            self._sweep_task.cancel()
+            try:
+                await self._sweep_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         if self._retention_task:
             self._retention_task.cancel()
             try:
@@ -632,6 +641,81 @@ class LiveFeedAggregator:
                 if last_tick is not None:
                     sub.last_tick_at = last_tick
                 await session.commit()
+
+    # ------- stream disconnect / reconnect events -------
+    async def _emit_stream_event(
+        self,
+        broker: str,
+        asset_class: str,
+        symbols: list[str],
+        event_type: str,
+        reason: str = "",
+    ) -> None:
+        """Insert a worker_activity row describing a stream disconnect/reconnect.
+
+        event_type='stream_disconnect' → severity='warn'.
+        event_type='stream_reconnect'  → severity='info'.
+        """
+        if self._sf is None or self._coord_worker_id is None:
+            return
+        severity = "warn" if event_type == "stream_disconnect" else "info"
+        from coordinator.database.models import WorkerActivity
+        async with self._sf() as session:
+            session.add(WorkerActivity(
+                worker_id=self._coord_worker_id,
+                kind="event",
+                event_type=event_type,
+                severity=severity,
+                payload={
+                    "broker": broker,
+                    "asset_class": asset_class,
+                    "symbols": list(symbols),
+                    "reason": reason,
+                },
+            ))
+            await session.commit()
+
+    async def _stale_stream_sweep(self) -> None:
+        """Background task: every 30s, check if any stream has had no tick for
+        > 60s during expected hours. If so, emit a stream_disconnect event."""
+        while True:
+            try:
+                await asyncio.sleep(30.0)
+            except asyncio.CancelledError:
+                return
+            now = self._now()
+            for key, conn in list(self._streams.items()):
+                broker, asset_class = key
+                # Pick any state under this connection to read last_tick_at.
+                relevant_states = [
+                    self._states.get((broker, sym)) for sym in conn.symbols
+                ]
+                last = max(
+                    (s.last_tick_at for s in relevant_states if s and s.last_tick_at),
+                    default=None,
+                )
+                if last is None or now - last > timedelta(seconds=60):
+                    # Already-emitted suppression: simple flag on the conn.
+                    already = getattr(conn, "_disconnect_emitted", False)
+                    if not already:
+                        await self._emit_stream_event(
+                            broker=broker,
+                            asset_class=asset_class,
+                            symbols=sorted(conn.symbols),
+                            event_type="stream_disconnect",
+                            reason=f"no tick for > 60s (last={last})",
+                        )
+                        conn._disconnect_emitted = True
+                else:
+                    if getattr(conn, "_disconnect_emitted", False):
+                        await self._emit_stream_event(
+                            broker=broker,
+                            asset_class=asset_class,
+                            symbols=sorted(conn.symbols),
+                            event_type="stream_reconnect",
+                            reason="ticks resumed",
+                        )
+                        conn._disconnect_emitted = False
 
     # ------- retention sweep -------
     async def _retention_loop(self) -> None:
