@@ -153,6 +153,22 @@ def create_app(
         container.live_feed_aggregator = LiveFeedAggregator(session_factory, encryption=encryption)
         await container.live_feed_aggregator.start()
 
+        # Upsert a Worker row for the coordinator itself so that
+        # LiveFeedAggregator._emit_stream_event can write worker_activity rows
+        # (WorkerActivity.worker_id is a non-nullable FK into workers).
+        from coordinator.database.models import Worker as _Worker
+        from sqlalchemy import select as _select
+        async with session_factory() as _s:
+            _coord_worker = (await _s.execute(
+                _select(_Worker).where(_Worker.name == "coord")
+            )).scalar_one_or_none()
+            if _coord_worker is None:
+                _coord_worker = _Worker(name="coord", status="online")
+                _s.add(_coord_worker)
+                await _s.flush()
+                await _s.commit()
+            container.live_feed_aggregator._coord_worker_id = _coord_worker.id
+
         from coordinator.services.lifecycle import LifecycleService
         from coordinator.services.scraper_manager import ScraperManager
         container.lifecycle_service = LifecycleService(

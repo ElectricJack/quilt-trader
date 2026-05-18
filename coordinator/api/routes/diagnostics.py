@@ -72,12 +72,14 @@ async def diagnostics(db: AsyncSession = Depends(get_db)) -> dict:
         checks.append({"name": "live_finalizer", "status": "PASS",
                        "message": f"all {len(running_ids)} running deployments fresh"})
 
-    # 4. workers
+    # 4. workers — exclude the internal "coord" row (auto-created at startup).
     online_count = (await db.execute(
-        select(func.count(Worker.id)).where(Worker.status == "online")
+        select(func.count(Worker.id)).where(
+            Worker.status == "online", Worker.name != "coord",
+        )
     )).scalar_one()
     total_count = (await db.execute(
-        select(func.count(Worker.id))
+        select(func.count(Worker.id)).where(Worker.name != "coord")
     )).scalar_one()
     if total_count == 0:
         checks.append({"name": "workers", "status": "WARN",

@@ -44,16 +44,25 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ## Live data feeds
 
-### Quote-only events bucket into bars with volume=0
-- **Surfaced by:** Tradier-slow investigation on 2026-05-18 (commit `6c0f92c`).
-- **Why deferred:** the screenshot showed many rows with `vol=0` and OHLC all identical to the last-price. These come from quote events being bucketed as bars when no trades occur (e.g. weekends, after-hours, or stream sputtering). Not strictly wrong but misleading — looks like "the market was open and nothing moved" rather than "nothing actually traded".
-- **What's needed:** decide the policy. Options: (a) drop bars where `volume == 0 and high == low`, (b) tag them differently in the UI, (c) require at least one trade event to emit a bar. (b) is probably the right answer because the data still has signal for bid/ask presence.
+### Per-stream `on_disconnect` callback wired into broker handles
+- **Surfaced by:** [2026-05-18-unified-live-subscriptions-design.md](specs/2026-05-18-unified-live-subscriptions-design.md)
+- **Why deferred:** `_stale_stream_sweep` detects disconnects via a heuristic (no tick for N seconds). A first-class `on_disconnect` callback wired directly into `_AlpacaStreamHandle` and `_TradierStreamHandle` would detect drops instantly and with less false-positive risk.
+- **What's needed:** add an optional `on_disconnect` param to `MarketDataStreamHandle.close` (or as a callback on the handle itself); wire it in each broker adapter so the aggregator is notified immediately when the underlying WS connection closes.
 
-### Stream disconnects aren't user-visible
-- **Surfaced by:** Tradier-slow investigation on 2026-05-18 (commit `6c0f92c`).
-- **Why deferred:** the reconnect fix logs to coordinator stdout when the stream drops, but nothing surfaces to the dashboard. A user looking at the live-subscriptions page only sees stale bars stop appearing.
-- **What's needed:** emit a `worker_activity` event (severity=warn) on stream disconnect with the provider name + reason, and an `info` event on successful reconnect. Surface a "last-tick-at" column on the live-subscriptions page so freshness is one glance.
-- **Note:** This naturally folds into sub-project 2 (unified subscription model) since the same observability gap applies to Alpaca and any future provider.
+### `add_symbols` / `remove_symbols` on stream handles
+- **Surfaced by:** [2026-05-18-unified-live-subscriptions-design.md](specs/2026-05-18-unified-live-subscriptions-design.md)
+- **Why deferred:** today, adding or removing a symbol from a running subscription tears down and restarts the whole stream. Both `_AlpacaStreamHandle` and `_TradierStreamHandle` need `add_symbols` / `remove_symbols` methods so multi-symbol updates are surgical rather than restart-from-scratch.
+- **What's needed:** implement `add_symbols(syms)` / `remove_symbols(syms)` on each handle class; update `LiveFeedAggregator.start_subscription` / `stop_subscription` to call them when a handle already exists for that broker.
+
+### Validate `Algorithm.assets` shape at install time
+- **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
+- **Why deferred:** the `assets` field on `Algorithm` is freeform JSON. An algorithm installed with a malformed assets list silently skips subscription wiring.
+- **What's needed:** add a Pydantic validator (or JSON Schema) that checks each entry has `broker`, `symbol`, and `asset_class`; reject installs that fail validation with a clear 422.
+
+### Push updated `quilt.yaml` for `simple-ma-crossover` to upstream GitHub repo
+- **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
+- **Why deferred:** `data/packages/quilt-trader-test-algo/quilt.yaml` was updated locally to the new `assets:` format, but `data/packages/` is gitignored. A re-install from the upstream GitHub repo will revert to the old format.
+- **What's needed:** open a PR on the upstream `quilt-trader-test-algo` repo updating `quilt.yaml` to include the `assets:` block in the new schema.
 
 ---
 

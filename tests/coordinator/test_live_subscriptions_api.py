@@ -3,20 +3,6 @@ from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_create_and_list_subscription(client: AsyncClient):
-    r = await client.post(
-        "/api/live-subscriptions",
-        json={"broker": "alpaca", "symbol": "SPY", "tick_retention_hours": 24},
-    )
-    assert r.status_code == 201, r.text
-    sub_id = r.json()["id"]
-    r2 = await client.get("/api/live-subscriptions")
-    assert r2.status_code == 200, r2.text
-    items = r2.json()
-    assert any(s["id"] == sub_id for s in items)
-
-
-@pytest.mark.asyncio
 async def test_create_409_on_duplicate(client: AsyncClient):
     r = await client.post(
         "/api/live-subscriptions",

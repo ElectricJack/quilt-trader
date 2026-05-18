@@ -71,7 +71,9 @@ async def create_worker(body: WorkerCreate, db: AsyncSession = Depends(get_db)):
 
 @router.get("")
 async def list_workers(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Worker))
+    # Exclude the internal "coord" worker row (auto-created at startup) from
+    # the user-facing worker list; it is not a user-registered worker node.
+    result = await db.execute(select(Worker).where(Worker.name != "coord"))
     workers = result.scalars().all()
     return [_to_response(w) for w in workers]
 

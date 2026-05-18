@@ -74,3 +74,27 @@ async def test_container_holds_encryption(app):
 
     container = get_container()
     assert container.encryption is not None
+
+
+@pytest.mark.asyncio
+async def test_live_feed_aggregator_wired_with_encryption(app):
+    """Regression: aggregator must receive the EncryptionService, otherwise
+    account credentials cannot be decrypted and broker adapters fail to build.
+    """
+    from coordinator.api.dependencies import get_container
+
+    container = get_container()
+    assert container.live_feed_aggregator is not None
+    assert container.live_feed_aggregator._encryption is container.encryption
+
+
+@pytest.mark.asyncio
+async def test_live_feed_aggregator_has_coord_worker_id(app):
+    """Lifespan must upsert a coord Worker row and pin its id onto the
+    aggregator so that _emit_stream_event can write worker_activity rows.
+    """
+    from coordinator.api.dependencies import get_container
+
+    container = get_container()
+    assert container.live_feed_aggregator is not None
+    assert container.live_feed_aggregator._coord_worker_id is not None
