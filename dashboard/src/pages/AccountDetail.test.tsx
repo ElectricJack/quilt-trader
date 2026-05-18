@@ -26,6 +26,7 @@ vi.mock("../api/hooks", () => ({
       positions: [
         {
           symbol: "SPY", quantity: 5, side: "long",
+          asset_class: "equities",
           avg_price: 500, current_price: 521.23,
           unrealized_pnl: 106.15, market_value: 2606.15,
         },

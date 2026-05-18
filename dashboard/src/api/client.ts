@@ -75,6 +75,7 @@ export interface BrokerPosition {
   symbol: string;
   quantity: number;
   side: string;
+  asset_class: string;
   avg_price: number;
   current_price: number;
   unrealized_pnl: number;

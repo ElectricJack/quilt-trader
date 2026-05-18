@@ -438,7 +438,7 @@ export function AccountDetail() {
     closePos.mutate(
       {
         symbol: closeTarget.symbol,
-        asset_type: "equities",  // v1: equities only; broker-info doesn't expose asset_type today
+        asset_type: closeTarget.asset_class || "equities",
         side: closeTarget.side === "short" ? "short" : "long",
         quantity: closeTarget.quantity,
       },
