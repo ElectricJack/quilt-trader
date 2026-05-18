@@ -40,6 +40,23 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+---
+
+## Live data feeds
+
+### Quote-only events bucket into bars with volume=0
+- **Surfaced by:** Tradier-slow investigation on 2026-05-18 (commit `6c0f92c`).
+- **Why deferred:** the screenshot showed many rows with `vol=0` and OHLC all identical to the last-price. These come from quote events being bucketed as bars when no trades occur (e.g. weekends, after-hours, or stream sputtering). Not strictly wrong but misleading — looks like "the market was open and nothing moved" rather than "nothing actually traded".
+- **What's needed:** decide the policy. Options: (a) drop bars where `volume == 0 and high == low`, (b) tag them differently in the UI, (c) require at least one trade event to emit a bar. (b) is probably the right answer because the data still has signal for bid/ask presence.
+
+### Stream disconnects aren't user-visible
+- **Surfaced by:** Tradier-slow investigation on 2026-05-18 (commit `6c0f92c`).
+- **Why deferred:** the reconnect fix logs to coordinator stdout when the stream drops, but nothing surfaces to the dashboard. A user looking at the live-subscriptions page only sees stale bars stop appearing.
+- **What's needed:** emit a `worker_activity` event (severity=warn) on stream disconnect with the provider name + reason, and an `info` event on successful reconnect. Surface a "last-tick-at" column on the live-subscriptions page so freshness is one glance.
+- **Note:** This naturally folds into sub-project 2 (unified subscription model) since the same observability gap applies to Alpaca and any future provider.
+
+---
+
 ## How to use this file
 
 When **deferring work** in a new spec:
