@@ -464,3 +464,87 @@ class TestTradierAdapter:
         adapter.get_transactions(since)
         # 100 days / 30-day windows = 4 calls.
         assert mock_client.get.call_count >= 3
+
+
+class TestTradierStreamReconnect:
+    """When the long-poll HTTP stream dies, the handle must reconnect with
+    backoff rather than letting the worker thread exit silently."""
+
+    def test_stream_reconnects_after_disconnect(self):
+        """First GET raises ConnectionError; second GET delivers a tick."""
+        import json
+        import threading
+        from worker.tradier_adapter import _TradierStreamHandle
+
+        # Track which call is which.
+        post_calls = []
+        get_calls = []
+        received_trades: list[dict] = []
+        trade_received = threading.Event()
+
+        def fake_post(url, headers=None, timeout=None):
+            post_calls.append(url)
+            return _mock_response({"stream": {"sessionid": f"sess-{len(post_calls)}",
+                                              "url": "http://fake/markets/events"}})
+
+        class _FakeStreamResp:
+            """Yields lines from `lines`, then exits cleanly OR raises."""
+            def __init__(self, lines, raise_after=False):
+                self._lines = list(lines)
+                self._raise_after = raise_after
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def raise_for_status(self):
+                pass
+            def iter_lines(self, decode_unicode=True):
+                for ln in self._lines:
+                    yield ln
+                if self._raise_after:
+                    import requests as _r
+                    raise _r.exceptions.ConnectionError("simulated drop")
+            def close(self):
+                pass
+
+        def fake_get(url, params=None, headers=None, stream=None, timeout=None):
+            get_calls.append(params.get("sessionid") if params else None)
+            if len(get_calls) == 1:
+                # First connection: deliver no lines, then crash.
+                return _FakeStreamResp([], raise_after=True)
+            # Second connection: deliver one trade event, then loop forever
+            # (so the test thread must close to exit).
+            line = json.dumps({"type": "trade", "symbol": "SPY",
+                               "date": "2026-05-18T16:30:00Z",
+                               "price": 521.5, "size": 100})
+            return _FakeStreamResp([line], raise_after=False)
+
+        def on_trade(t):
+            received_trades.append(t)
+            trade_received.set()
+
+        with patch("requests.post", side_effect=fake_post), \
+             patch("requests.get", side_effect=fake_get):
+            handle = _TradierStreamHandle(
+                stream_base="http://fake",
+                access_token="tok",
+                symbols=["SPY"],
+                on_trade=on_trade,
+                on_quote=lambda q: None,
+            )
+            # Shrink the backoff so the test isn't slow.
+            handle._BACKOFF_INITIAL_S = 0.05
+            handle._BACKOFF_MAX_S = 0.05
+            # Wait for the second connection to deliver a tick.
+            assert trade_received.wait(timeout=3.0), \
+                f"no trade received; post_calls={len(post_calls)}, get_calls={len(get_calls)}"
+            handle.close()
+
+        # Two sessions obtained (initial + after disconnect), two GETs issued.
+        assert len(post_calls) >= 2
+        assert len(get_calls) >= 2
+        # Sessions are distinct on reconnect.
+        assert get_calls[0] != get_calls[1]
+        # The trade got delivered.
+        assert received_trades[0]["symbol"] == "SPY"
+        assert received_trades[0]["price"] == 521.5

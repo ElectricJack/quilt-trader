@@ -337,31 +337,10 @@ class TradierAdapter(BrokerAdapter):
         on_trade,
         on_quote,
     ) -> "MarketDataStreamHandle":
-        import requests
-
-        # Tradier's market events stream requires a short-lived session id
-        # obtained via POST /v1/markets/events/session, then a long-running
-        # GET /v1/markets/events?sessionid=...&symbols=...&filter=trade,quote.
         # Note: streaming uses the production base URL even from sandbox keys.
-        stream_base = _LIVE_BASE if not self._sandbox else _LIVE_BASE
-        sess_resp = requests.post(
-            f"{stream_base}/markets/events/session",
-            headers={
-                "Authorization": f"Bearer {self._access_token}",
-                "Accept": "application/json",
-            },
-            timeout=10,
-        )
-        sess_resp.raise_for_status()
-        sess = sess_resp.json().get("stream", {})
-        session_id = sess.get("sessionid")
-        if not session_id:
-            raise RuntimeError("Tradier market events session: no sessionid returned")
-        url = sess.get("url") or f"{stream_base}/markets/events"
-
+        stream_base = _LIVE_BASE
         return _TradierStreamHandle(
-            url=url,
-            session_id=session_id,
+            stream_base=stream_base,
             access_token=self._access_token,
             symbols=symbols,
             on_trade=on_trade,
@@ -370,19 +349,27 @@ class TradierAdapter(BrokerAdapter):
 
 
 class _TradierStreamHandle(MarketDataStreamHandle):
-    """Long-poll chunked HTTP stream of Tradier market events."""
+    """Long-poll chunked HTTP stream of Tradier market events.
+
+    The stream is a chunked HTTP response that Tradier may drop at any
+    time (idle timeout, server restart, expired session). The thread
+    reconnects with exponential backoff so we don't end up with the
+    advertised tick rate sitting on a dead socket — which previously
+    led to bars stopping at the moment of disconnect with no warning.
+    """
+
+    _BACKOFF_INITIAL_S = 1.0
+    _BACKOFF_MAX_S = 30.0
 
     def __init__(
         self,
-        url: str,
-        session_id: str,
+        stream_base: str,
         access_token: str,
         symbols: list[str],
         on_trade,
         on_quote,
     ) -> None:
-        self._url = url
-        self._session_id = session_id
+        self._stream_base = stream_base
         self._access_token = access_token
         self._symbols = symbols
         self._on_trade = on_trade
@@ -394,41 +381,77 @@ class _TradierStreamHandle(MarketDataStreamHandle):
         )
         self._thread.start()
 
+    def _obtain_session(self) -> tuple[str, str]:
+        """POST to get a fresh session id + stream url. Short-lived so we
+        re-obtain on every (re)connect."""
+        import requests
+
+        resp = requests.post(
+            f"{self._stream_base}/markets/events/session",
+            headers={
+                "Authorization": f"Bearer {self._access_token}",
+                "Accept": "application/json",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        sess = resp.json().get("stream", {})
+        session_id = sess.get("sessionid")
+        if not session_id:
+            raise RuntimeError("Tradier market events session: no sessionid returned")
+        url = sess.get("url") or f"{self._stream_base}/markets/events"
+        return session_id, url
+
     def _run(self) -> None:
         import requests
 
-        try:
-            params = {
-                "sessionid": self._session_id,
-                "symbols": ",".join(self._symbols),
-                "filter": "trade,quote",
-                "linebreak": "true",
-            }
-            with requests.get(
-                self._url,
-                params=params,
-                headers={
-                    "Authorization": f"Bearer {self._access_token}",
-                    "Accept": "application/json",
-                },
-                stream=True,
-                timeout=None,
-            ) as resp:
-                self._response = resp
-                resp.raise_for_status()
-                for raw in resp.iter_lines(decode_unicode=True):
-                    if self._stop.is_set():
-                        break
-                    if not raw:
-                        continue
-                    try:
-                        msg = json.loads(raw)
-                    except (ValueError, TypeError):
-                        continue
-                    self._dispatch(msg)
-        except Exception:  # noqa: BLE001
-            if not self._stop.is_set():
-                logger.exception("tradier stream thread crashed")
+        backoff = self._BACKOFF_INITIAL_S
+        while not self._stop.is_set():
+            try:
+                session_id, url = self._obtain_session()
+                params = {
+                    "sessionid": session_id,
+                    "symbols": ",".join(self._symbols),
+                    "filter": "trade,quote",
+                    "linebreak": "true",
+                }
+                with requests.get(
+                    url,
+                    params=params,
+                    headers={
+                        "Authorization": f"Bearer {self._access_token}",
+                        "Accept": "application/json",
+                    },
+                    stream=True,
+                    timeout=None,
+                ) as resp:
+                    self._response = resp
+                    resp.raise_for_status()
+                    # Successfully connected — reset backoff for the next failure.
+                    backoff = self._BACKOFF_INITIAL_S
+                    for raw in resp.iter_lines(decode_unicode=True):
+                        if self._stop.is_set():
+                            break
+                        if not raw:
+                            continue
+                        try:
+                            msg = json.loads(raw)
+                        except (ValueError, TypeError):
+                            continue
+                        self._dispatch(msg)
+                # Reached end of iter_lines — server closed the stream cleanly.
+                # Fall through to reconnect.
+                if not self._stop.is_set():
+                    logger.warning("tradier stream ended; reconnecting")
+            except Exception:  # noqa: BLE001
+                if self._stop.is_set():
+                    break
+                logger.exception(
+                    "tradier stream error; reconnecting in %.1fs", backoff
+                )
+                if self._stop.wait(backoff):
+                    break
+                backoff = min(backoff * 2, self._BACKOFF_MAX_S)
 
     def _dispatch(self, msg: dict) -> None:
         kind = msg.get("type")
