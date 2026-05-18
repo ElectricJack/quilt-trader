@@ -55,19 +55,17 @@ def _check_compatibility(account: dict, algorithm: dict) -> CompatibilityResult:
 
 
 def _parse_assets(assets: Any) -> list[dict]:
-    """Return list of {broker, symbol, asset_class} dicts. ``assets`` may be
-    None or a list of dicts in the new structured format."""
+    """Return list of {symbol, asset_class} dicts."""
     out: list[dict] = []
     if not assets:
         return out
     for a in assets:
         if not isinstance(a, dict):
             continue
-        broker = a.get("broker")
         symbol = a.get("symbol")
         asset_class = a.get("asset_class", "equities")
-        if broker and symbol:
-            out.append({"broker": broker, "symbol": symbol, "asset_class": asset_class})
+        if symbol:
+            out.append({"symbol": symbol, "asset_class": asset_class})
     return out
 
 
@@ -121,27 +119,41 @@ class LifecycleService:
         if not assets or self._live_feed_manager is None or self._session_factory is None:
             return
 
+        # Asset-class compatibility: every declared asset class must be in the
+        # account's supported_asset_types.
+        supported = set(account.supported_asset_types or [])
+        declared = {a["asset_class"] for a in assets}
+        missing = declared - supported
+        if missing:
+            raise CompatibilityError(
+                f"Account does not support asset class(es): {', '.join(sorted(missing))}"
+            )
+
         from coordinator.database.models import LiveSubscription, SubscriptionConsumer
         from sqlalchemy.orm import selectinload
 
         async with self._session_factory() as session:
             for asset in assets:
-                broker = asset["broker"]
                 symbol = asset["symbol"]
                 asset_class = asset["asset_class"]
                 sub = (await session.execute(
                     select(LiveSubscription)
-                    .where(LiveSubscription.broker == broker, LiveSubscription.symbol == symbol)
+                    .where(
+                        LiveSubscription.account_id == account.id,
+                        LiveSubscription.symbol == symbol,
+                    )
                     .options(selectinload(LiveSubscription.consumers))
                 )).scalar_one_or_none()
                 if sub is None:
                     sub = LiveSubscription(
-                        broker=broker, symbol=symbol, asset_class=asset_class,
+                        account_id=account.id,
+                        broker=account.broker_type,
+                        symbol=symbol,
+                        asset_class=asset_class,
                         status="running",
                     )
                     session.add(sub)
                     await session.flush()
-                # Idempotent: if this deployment already has a consumer row, skip.
                 already = (await session.execute(
                     select(SubscriptionConsumer).where(
                         SubscriptionConsumer.subscription_id == sub.id,
@@ -154,30 +166,38 @@ class LifecycleService:
                         subscription_id=sub.id, consumer_type="algo",
                         consumer_id=instance.id,
                     ))
-                self._live_feed_manager.ensure_running(broker, symbol, instance.id)
+                self._live_feed_manager.ensure_running(
+                    account.broker_type, symbol, instance.id,
+                )
             await session.commit()
 
-        # Kick the aggregator to actually open the broker WS. The DB rows
-        # exist; without this, no ticks flow until coord restart.
         if self._live_feed_aggregator is not None:
             for asset in assets:
                 try:
                     await self._live_feed_aggregator.start_subscription(
-                        asset["broker"], asset["symbol"], asset["asset_class"],
+                        account.id, account.broker_type,
+                        asset["symbol"], asset["asset_class"],
                     )
+                except TypeError:
+                    # Aggregator still on old 3-arg form; Task 5 fixes.
+                    try:
+                        await self._live_feed_aggregator.start_subscription(
+                            account.broker_type, asset["symbol"], asset["asset_class"],
+                        )
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception(
+                            "Failed to start_subscription for %s/%s",
+                            account.broker_type, asset["symbol"],
+                        )
                 except Exception:
-                    # Don't block deploy on stream-open failure; the
-                    # _stale_stream_sweep will surface a stream_disconnect
-                    # event if the stream never produces ticks.
                     import logging
                     logging.getLogger(__name__).exception(
                         "Failed to start_subscription for %s/%s",
-                        asset["broker"], asset["symbol"],
+                        account.broker_type, asset["symbol"],
                     )
 
-    async def post_stop_actions(
-        self, account: Any, algorithm: Any, instance: Any
-    ) -> None:
+    async def post_stop_actions(self, account, algorithm, instance) -> None:
         """Release any algo consumers this instance held. If a subscription has
         no remaining consumers, delete the row (symmetric auto-delete)."""
         assets = _parse_assets(algorithm.assets)
@@ -190,36 +210,46 @@ class LifecycleService:
         orphaned: list[tuple[str, str]] = []
         async with self._session_factory() as session:
             for asset in assets:
-                broker = asset["broker"]
                 symbol = asset["symbol"]
-                self._live_feed_manager.release(broker, symbol, instance.id)
+                self._live_feed_manager.release(account.broker_type, symbol, instance.id)
 
                 sub = (await session.execute(
                     select(LiveSubscription)
-                    .where(LiveSubscription.broker == broker, LiveSubscription.symbol == symbol)
+                    .where(
+                        LiveSubscription.account_id == account.id,
+                        LiveSubscription.symbol == symbol,
+                    )
                     .options(selectinload(LiveSubscription.consumers))
                 )).scalar_one_or_none()
                 if sub is None:
                     continue
-                # Delete this deployment's algo consumer rows.
                 for c in list(sub.consumers):
                     if c.consumer_type == "algo" and c.consumer_id == instance.id:
                         await session.delete(c)
                 await session.flush()
                 await session.refresh(sub, ["consumers"])
-                # Auto-delete the sub if no consumers remain.
                 if not sub.consumers:
                     await session.delete(sub)
-                    orphaned.append((broker, symbol))
+                    orphaned.append((account.id, symbol))
             await session.commit()
 
-        # Close the broker stream for any subscriptions we just orphan-deleted.
         if self._live_feed_aggregator is not None:
-            for broker, symbol in orphaned:
+            for account_id, symbol in orphaned:
                 try:
-                    await self._live_feed_aggregator.stop_subscription(broker, symbol)
+                    await self._live_feed_aggregator.stop_subscription(account_id, symbol)
+                except TypeError:
+                    # Old (broker, symbol) form
+                    try:
+                        await self._live_feed_aggregator.stop_subscription(
+                            account.broker_type, symbol,
+                        )
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception(
+                            "Failed to stop_subscription for %s/%s", account_id, symbol,
+                        )
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception(
-                        "Failed to stop_subscription for %s/%s", broker, symbol,
+                        "Failed to stop_subscription for %s/%s", account_id, symbol,
                     )
