@@ -81,10 +81,15 @@ class LifecycleService:
         scraper_manager: ScraperManager,
         live_feed_manager: Optional[LiveFeedManager] = None,
         session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
+        live_feed_aggregator: Optional[Any] = None,
     ) -> None:
         self._scraper_manager = scraper_manager
         self._live_feed_manager = live_feed_manager
         self._session_factory = session_factory
+        # When set, pre_start_checks calls .start_subscription so the broker
+        # WS actually opens at deploy time (instead of waiting for a coord
+        # restart). post_stop_actions calls .stop_subscription on orphan delete.
+        self._live_feed_aggregator = live_feed_aggregator
 
     @staticmethod
     def check_compatibility(account: dict, algorithm: dict) -> CompatibilityResult:
@@ -152,6 +157,24 @@ class LifecycleService:
                 self._live_feed_manager.ensure_running(broker, symbol, instance.id)
             await session.commit()
 
+        # Kick the aggregator to actually open the broker WS. The DB rows
+        # exist; without this, no ticks flow until coord restart.
+        if self._live_feed_aggregator is not None:
+            for asset in assets:
+                try:
+                    await self._live_feed_aggregator.start_subscription(
+                        asset["broker"], asset["symbol"], asset["asset_class"],
+                    )
+                except Exception:
+                    # Don't block deploy on stream-open failure; the
+                    # _stale_stream_sweep will surface a stream_disconnect
+                    # event if the stream never produces ticks.
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "Failed to start_subscription for %s/%s",
+                        asset["broker"], asset["symbol"],
+                    )
+
     async def post_stop_actions(
         self, account: Any, algorithm: Any, instance: Any
     ) -> None:
@@ -164,6 +187,7 @@ class LifecycleService:
         from coordinator.database.models import LiveSubscription, SubscriptionConsumer
         from sqlalchemy.orm import selectinload
 
+        orphaned: list[tuple[str, str]] = []
         async with self._session_factory() as session:
             for asset in assets:
                 broker = asset["broker"]
@@ -186,4 +210,16 @@ class LifecycleService:
                 # Auto-delete the sub if no consumers remain.
                 if not sub.consumers:
                     await session.delete(sub)
+                    orphaned.append((broker, symbol))
             await session.commit()
+
+        # Close the broker stream for any subscriptions we just orphan-deleted.
+        if self._live_feed_aggregator is not None:
+            for broker, symbol in orphaned:
+                try:
+                    await self._live_feed_aggregator.stop_subscription(broker, symbol)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "Failed to stop_subscription for %s/%s", broker, symbol,
+                    )

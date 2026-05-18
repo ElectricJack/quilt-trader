@@ -175,6 +175,7 @@ def create_app(
             scraper_manager=ScraperManager(),
             live_feed_manager=container.live_feed_manager,
             session_factory=session_factory,
+            live_feed_aggregator=container.live_feed_aggregator,
         )
 
         from coordinator.services.live_sample_sink import LiveSampleSink
