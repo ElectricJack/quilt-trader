@@ -331,14 +331,36 @@ class LiveSubscription(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     broker: Mapped[str] = mapped_column(String, nullable=False)
     symbol: Mapped[str] = mapped_column(String, nullable=False)
+    asset_class: Mapped[str] = mapped_column(String, nullable=False, default="equities")
     status: Mapped[str] = mapped_column(String, nullable=False, default="stopped")
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_tick_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     tick_rate_per_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    tick_retention_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
-    dependent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tick_retention_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=168)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    consumers: Mapped[list["SubscriptionConsumer"]] = relationship(
+        back_populates="subscription",
+        cascade="all, delete-orphan",
+    )
+
+
+class SubscriptionConsumer(Base):
+    __tablename__ = "subscription_consumers"
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id", "consumer_type", "consumer_id",
+            name="uq_subscription_consumer",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    subscription_id: Mapped[str] = mapped_column(
+        String, ForeignKey("live_subscriptions.id", ondelete="CASCADE"), nullable=False,
+    )
+    consumer_type: Mapped[str] = mapped_column(String, nullable=False)  # 'manual' | 'algo'
+    consumer_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    subscription: Mapped["LiveSubscription"] = relationship(back_populates="consumers")
 
 
 class BacktestRun(Base):
