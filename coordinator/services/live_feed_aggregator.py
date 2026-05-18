@@ -290,9 +290,7 @@ class LiveFeedAggregator:
 
         if conn is None:
             # First subscription for this (broker, asset_class): open a new stream.
-            conn = _StreamConn()
-            self._streams[stream_key] = conn
-
+            # Only insert a _StreamConn into self._streams if we can actually open one.
             adapter = await self._adapter_for_broker(broker)
             if adapter is None:
                 logger.warning(
@@ -304,6 +302,7 @@ class LiveFeedAggregator:
                     f"No live_feed_account.{broker} configured",
                 )
             else:
+                conn = _StreamConn()
                 try:
                     conn.handle = adapter.start_market_data_stream(
                         [symbol],
@@ -312,6 +311,7 @@ class LiveFeedAggregator:
                         asset_class=asset_class,
                     )
                     conn.symbols.add(symbol)
+                    self._streams[stream_key] = conn
                 except NotImplementedError:
                     logger.warning(
                         "Adapter for %s does not implement start_market_data_stream; aggregator idles",
@@ -339,19 +339,23 @@ class LiveFeedAggregator:
                 elif conn.handle is not None:
                     # Restart-from-scratch fallback for adapters without add_symbols.
                     old_handle = conn.handle
-                    conn.symbols.add(symbol)
                     adapter = await self._adapter_for_broker(broker)
                     if adapter is not None:
+                        new_handle = None
                         try:
-                            conn.handle = adapter.start_market_data_stream(
-                                list(conn.symbols),
+                            new_handle = adapter.start_market_data_stream(
+                                list(conn.symbols | {symbol}),
                                 self._make_on_trade(broker),
                                 self._make_on_quote(broker),
                                 asset_class=asset_class,
                             )
-                        except Exception as e:  # noqa: BLE001
+                        except Exception:  # noqa: BLE001
                             logger.exception("Failed to restart stream for %s/%s", broker, symbol)
-                            conn.symbols.discard(symbol)
+                            # Leave the existing stream alive — don't touch old_handle.
+                            return
+                        # Success: swap handles and register the new symbol.
+                        conn.handle = new_handle
+                        conn.symbols.add(symbol)
                         try:
                             old_handle.close()
                         except Exception:  # noqa: BLE001
