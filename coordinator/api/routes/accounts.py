@@ -979,6 +979,41 @@ async def close_position(
     finally:
         _close_adapter(adapter)
 
+    # If Quilt has an internal Position record for this symbol, mark it closed
+    # and write a closing TradeLog row. Multiple matches are allowed (e.g. an
+    # algo + a manual position on the same symbol); we close all of them here
+    # because the broker treats this as a single net flat.
+    matches = (await db.execute(
+        select(Position).where(
+            Position.account_id == account_id,
+            Position.status == "open",
+        )
+    )).scalars().all()
+    matching = [
+        p for p in matches
+        if any(leg.get("symbol") == body.symbol for leg in (p.legs or []))
+    ]
+    now = datetime.now(timezone.utc)
+    for p in matching:
+        p.status = "closed"
+        p.closed_at = now
+        db.add(TradeLog(
+            account_id=account_id,
+            position_id=p.id,
+            source="manual",
+            timestamp=now,
+            symbol=body.symbol,
+            asset_type=body.asset_type,
+            side=order_side,
+            quantity=body.quantity,
+            order_type="market",
+            filled_price=result.filled_price,
+            fees=result.fees or 0.0,
+            broker_txn_id=result.broker_order_id,
+        ))
+    await db.flush()
+    await db.commit()
+
     return {
         "broker_order_id": result.broker_order_id,
         "filled_price": result.filled_price,
