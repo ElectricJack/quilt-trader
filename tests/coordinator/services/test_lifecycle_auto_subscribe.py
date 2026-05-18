@@ -229,10 +229,12 @@ async def test_pre_start_raises_when_account_does_not_support_asset_class():
         worker = Worker(name="W", status="online")
         acct = Account(name="A", broker_type="alpaca", credentials="{}",
                        supported_asset_types=["equities"])
+        # NOTE: deliberately leaving required_asset_types empty so the general
+        # _check_compatibility passes and the new per-asset-class guard is
+        # what raises (otherwise we'd be testing the wrong code path).
         algo = Algorithm(
             repo_url="x", name="crypto-only",
             assets=[{"symbol": "BTCUSD", "asset_class": "crypto"}],
-            required_asset_types=["crypto"],
         )
         session.add_all([worker, acct, algo])
         await session.flush()
