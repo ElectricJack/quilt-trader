@@ -59,6 +59,11 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** the `assets` field on `Algorithm` is freeform JSON. An algorithm installed with a malformed assets list silently skips subscription wiring.
 - **What's needed:** add a Pydantic validator (or JSON Schema) that checks each entry has `broker`, `symbol`, and `asset_class`; reject installs that fail validation with a clear 422.
 
+### Algorithm install fails opaquely when package dir is orphaned
+- **Surfaced by:** post-migration install attempt on 2026-05-18.
+- **Why deferred:** `install_from_url` calls `pm.clone_repo` which fails with `fatal: destination path '...' already exists and is not an empty directory` whenever a previous install's on-disk package wasn't cleaned up. Common after DB migrations that drop algorithm rows without touching `data/packages/`, or after a partially-failed prior install.
+- **What's needed:** when the destination dir exists, detect that it's a valid git clone of the same repo and `git fetch origin && git reset --hard origin/<default-branch>` to bring it to the latest commit instead of cloning. If the dir exists but is NOT a clone of the expected repo, return a clear 409 with a message telling the user to remove it. Update `PackageManager.clone_repo` (or wrap it at the route layer).
+
 ### Push updated `quilt.yaml` for `simple-ma-crossover` to upstream GitHub repo
 - **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
 - **Why deferred:** `data/packages/quilt-trader-test-algo/quilt.yaml` was updated locally to the new `assets:` format, but `data/packages/` is gitignored. A re-install from the upstream GitHub repo will revert to the old format.
