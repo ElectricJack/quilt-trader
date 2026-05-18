@@ -200,8 +200,11 @@ async def patch_sub(
     sub_id: str, body: SubscriptionUpdate,
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy.orm import selectinload
     sub = (await db.execute(
-        select(LiveSubscription).where(LiveSubscription.id == sub_id)
+        select(LiveSubscription)
+        .where(LiveSubscription.id == sub_id)
+        .options(selectinload(LiveSubscription.consumers))
     )).scalar_one_or_none()
     if sub is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
