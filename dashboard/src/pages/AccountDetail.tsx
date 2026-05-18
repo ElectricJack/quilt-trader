@@ -13,6 +13,7 @@ import {
   useSyncAccount,
   useAccountTrades,
   useAccountEquityCurve,
+  useClosePosition,
 } from "../api/hooks";
 import { OpenPositionModal } from "../components/OpenPositionModal";
 import type { CashFlow, AlgorithmInstance, TradeRow } from "../types";
@@ -143,6 +144,9 @@ export function AccountDetail() {
   const [openPositionOpen, setOpenPositionOpen] = useState(false);
   const [syncRange, setSyncRange] = useState<"incremental" | "30d" | "90d" | "1y" | "all">("incremental");
   const [chartRange, setChartRange] = useState<"30d" | "90d" | "1y" | "all">("90d");
+  const [closeTarget, setCloseTarget] = useState<BrokerPosition | null>(null);
+  const [closeError, setCloseError] = useState<string | null>(null);
+  const closePos = useClosePosition(id ?? "");
 
   // Round to start-of-day so the cache key is stable across renders within a day,
   // preventing the equity-curve query from refetching on every render.
@@ -179,66 +183,82 @@ export function AccountDetail() {
 
   // ─── Position columns ────────────────────────────────────────────────────────
 
-  const positionColumns: ColumnDef<BrokerPosition, unknown>[] = [
-    {
-      id: "symbol",
-      header: "Symbol",
-      accessorKey: "symbol",
-      cell: ({ row }) => (
-        <span className="font-mono text-gray-200">{row.original.symbol}</span>
-      ),
-    },
-    {
-      id: "side",
-      header: "Side",
-      accessorKey: "side",
-      cell: ({ row }) => (
-        <span className={row.original.side === "short" ? "text-red-400" : "text-green-400"}>
-          {row.original.side}
-        </span>
-      ),
-    },
-    {
-      id: "quantity",
-      header: "Qty",
-      accessorKey: "quantity",
-      cell: ({ row }) => fmtNum(row.original.quantity, 4),
-    },
-    {
-      id: "avg_price",
-      header: "Avg Price",
-      accessorKey: "avg_price",
-      cell: ({ row }) => fmtUsd(row.original.avg_price),
-    },
-    {
-      id: "current_price",
-      header: "Current",
-      accessorKey: "current_price",
-      cell: ({ row }) => fmtUsd(row.original.current_price),
-    },
-    {
-      id: "market_value",
-      header: "Value",
-      accessorKey: "market_value",
-      cell: ({ row }) => (
-        <span className="font-semibold text-gray-200">{fmtUsd(row.original.market_value)}</span>
-      ),
-    },
-    {
-      id: "unrealized_pnl",
-      header: "Unrealized P&L",
-      accessorKey: "unrealized_pnl",
-      cell: ({ row }) => {
-        const v = row.original.unrealized_pnl;
-        return (
-          <span className={v >= 0 ? "text-green-400" : "text-red-400"}>
-            {v >= 0 ? "+" : ""}
-            {fmtUsd(v)}
-          </span>
-        );
+  const positionColumns = useMemo<ColumnDef<BrokerPosition, unknown>[]>(
+    () => [
+      {
+        id: "symbol",
+        header: "Symbol",
+        accessorKey: "symbol",
+        cell: ({ row }) => (
+          <span className="font-mono text-gray-200">{row.original.symbol}</span>
+        ),
       },
-    },
-  ];
+      {
+        id: "side",
+        header: "Side",
+        accessorKey: "side",
+        cell: ({ row }) => (
+          <span className={row.original.side === "short" ? "text-red-400" : "text-green-400"}>
+            {row.original.side}
+          </span>
+        ),
+      },
+      {
+        id: "quantity",
+        header: "Qty",
+        accessorKey: "quantity",
+        cell: ({ row }) => fmtNum(row.original.quantity, 4),
+      },
+      {
+        id: "avg_price",
+        header: "Avg Price",
+        accessorKey: "avg_price",
+        cell: ({ row }) => fmtUsd(row.original.avg_price),
+      },
+      {
+        id: "current_price",
+        header: "Current",
+        accessorKey: "current_price",
+        cell: ({ row }) => fmtUsd(row.original.current_price),
+      },
+      {
+        id: "market_value",
+        header: "Value",
+        accessorKey: "market_value",
+        cell: ({ row }) => (
+          <span className="font-semibold text-gray-200">{fmtUsd(row.original.market_value)}</span>
+        ),
+      },
+      {
+        id: "unrealized_pnl",
+        header: "Unrealized P&L",
+        accessorKey: "unrealized_pnl",
+        cell: ({ row }) => {
+          const v = row.original.unrealized_pnl;
+          return (
+            <span className={v >= 0 ? "text-green-400" : "text-red-400"}>
+              {v >= 0 ? "+" : ""}
+              {fmtUsd(v)}
+            </span>
+          );
+        },
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => (
+          <button
+            type="button"
+            onClick={() => { setCloseError(null); setCloseTarget(row.original); }}
+            className="px-2 py-1 rounded text-xs font-medium text-white bg-red-600 hover:bg-red-500 transition-colors"
+          >
+            Close
+          </button>
+        ),
+      },
+    ],
+    [setCloseError, setCloseTarget],
+  );
 
   // ─── Trade columns ──────────────────────────────────────────────────────────
 
@@ -411,6 +431,27 @@ export function AccountDetail() {
   ];
 
   // ─── Submit handlers ─────────────────────────────────────────────────────────
+
+  const onConfirmClose = () => {
+    if (!closeTarget || closePos.isPending) return;
+    setCloseError(null);
+    closePos.mutate(
+      {
+        symbol: closeTarget.symbol,
+        asset_type: "equities",  // v1: equities only; broker-info doesn't expose asset_type today
+        side: closeTarget.side === "short" ? "short" : "long",
+        quantity: closeTarget.quantity,
+      },
+      {
+        onSuccess: () => {
+          setCloseTarget(null);
+        },
+        onError: (err: Error) => {
+          setCloseError(err.message);
+        },
+      },
+    );
+  };
 
   async function handleEdit(values: AccountEditValues) {
     if (!account) return;
@@ -675,6 +716,23 @@ export function AccountDetail() {
           />
         )}
       </CollapsibleSection>
+
+      <ConfirmDialog
+        open={!!closeTarget}
+        title="Close position"
+        message={
+          closeTarget
+            ? `Close ${closeTarget.quantity} ${closeTarget.side} ${closeTarget.symbol} at market? ` +
+              `This will submit a ${closeTarget.side === "short" ? "buy" : "sell"} order ` +
+              `to ${account?.broker_type ?? "the broker"}.` +
+              (closeError ? `\n\nError: ${closeError}` : "")
+            : ""
+        }
+        confirmLabel={closePos.isPending ? "Closing…" : "Close position"}
+        cancelLabel="Cancel"
+        onConfirm={onConfirmClose}
+        onCancel={() => { setCloseTarget(null); setCloseError(null); }}
+      />
 
       {/* Trades */}
       <CollapsibleSection title="Trades" count={trades.length} maxHeight="400px">
