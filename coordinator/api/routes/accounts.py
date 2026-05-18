@@ -976,7 +976,10 @@ async def close_position(
                 order_type="market",
             )
         result = await asyncio.to_thread(_sub)
-    finally:
+    except Exception as e:
+        _close_adapter(adapter)
+        raise HTTPException(status_code=500, detail=str(e))
+    else:
         _close_adapter(adapter)
 
     # If Quilt has an internal Position record for this symbol, mark it closed

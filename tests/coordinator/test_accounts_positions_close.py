@@ -237,3 +237,46 @@ async def test_close_succeeds_when_no_internal_position_record(
     # No TradeLog rows should be written if there was no Position to attribute to.
     trades = (await db_session.execute(select(TradeLog))).scalars().all()
     assert trades == []
+
+
+@pytest.mark.asyncio
+async def test_close_returns_404_for_missing_account(client: AsyncClient):
+    body = {"symbol": "SPY", "asset_type": "equities",
+            "side": "long", "quantity": 1}
+    r = await client.post("/api/accounts/does-not-exist/positions/close", json=body)
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_close_propagates_adapter_error_as_500(
+    client: AsyncClient, db_session, monkeypatch
+):
+    """If the broker adapter raises (broker rejection, network, etc.) the
+    error must surface to the caller — not be silently swallowed."""
+    from coordinator.api.routes import accounts as accounts_routes
+
+    account = Account(
+        name="A", broker_type="alpaca", environment="paper",
+        credentials="{}", supported_asset_types=["equities"], pdt_mode="off",
+    )
+    db_session.add(account)
+    await db_session.flush()
+    await db_session.commit()
+
+    class FakeAdapter:
+        def submit_order(self, symbol, side, quantity, order_type,
+                         limit_price=None, stop_price=None):
+            raise RuntimeError("broker says no: insufficient buying power")
+        def close(self): pass
+
+    async def fake_adapter_for_account(acct):
+        return FakeAdapter()
+    monkeypatch.setattr(
+        accounts_routes, "_adapter_for_account", fake_adapter_for_account
+    )
+
+    body = {"symbol": "SPY", "asset_type": "equities",
+            "side": "long", "quantity": 1}
+    r = await client.post(f"/api/accounts/{account.id}/positions/close", json=body)
+    assert r.status_code == 500
+    assert "insufficient buying power" in r.text
