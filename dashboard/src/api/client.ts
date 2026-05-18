@@ -675,6 +675,7 @@ export const api = {
   createLiveSubscription(body: {
     broker: string;
     symbol: string;
+    asset_class: string;
     tick_retention_hours?: number;
   }): Promise<LiveSubscription> {
     return request<LiveSubscription>("/api/live-subscriptions", {
@@ -701,8 +702,8 @@ export const api = {
       method: "DELETE",
     });
   },
-  unsubscribeLiveSubscription(id: string): Promise<LiveSubscription> {
-    return request<LiveSubscription>(
+  unsubscribeLiveSubscription(id: string): Promise<LiveSubscription | { deleted: true; id: string }> {
+    return request<LiveSubscription | { deleted: true; id: string }>(
       `/api/live-subscriptions/${encodeURIComponent(id)}/unsubscribe`,
       { method: "POST" }
     );
@@ -824,26 +825,35 @@ export const api = {
 };
 
 // ── U5: live subscriptions + compare ──
+export interface SubscriptionConsumer {
+  id: string;
+  consumer_type: "manual" | "algo";
+  consumer_id: string | null;
+  created_at: string | null;
+}
+
 export interface LiveSubscription {
   id: string;
   broker: string;
   symbol: string;
+  asset_class: string;
   tick_retention_hours: number;
   tick_rate_per_min: number | null;
   status: string;
   created_at: string | null;
   last_tick_at: string | null;
   error_message: string | null;
-  dependent_count: number;
+  consumers: SubscriptionConsumer[];
 }
 
 export interface LiveSubStorageEstimate {
   broker: string;
   symbol: string;
   retention_hours: number;
-  estimated_bytes: number;
-  estimated_ticks: number;
-  estimated_rate_per_min: number | null;
+  projected_bytes: number;
+  projected_human: string;
+  tick_rate_per_min: number | null;
+  source: "estimated" | "observed";
 }
 
 // ── Spec D U1: run backtest modal ──
