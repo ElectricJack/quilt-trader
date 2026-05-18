@@ -356,10 +356,12 @@ class AlpacaAdapter(BrokerAdapter):
         symbols: list[str],
         on_trade,
         on_quote,
+        asset_class: str = "equities",
     ) -> "MarketDataStreamHandle":
-        from alpaca.data.live import StockDataStream
+        from alpaca.data.live import StockDataStream, CryptoDataStream
 
-        stream = StockDataStream(self._api_key, self._secret_key)
+        stream_cls = CryptoDataStream if asset_class == "crypto" else StockDataStream
+        stream = stream_cls(self._api_key, self._secret_key)
 
         async def _trade_handler(data):
             try:

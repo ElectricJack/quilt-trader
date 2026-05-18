@@ -145,6 +145,7 @@ class BrokerAdapter(ABC):
         symbols: list[str],
         on_trade,
         on_quote,
+        asset_class: str = "equities",
     ) -> "MarketDataStreamHandle":
         """Open a market-data WebSocket / HTTP stream for ``symbols``.
 

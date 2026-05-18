@@ -336,7 +336,10 @@ class TradierAdapter(BrokerAdapter):
         symbols: list[str],
         on_trade,
         on_quote,
+        asset_class: str = "equities",
     ) -> "MarketDataStreamHandle":
+        if asset_class == "crypto":
+            raise ValueError("Tradier does not support crypto streaming")
         # Note: streaming uses the production base URL even from sandbox keys.
         stream_base = _LIVE_BASE
         return _TradierStreamHandle(
