@@ -438,4 +438,12 @@ async def delete_deployment(deployment_id: str, db: AsyncSession = Depends(get_d
     )).scalar_one_or_none()
     if inst is None:
         raise HTTPException(status_code=404, detail="Deployment not found")
+    # active_run_id FKs to algorithm_runs.id; null it before cascading the runs
+    # so SQLite doesn't see a transient self-reference to a deleted row.
+    inst.active_run_id = None
+    await db.flush()
     await db.delete(inst)
+    # Flush here so any FK/integrity errors surface as a 500 BEFORE FastAPI
+    # sends the 204 response — otherwise the commit in get_db happens after
+    # the response and the error is silently swallowed.
+    await db.flush()

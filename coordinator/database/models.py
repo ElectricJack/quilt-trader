@@ -108,7 +108,11 @@ class AlgorithmInstance(Base):
     algorithm: Mapped["Algorithm"] = relationship(back_populates="instances")
     account: Mapped["Account"] = relationship(back_populates="instances", foreign_keys=[account_id])
     worker: Mapped["Worker"] = relationship(back_populates="instances")
-    runs: Mapped[list["AlgorithmRun"]] = relationship(back_populates="instance", foreign_keys="AlgorithmRun.instance_id")
+    runs: Mapped[list["AlgorithmRun"]] = relationship(
+        back_populates="instance",
+        foreign_keys="AlgorithmRun.instance_id",
+        cascade="all, delete-orphan",
+    )
 
 
 class Scraper(Base):
