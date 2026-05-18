@@ -679,7 +679,7 @@ export function AccountDetail() {
             <span
               className={`text-[10px] px-1.5 py-0.5 rounded border ${
                 account.environment === "live"
-                  ? "bg-red-900/40 text-red-300 border-red-800"
+                  ? "bg-emerald-900/40 text-emerald-300 border-emerald-800"
                   : "bg-blue-900/40 text-blue-300 border-blue-800"
               }`}
             >
