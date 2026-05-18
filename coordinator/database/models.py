@@ -326,9 +326,12 @@ class AccountSnapshot(Base):
 class LiveSubscription(Base):
     __tablename__ = "live_subscriptions"
     __table_args__ = (
-        UniqueConstraint("broker", "symbol", name="uq_live_subscription_broker_symbol"),
+        UniqueConstraint("account_id", "symbol", name="uq_live_subscription_account_symbol"),
     )
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False,
+    )
     broker: Mapped[str] = mapped_column(String, nullable=False)
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     asset_class: Mapped[str] = mapped_column(String, nullable=False, default="equities")
@@ -343,6 +346,7 @@ class LiveSubscription(Base):
         back_populates="subscription",
         cascade="all, delete-orphan",
     )
+    account: Mapped["Account"] = relationship()
 
 
 class SubscriptionConsumer(Base):
