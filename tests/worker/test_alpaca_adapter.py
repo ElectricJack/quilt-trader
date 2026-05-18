@@ -152,6 +152,86 @@ class TestAlpacaAdapter:
             )
             assert result.filled_price == 0.0
 
+    def test_submit_order_uses_gtc_for_crypto(self):
+        """Alpaca rejects crypto orders with DAY; adapter must use GTC."""
+        adapter = AlpacaAdapter(api_key="test", secret_key="test")
+        mock_client = MagicMock()
+        mock_order = MagicMock()
+        mock_order.filled_avg_price = "50000.00"
+        mock_order.id = "order-crypto-1"
+        mock_client.submit_order.return_value = mock_order
+
+        import sys
+        alpaca_trading = MagicMock()
+        captured_requests = []
+
+        def capture_market_request(**kwargs):
+            captured_requests.append(kwargs)
+            return MagicMock(**kwargs)
+
+        alpaca_trading.requests.MarketOrderRequest = capture_market_request
+        alpaca_trading.requests.LimitOrderRequest = MagicMock(return_value=MagicMock())
+        alpaca_trading.enums.OrderSide.BUY = "buy"
+        alpaca_trading.enums.OrderSide.SELL = "sell"
+        alpaca_trading.enums.TimeInForce.DAY = "day"
+        alpaca_trading.enums.TimeInForce.GTC = "gtc"
+
+        with patch.object(adapter, "_ensure_clients"), \
+             patch.dict(sys.modules, {
+                 "alpaca": MagicMock(),
+                 "alpaca.trading": alpaca_trading,
+                 "alpaca.trading.client": MagicMock(),
+                 "alpaca.trading.requests": alpaca_trading.requests,
+                 "alpaca.trading.enums": alpaca_trading.enums,
+             }):
+            adapter._trading_client = mock_client
+            adapter.submit_order(
+                symbol="BTCUSD", side="sell", quantity=0.005,
+                order_type="market", asset_type="crypto",
+            )
+        assert len(captured_requests) == 1
+        assert captured_requests[0]["time_in_force"] == "gtc"
+
+    def test_submit_order_uses_day_for_equities(self):
+        """Equities must continue to use DAY time-in-force."""
+        adapter = AlpacaAdapter(api_key="test", secret_key="test")
+        mock_client = MagicMock()
+        mock_order = MagicMock()
+        mock_order.filled_avg_price = "500.00"
+        mock_order.id = "order-eq-1"
+        mock_client.submit_order.return_value = mock_order
+
+        import sys
+        alpaca_trading = MagicMock()
+        captured_requests = []
+
+        def capture_market_request(**kwargs):
+            captured_requests.append(kwargs)
+            return MagicMock(**kwargs)
+
+        alpaca_trading.requests.MarketOrderRequest = capture_market_request
+        alpaca_trading.requests.LimitOrderRequest = MagicMock(return_value=MagicMock())
+        alpaca_trading.enums.OrderSide.BUY = "buy"
+        alpaca_trading.enums.OrderSide.SELL = "sell"
+        alpaca_trading.enums.TimeInForce.DAY = "day"
+        alpaca_trading.enums.TimeInForce.GTC = "gtc"
+
+        with patch.object(adapter, "_ensure_clients"), \
+             patch.dict(sys.modules, {
+                 "alpaca": MagicMock(),
+                 "alpaca.trading": alpaca_trading,
+                 "alpaca.trading.client": MagicMock(),
+                 "alpaca.trading.requests": alpaca_trading.requests,
+                 "alpaca.trading.enums": alpaca_trading.enums,
+             }):
+            adapter._trading_client = mock_client
+            adapter.submit_order(
+                symbol="SPY", side="sell", quantity=5.0,
+                order_type="market", asset_type="equities",
+            )
+        assert len(captured_requests) == 1
+        assert captured_requests[0]["time_in_force"] == "day"
+
 
 # ---- Multi-leg orders + options chain (Work Unit A1) ----
 

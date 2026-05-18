@@ -123,7 +123,13 @@ class TradierAdapter(BrokerAdapter):
         order_type: str,
         limit_price: Optional[float] = None,
         stop_price: Optional[float] = None,
+        asset_type: Optional[str] = None,
     ) -> OrderResult:
+        """Submit an equity order via Tradier.
+
+        ``asset_type`` is accepted for signature consistency but unused —
+        Tradier does not trade crypto so no TIF branching is needed.
+        """
         client = self._ensure_client()
 
         side_lower = side.lower()

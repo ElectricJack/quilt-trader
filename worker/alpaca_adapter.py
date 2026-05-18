@@ -33,6 +33,17 @@ _PAPER_BASE = "https://paper-api.alpaca.markets"
 _LIVE_BASE = "https://api.alpaca.markets"
 
 
+def _map_asset_class(alpaca_class) -> str:
+    """Map Alpaca's asset_class enum/string to Quilt's convention."""
+    s = alpaca_class.value if hasattr(alpaca_class, "value") else str(alpaca_class)
+    s = s.lower()
+    if s == "crypto":
+        return "crypto"
+    if s == "us_option":
+        return "options"
+    return "equities"  # default us_equity and anything unknown
+
+
 class AlpacaAdapter(BrokerAdapter):
     """Broker adapter for Alpaca Markets.
 
@@ -94,6 +105,7 @@ class AlpacaAdapter(BrokerAdapter):
                 "symbol": pos.symbol,
                 "quantity": float(pos.qty),
                 "side": pos.side.value if hasattr(pos.side, "value") else str(pos.side),
+                "asset_class": _map_asset_class(pos.asset_class),
                 "avg_price": float(pos.avg_entry_price),
                 "current_price": float(pos.current_price),
                 "unrealized_pnl": float(pos.unrealized_pl),
@@ -120,19 +132,26 @@ class AlpacaAdapter(BrokerAdapter):
         order_type: str,
         limit_price: Optional[float] = None,
         stop_price: Optional[float] = None,
+        asset_type: Optional[str] = None,
     ) -> OrderResult:
+        """Submit a single-leg order.
+
+        ``asset_type`` is used to select the correct TimeInForce: Alpaca requires
+        ``GTC`` for crypto and ``DAY`` for equities/options.
+        """
         self._ensure_clients()
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
         order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+        tif = TimeInForce.GTC if (asset_type or "").lower() == "crypto" else TimeInForce.DAY
 
         if order_type.lower() == "limit" and limit_price is not None:
             request = LimitOrderRequest(
                 symbol=symbol,
                 qty=quantity,
                 side=order_side,
-                time_in_force=TimeInForce.DAY,
+                time_in_force=tif,
                 limit_price=limit_price,
             )
         else:
@@ -140,7 +159,7 @@ class AlpacaAdapter(BrokerAdapter):
                 symbol=symbol,
                 qty=quantity,
                 side=order_side,
-                time_in_force=TimeInForce.DAY,
+                time_in_force=tif,
             )
 
         order = self._trading_client.submit_order(request)

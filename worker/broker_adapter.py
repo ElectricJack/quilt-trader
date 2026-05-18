@@ -99,7 +99,14 @@ class BrokerAdapter(ABC):
     def get_account_info(self) -> dict: ...
     @abstractmethod
     def submit_order(self, symbol: str, side: str, quantity: float, order_type: str,
-                     limit_price: Optional[float] = None, stop_price: Optional[float] = None) -> OrderResult: ...
+                     limit_price: Optional[float] = None, stop_price: Optional[float] = None,
+                     asset_type: Optional[str] = None) -> OrderResult:
+        """Submit a single-leg order.
+
+        ``asset_type`` is used by adapters that branch behavior by asset class
+        (e.g. Alpaca uses GTC for crypto, DAY for equities/options).
+        """
+        ...
 
     def get_transactions(self, since: datetime) -> list[BrokerTransaction]:
         """Fetch broker activity since `since`. Default: not implemented."""
@@ -192,7 +199,11 @@ class MockBrokerAdapter(BrokerAdapter):
         return dict(self._account_info)
 
     def submit_order(self, symbol: str, side: str, quantity: float, order_type: str,
-                     limit_price: Optional[float] = None, stop_price: Optional[float] = None) -> OrderResult:
+                     limit_price: Optional[float] = None, stop_price: Optional[float] = None,
+                     asset_type: Optional[str] = None) -> OrderResult:
+        """Submit a mock order. ``asset_type`` is accepted for signature
+        consistency but unused — adapters that branch by asset class (e.g.
+        Alpaca uses GTC for crypto) handle it themselves."""
         result = OrderResult(symbol=symbol, side=side, quantity=quantity, order_type=order_type,
                            filled_price=self._fill_price, fees=self._fees)
         self.order_history.append(result)
