@@ -749,6 +749,16 @@ export function useDeleteLiveSubscription() {
   });
 }
 
+export function useUnsubscribeLiveSubscription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.unsubscribeLiveSubscription(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["live-subs"] });
+    },
+  });
+}
+
 export function useLiveSubStorageEstimate(
   broker: string | null,
   symbol: string | null,

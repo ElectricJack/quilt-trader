@@ -4,6 +4,7 @@ import {
   useLiveSubscriptions,
   useCreateLiveSubscription,
   useDeleteLiveSubscription,
+  useUnsubscribeLiveSubscription,
   useLiveSubStorageEstimate,
 } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
@@ -22,6 +23,7 @@ export function LiveSubscriptionsSection() {
   const { data: subs = [], isLoading } = useLiveSubscriptions();
   const create = useCreateLiveSubscription();
   const del = useDeleteLiveSubscription();
+  const unsub = useUnsubscribeLiveSubscription();
   const addAlert = useUIStore((s) => s.addAlert);
 
   const [adding, setAdding] = useState(false);
@@ -60,8 +62,21 @@ export function LiveSubscriptionsSection() {
 
   async function handleDelete(id: string, label: string) {
     try {
-      await del.mutateAsync(id);
-      addAlert({ message: `Unsubscribed from ${label}.`, severity: "success" });
+      // Step 1: release the manual dependent (the count=1 from initial subscribe).
+      const after = await unsub.mutateAsync(id);
+      // Step 2: if no other consumer holds it, delete the row.
+      if (after.dependent_count === 0) {
+        await del.mutateAsync(id);
+        addAlert({ message: `Unsubscribed from ${label}.`, severity: "success" });
+      } else {
+        addAlert({
+          message:
+            `Unsubscribed from ${label}, but ${after.dependent_count} ` +
+            `algorithm consumer(s) still holding the feed. Stop the ` +
+            `dependent deployment(s) to remove the subscription entirely.`,
+          severity: "info",
+        });
+      }
     } catch (e) {
       addAlert({
         message: `Unsubscribe failed: ${(e as Error).message}`,

@@ -701,6 +701,12 @@ export const api = {
       method: "DELETE",
     });
   },
+  unsubscribeLiveSubscription(id: string): Promise<LiveSubscription> {
+    return request<LiveSubscription>(
+      `/api/live-subscriptions/${encodeURIComponent(id)}/unsubscribe`,
+      { method: "POST" }
+    );
+  },
   getMarketDataWithSource(
     symbol: string,
     opts: { source?: string; provider?: string; timeframe?: string; bars?: number }
@@ -828,6 +834,7 @@ export interface LiveSubscription {
   created_at: string | null;
   last_tick_at: string | null;
   error_message: string | null;
+  dependent_count: number;
 }
 
 export interface LiveSubStorageEstimate {
