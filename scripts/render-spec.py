@@ -119,10 +119,12 @@ HTML_SHELL = """<!doctype html>
 def find_latest_spec() -> Path:
     repo_root = Path(__file__).resolve().parent.parent
     specs_dir = repo_root / "docs" / "superpowers" / "specs"
-    candidates = sorted(specs_dir.glob("*.md"))
+    candidates = list(specs_dir.glob("*.md"))
     if not candidates:
         sys.exit(f"no spec files found in {specs_dir}")
-    return candidates[-1]
+    # Sort by modification time so the newest *actually-edited* file wins
+    # when multiple specs share a date prefix.
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def render(md_path: Path) -> Path:
