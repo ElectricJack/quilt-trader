@@ -95,8 +95,27 @@ class _BarBuilder:
         self.volume += size
 
     def take_closed(self, now_minute: datetime) -> Optional[dict]:
-        """If a bar exists for a strictly-earlier minute, return its row."""
+        """If a bar exists for a strictly-earlier minute, return its row.
+
+        Returns None for ghost bars (vol==0 AND high==low) — these come from
+        quote-only events with no actual trades and pollute the data view.
+        """
         if self.minute_start is None or self.minute_start >= now_minute:
+            return None
+        is_ghost = (
+            (self.volume or 0) == 0
+            and self.high is not None
+            and self.low is not None
+            and self.high == self.low
+        )
+        if is_ghost:
+            # Reset state but emit nothing.
+            self.minute_start = None
+            self.open_ = None
+            self.high = None
+            self.low = None
+            self.close = None
+            self.volume = 0.0
             return None
         row = {
             "timestamp": self.minute_start,
@@ -106,7 +125,6 @@ class _BarBuilder:
             "close": self.close,
             "volume": self.volume,
         }
-        # Reset for the next minute.
         self.minute_start = None
         self.open_ = None
         self.high = None
