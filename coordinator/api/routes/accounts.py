@@ -678,6 +678,13 @@ class OpenPositionRequest(BaseModel):
     limit_price: Optional[float] = None
 
 
+class ClosePositionRequest(BaseModel):
+    symbol: str
+    asset_type: str
+    side: str  # "long" or "short" — the *position* side, not the order side
+    quantity: float
+
+
 @router.post("/{account_id}/positions/open")
 async def open_position(
     account_id: str,
@@ -931,3 +938,49 @@ async def open_position(
             )
     finally:
         _close_adapter(adapter)
+
+
+@router.post("/{account_id}/positions/close")
+async def close_position(
+    account_id: str,
+    body: ClosePositionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Close an open broker position by submitting an opposite-side market order.
+
+    Identifies the position by broker-visible (symbol, side, quantity).
+    Does NOT honor the account `locked_by` check — closes must work as a
+    safety valve even when an algorithm holds the account lock.
+    """
+    account = (await db.execute(
+        select(Account).where(Account.id == account_id)
+    )).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="account not found")
+
+    pos_side = body.side.lower()
+    if pos_side not in ("long", "short"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"side must be 'long' or 'short', got {body.side!r}",
+        )
+    order_side = "sell" if pos_side == "long" else "buy"
+
+    adapter = await _adapter_for_account(account)
+    try:
+        def _sub():
+            return adapter.submit_order(
+                symbol=body.symbol,
+                side=order_side,
+                quantity=body.quantity,
+                order_type="market",
+            )
+        result = await asyncio.to_thread(_sub)
+    finally:
+        _close_adapter(adapter)
+
+    return {
+        "broker_order_id": result.broker_order_id,
+        "filled_price": result.filled_price,
+        "status": "filled" if result.filled_price else "pending",
+    }
