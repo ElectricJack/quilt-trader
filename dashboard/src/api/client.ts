@@ -673,7 +673,7 @@ export const api = {
     return request<LiveSubscription[]>("/api/live-subscriptions");
   },
   createLiveSubscription(body: {
-    broker: string;
+    account_id: string;
     symbol: string;
     asset_class: string;
     tick_retention_hours?: number;
@@ -830,10 +830,14 @@ export interface SubscriptionConsumer {
   consumer_type: "manual" | "algo";
   consumer_id: string | null;
   created_at: string | null;
+  algorithm_id: string | null;
+  algorithm_name: string | null;
 }
 
 export interface LiveSubscription {
   id: string;
+  account_id: string;
+  account_name: string;
   broker: string;
   symbol: string;
   asset_class: string;

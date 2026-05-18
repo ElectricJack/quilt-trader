@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
+import { Link } from "react-router-dom";
 import {
   useLiveSubscriptions,
   useCreateLiveSubscription,
   useUnsubscribeLiveSubscription,
   useLiveSubStorageEstimate,
+  useAccounts,
 } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
 
-type Broker = "alpaca" | "tradier";
 type AssetClass = "equities" | "crypto" | "options";
 
 function formatBytes(n: number | null | undefined): string {
@@ -29,32 +30,34 @@ function timeSince(iso: string | null): string {
 
 export function LiveSubscriptionsSection() {
   const { data: subs = [], isLoading } = useLiveSubscriptions();
+  const { data: accounts = [] } = useAccounts();
   const create = useCreateLiveSubscription();
   const unsub = useUnsubscribeLiveSubscription();
   const addAlert = useUIStore((s) => s.addAlert);
 
   const [adding, setAdding] = useState(false);
-  const [broker, setBroker] = useState<Broker>("alpaca");
+  const [accountId, setAccountId] = useState<string>("");
   const [assetClass, setAssetClass] = useState<AssetClass>("equities");
   const [symbol, setSymbol] = useState("");
   const [retention, setRetention] = useState(168);
 
   const trimmedSymbol = symbol.trim();
   const { data: estimate } = useLiveSubStorageEstimate(
-    adding && trimmedSymbol ? broker : null,
+    adding && trimmedSymbol && accountId ? accountId : null,
     adding && trimmedSymbol ? trimmedSymbol : null,
     retention
   );
 
   async function handleAdd() {
-    if (!trimmedSymbol) return;
+    if (!trimmedSymbol || !accountId) return;
     try {
+      const acct = accounts.find((a) => a.id === accountId);
       await create.mutateAsync({
-        broker, symbol: trimmedSymbol, asset_class: assetClass,
+        account_id: accountId, symbol: trimmedSymbol, asset_class: assetClass,
         tick_retention_hours: retention,
       });
       addAlert({
-        message: `Subscribed to ${broker}_live:${trimmedSymbol}.`,
+        message: `Subscribed to ${acct?.name ?? accountId}:${trimmedSymbol}.`,
         severity: "success",
       });
       setAdding(false);
@@ -112,7 +115,7 @@ export function LiveSubscriptionsSection() {
       ) : (
         <div className="space-y-2">
           {subs.map((s) => {
-            const label = `${s.broker}_live:${s.symbol}`;
+            const label = `${s.account_name}:${s.symbol}`;
             const stale = !s.last_tick_at ||
               (Date.now() - new Date(s.last_tick_at).getTime()) > 60_000;
             return (
@@ -122,7 +125,12 @@ export function LiveSubscriptionsSection() {
               >
                 <div className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-3 flex-wrap min-w-0">
-                    <span className="text-indigo-400 font-mono">{s.broker}_live</span>
+                    <Link
+                      to={`/accounts/${s.account_id}`}
+                      className="text-indigo-400 font-mono hover:underline"
+                    >
+                      {s.account_name}
+                    </Link>
                     <span className="font-mono text-gray-200">{s.symbol}</span>
                     <span className="text-[10px] px-1.5 py-0.5 rounded border bg-gray-800 text-gray-400 border-gray-700">
                       {s.asset_class}
@@ -158,6 +166,15 @@ export function LiveSubscriptionsSection() {
                         {i > 0 && ", "}
                         {c.consumer_type === "manual"
                           ? "manual"
+                          : c.algorithm_id && c.algorithm_name
+                          ? (
+                            <Link
+                              to={`/algorithms/${c.algorithm_id}`}
+                              className="text-indigo-400 hover:underline"
+                            >
+                              {c.algorithm_name}
+                            </Link>
+                          )
                           : `algo: ${c.consumer_id?.slice(0, 8) ?? "?"}`}
                       </span>
                     ))}
@@ -172,14 +189,18 @@ export function LiveSubscriptionsSection() {
       {adding && (
         <div className="mt-3 bg-gray-900 border border-gray-700 rounded p-3 flex gap-2 items-end flex-wrap">
           <label className="flex flex-col gap-1 text-xs text-gray-400">
-            <span>Broker</span>
+            <span>Account</span>
             <select
-              value={broker}
-              onChange={(e) => setBroker(e.target.value as Broker)}
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
               className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100"
             >
-              <option value="alpaca">alpaca</option>
-              <option value="tradier">tradier</option>
+              <option value="">— select account —</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
             </select>
           </label>
           <label className="flex flex-col gap-1 text-xs text-gray-400">
@@ -223,7 +244,7 @@ export function LiveSubscriptionsSection() {
           )}
           <button
             onClick={handleAdd}
-            disabled={!trimmedSymbol || create.isPending}
+            disabled={!trimmedSymbol || !accountId || create.isPending}
             className="px-3 py-1.5 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 transition-colors"
           >
             Add
