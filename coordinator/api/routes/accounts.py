@@ -974,6 +974,7 @@ async def close_position(
                 side=order_side,
                 quantity=body.quantity,
                 order_type="market",
+                asset_type=body.asset_type,
             )
         result = await asyncio.to_thread(_sub)
     except Exception as e:

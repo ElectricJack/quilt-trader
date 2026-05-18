@@ -28,7 +28,7 @@ async def test_close_long_position_submits_sell_market_order(
 
     class FakeAdapter:
         def submit_order(self, symbol, side, quantity, order_type,
-                         limit_price=None, stop_price=None):
+                         limit_price=None, stop_price=None, asset_type=None):
             captured["symbol"] = symbol
             captured["side"] = side
             captured["quantity"] = quantity
@@ -96,7 +96,7 @@ async def test_close_short_position_submits_buy_market_order(
 
     class FakeAdapter:
         def submit_order(self, symbol, side, quantity, order_type,
-                         limit_price=None, stop_price=None):
+                         limit_price=None, stop_price=None, asset_type=None):
             captured["side"] = side
             return OrderResult(
                 symbol=symbol, side=side, quantity=quantity,
@@ -156,7 +156,7 @@ async def test_close_marks_internal_position_closed_and_writes_trade(
 
     class FakeAdapter:
         def submit_order(self, symbol, side, quantity, order_type,
-                         limit_price=None, stop_price=None):
+                         limit_price=None, stop_price=None, asset_type=None):
             return OrderResult(
                 symbol=symbol, side=side, quantity=quantity,
                 order_type=order_type, filled_price=520.0,
@@ -216,7 +216,7 @@ async def test_close_succeeds_when_no_internal_position_record(
 
     class FakeAdapter:
         def submit_order(self, symbol, side, quantity, order_type,
-                         limit_price=None, stop_price=None):
+                         limit_price=None, stop_price=None, asset_type=None):
             return OrderResult(
                 symbol=symbol, side=side, quantity=quantity,
                 order_type=order_type, filled_price=42.0,
@@ -265,7 +265,7 @@ async def test_close_propagates_adapter_error_as_500(
 
     class FakeAdapter:
         def submit_order(self, symbol, side, quantity, order_type,
-                         limit_price=None, stop_price=None):
+                         limit_price=None, stop_price=None, asset_type=None):
             raise RuntimeError("broker says no: insufficient buying power")
         def close(self): pass
 
@@ -280,6 +280,50 @@ async def test_close_propagates_adapter_error_as_500(
     r = await client.post(f"/api/accounts/{account.id}/positions/close", json=body)
     assert r.status_code == 500
     assert "insufficient buying power" in r.text
+
+
+@pytest.mark.asyncio
+async def test_close_passes_asset_type_to_adapter(
+    client: AsyncClient, db_session, monkeypatch
+):
+    """Verify body.asset_type reaches submit_order — load-bearing for crypto
+    (Alpaca needs TimeInForce.GTC for crypto, DAY for equities)."""
+    from worker.broker_adapter import OrderResult
+    from coordinator.api.routes import accounts as accounts_routes
+
+    account = Account(
+        name="A", broker_type="alpaca", environment="paper",
+        credentials="{}", supported_asset_types=["equities", "crypto"],
+        pdt_mode="off",
+    )
+    db_session.add(account)
+    await db_session.flush()
+    await db_session.commit()
+
+    captured = {}
+
+    class FakeAdapter:
+        def submit_order(self, symbol, side, quantity, order_type,
+                         limit_price=None, stop_price=None, asset_type=None):
+            captured["asset_type"] = asset_type
+            return OrderResult(
+                symbol=symbol, side=side, quantity=quantity,
+                order_type=order_type, filled_price=50000.0,
+                broker_order_id="ord-c",
+            )
+        def close(self): pass
+
+    async def fake_adapter_for_account(acct):
+        return FakeAdapter()
+    monkeypatch.setattr(
+        accounts_routes, "_adapter_for_account", fake_adapter_for_account
+    )
+
+    body = {"symbol": "BTCUSD", "asset_type": "crypto",
+            "side": "long", "quantity": 0.001}
+    r = await client.post(f"/api/accounts/{account.id}/positions/close", json=body)
+    assert r.status_code == 200, r.text
+    assert captured["asset_type"] == "crypto"
 
 
 @pytest.mark.asyncio
@@ -304,7 +348,7 @@ async def test_close_succeeds_even_when_account_is_locked(
 
     class FakeAdapter:
         def submit_order(self, symbol, side, quantity, order_type,
-                         limit_price=None, stop_price=None):
+                         limit_price=None, stop_price=None, asset_type=None):
             return OrderResult(
                 symbol=symbol, side=side, quantity=quantity,
                 order_type=order_type, filled_price=100.0,
