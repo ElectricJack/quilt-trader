@@ -49,7 +49,7 @@ class _FakeAdapter:
         self._ticks = ticks
         self._quotes = quotes
 
-    def start_market_data_stream(self, symbols, on_trade, on_quote):
+    def start_market_data_stream(self, symbols, on_trade, on_quote, asset_class="equities"):
         # Fire the callbacks synchronously on this thread — the aggregator's
         # callback path takes the state lock, so this is safe.
         for t in self._ticks:

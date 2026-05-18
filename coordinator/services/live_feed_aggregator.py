@@ -1,27 +1,28 @@
 """Live broker WebSocket -> tick parquet + 1-minute bar parquet.
 
-Per Spec B §3, each ``LiveSubscription(broker, symbol)`` row runs an
-``asyncio`` task that:
+Per Spec B §3, each ``LiveSubscription(broker, symbol)`` row maintains
+per-symbol state.  Stream connections are shared: one connection per
+``(broker, asset_class)`` pair carries all subscribed symbols up to the
+broker cap (``_MAX_SYMBOLS_PER_STREAM``).  Symbols are added/removed from
+the connection's subscribe set as subscriptions come and go.
 
-1. Resolves the account whose credentials power that broker's live feed
-   (from the ``live_feed_account.{broker}`` setting), constructs the
-   matching ``BrokerAdapter``, and opens a market-data stream via the
-   adapter's ``start_market_data_stream`` method.
-2. Buffers trades + quotes in memory and flushes them to per-day parquet
+Each symbol still gets its own asyncio flush-task that:
+
+1. Buffers trades + quotes in memory and flushes them to per-day parquet
    files under ``data/market/{broker}_live/{symbol}/ticks/`` every 5
    seconds.
-3. Aggregates trades into a 1-minute OHLCV bar. When the wall clock
+2. Aggregates trades into a 1-minute OHLCV bar. When the wall clock
    crosses a minute boundary, the closed bar is flushed via
    ``DataService.save_market_data`` to
    ``data/market/{broker}_live/{symbol}/1min.parquet``.
-4. Updates the row's ``tick_rate_per_min`` and ``last_tick_at`` once a
+3. Updates the row's ``tick_rate_per_min`` and ``last_tick_at`` once a
    minute. A retention sweep deletes day-partitioned tick files older
    than the row's ``tick_retention_hours``.
 
-If the broker has no credentials configured, the task logs the situation
-and idles — it does not crash the lifespan. Tests inject a fake adapter
-via ``adapter_factory`` (callable arg) to exercise the pipeline without
-real WebSockets.
+If the broker has no credentials configured, ``start_subscription`` logs
+the situation and creates an idle flush-task — it does not crash the
+lifespan. Tests inject a fake adapter via ``_adapter_for_broker``
+(monkeypatched) or ``adapter_factory`` (constructor arg).
 """
 from __future__ import annotations
 
@@ -141,9 +142,24 @@ class _SubState:
     bar: _BarBuilder = field(default_factory=_BarBuilder)
     pending_bars: Deque[dict] = field(default_factory=deque)
     tick_count_window: Deque[datetime] = field(default_factory=deque)
-    handle: Optional[object] = None
+    handle: Optional[object] = None  # kept for legacy compat; stream is on _StreamConn
     lock: threading.Lock = field(default_factory=threading.Lock)
     last_tick_at: Optional[datetime] = None
+
+
+@dataclass
+class _StreamConn:
+    """One broker stream connection that can carry many symbols."""
+    handle: Optional[object] = None
+    symbols: set = field(default_factory=set)
+
+
+# Broker cap: max symbols per (broker, asset_class) stream.
+_MAX_SYMBOLS_PER_STREAM: dict[tuple[str, str], int] = {
+    ("alpaca", "equities"): 30,
+    ("alpaca", "crypto"): 30,
+    ("tradier", "equities"): 100,
+}
 
 
 class LiveFeedAggregator:
@@ -169,6 +185,7 @@ class LiveFeedAggregator:
         self._adapter_factory = adapter_factory or self._default_adapter_factory
         self._tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._states: dict[tuple[str, str], _SubState] = {}
+        self._streams: dict[tuple[str, str], _StreamConn] = {}
         self._retention_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._bar_subscribers: dict[tuple[str, str, str], set[Callable]] = {}
@@ -241,9 +258,10 @@ class LiveFeedAggregator:
                 await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-            state = self._states.get(key)
-            if state is not None and state.handle is not None:
-                close = getattr(state.handle, "close", None)
+        # Close all shared stream connections.
+        for conn in list(self._streams.values()):
+            if conn.handle is not None:
+                close = getattr(conn.handle, "close", None)
                 if callable(close):
                     try:
                         close()
@@ -251,15 +269,100 @@ class LiveFeedAggregator:
                         pass
         self._tasks.clear()
         self._states.clear()
+        self._streams.clear()
 
     async def start_subscription(self, broker: str, symbol: str, asset_class: str = "equities") -> None:
+        """Ensure a stream connection exists for (broker, asset_class), add
+        this symbol to its subscribe set, then start a per-symbol flush task."""
         key = (broker, symbol)
         if key in self._tasks:
             return
-        self._states[key] = _SubState()
+
+        # -- open or reuse the shared stream connection --
+        stream_key = (broker, asset_class)
+        conn = self._streams.get(stream_key)
+
+        # Create per-symbol state BEFORE opening/joining the stream so that
+        # synchronous callbacks fired during start_market_data_stream can
+        # already look up this symbol in _states.
+        state = _SubState()
+        self._states[key] = state
+
+        if conn is None:
+            # First subscription for this (broker, asset_class): open a new stream.
+            conn = _StreamConn()
+            self._streams[stream_key] = conn
+
+            adapter = await self._adapter_for_broker(broker)
+            if adapter is None:
+                logger.warning(
+                    "No live_feed_account.%s setting (or account); aggregator idles for %s/%s",
+                    broker, broker, symbol,
+                )
+                await self._mark_subscription_error(
+                    broker, symbol,
+                    f"No live_feed_account.{broker} configured",
+                )
+            else:
+                try:
+                    conn.handle = adapter.start_market_data_stream(
+                        [symbol],
+                        self._make_on_trade(broker),
+                        self._make_on_quote(broker),
+                        asset_class=asset_class,
+                    )
+                    conn.symbols.add(symbol)
+                except NotImplementedError:
+                    logger.warning(
+                        "Adapter for %s does not implement start_market_data_stream; aggregator idles",
+                        broker,
+                    )
+                    await self._mark_subscription_error(
+                        broker, symbol, "adapter lacks start_market_data_stream"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("Failed to open stream for %s/%s", broker, symbol)
+                    await self._mark_subscription_error(broker, symbol, f"stream open failed: {e}")
+        else:
+            # Reuse existing stream: add this symbol to it.
+            cap = _MAX_SYMBOLS_PER_STREAM.get(stream_key, 30)
+            if len(conn.symbols) >= cap:
+                raise RuntimeError(
+                    f"broker stream cap reached for {broker}/{asset_class}: "
+                    f"{cap} symbols. Stop a subscription before adding more."
+                )
+            if symbol not in conn.symbols:
+                add = getattr(conn.handle, "add_symbols", None)
+                if callable(add):
+                    add([symbol])
+                    conn.symbols.add(symbol)
+                elif conn.handle is not None:
+                    # Restart-from-scratch fallback for adapters without add_symbols.
+                    old_handle = conn.handle
+                    conn.symbols.add(symbol)
+                    adapter = await self._adapter_for_broker(broker)
+                    if adapter is not None:
+                        try:
+                            conn.handle = adapter.start_market_data_stream(
+                                list(conn.symbols),
+                                self._make_on_trade(broker),
+                                self._make_on_quote(broker),
+                                asset_class=asset_class,
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            logger.exception("Failed to restart stream for %s/%s", broker, symbol)
+                            conn.symbols.discard(symbol)
+                        try:
+                            old_handle.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+
+        # -- start the per-symbol flush task --
         self._tasks[key] = asyncio.create_task(self._run(broker, symbol, asset_class))
 
     async def stop_subscription(self, broker: str, symbol: str) -> None:
+        """Remove this symbol from the broker stream's subscribe set. If the
+        stream's symbol set becomes empty, close the connection."""
         key = (broker, symbol)
         t = self._tasks.pop(key, None)
         if t:
@@ -268,14 +371,26 @@ class LiveFeedAggregator:
                 await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-        state = self._states.pop(key, None)
-        if state and state.handle is not None:
-            close = getattr(state.handle, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:  # noqa: BLE001
-                    pass
+        self._states.pop(key, None)
+
+        # Find the (broker, asset_class) stream holding this symbol and remove it.
+        for stream_key, conn in list(self._streams.items()):
+            if symbol in conn.symbols:
+                conn.symbols.discard(symbol)
+                remove = getattr(conn.handle, "remove_symbols", None)
+                if callable(remove):
+                    try:
+                        remove([symbol])
+                    except Exception:  # noqa: BLE001
+                        pass
+                if not conn.symbols:
+                    if conn.handle is not None:
+                        try:
+                            conn.handle.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    del self._streams[stream_key]
+                return
 
     async def _adapter_for_broker(self, broker: str) -> Optional[object]:
         """Resolve credentials and construct the broker adapter.
@@ -290,45 +405,19 @@ class LiveFeedAggregator:
         creds = self._decrypt_creds(account)
         return self._adapter_factory(account.broker_type, account.environment, creds)
 
-    # ------- main task -------
-    async def _run(self, broker: str, symbol: str, asset_class: str = "equities") -> None:
-        key = (broker, symbol)
-        state = self._states[key]
-        logger.info("LiveFeedAggregator starting for %s/%s", broker, symbol)
-        loop = asyncio.get_running_loop()
+    def _make_on_trade(self, broker: str) -> Callable:
+        """Return a trade callback for the given broker.
 
-        # Resolve credentials and construct the adapter via _adapter_for_broker
-        # so tests can monkeypatch that single seam.
-        try:
-            adapter = await self._adapter_for_broker(broker)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Failed to construct adapter for %s", broker)
-            await self._mark_subscription_error(broker, symbol, f"adapter init failed: {e}")
-            try:
-                while True:
-                    await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                return
-
-        if adapter is None:
-            logger.warning(
-                "No live_feed_account.%s setting (or account); aggregator idles for %s/%s",
-                broker, broker, symbol,
-            )
-            await self._mark_subscription_error(
-                broker, symbol,
-                f"No live_feed_account.{broker} configured",
-            )
-            try:
-                while True:
-                    await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                return
-
-        # Callbacks fire on the stream's own thread; bridge into our state
-        # under a small lock — we don't need an event-loop call here since
-        # all draining happens from the asyncio task below.
+        The callback dispatches each tick to the correct per-symbol _SubState
+        by reading ``tick["symbol"]``.  Callbacks fire on the stream's own
+        thread; we take the per-symbol lock for state mutation and bridge back
+        into the asyncio loop for event dispatch.
+        """
         def _on_trade(tick: dict) -> None:
+            symbol = tick.get("symbol")
+            state = self._states.get((broker, symbol))
+            if state is None:
+                return
             with state.lock:
                 state.trades.append(tick)
                 ts = tick.get("timestamp") or self._now()
@@ -346,32 +435,29 @@ class LiveFeedAggregator:
                 asyncio.run_coroutine_threadsafe(
                     self._dispatch_event(broker, symbol, tick), self._loop
                 )
+        return _on_trade
 
+    def _make_on_quote(self, broker: str) -> Callable:
+        """Return a quote callback for the given broker, dispatching by symbol."""
         def _on_quote(tick: dict) -> None:
+            symbol = tick.get("symbol")
+            state = self._states.get((broker, symbol))
+            if state is None:
+                return
             with state.lock:
                 state.quotes.append(tick)
+        return _on_quote
 
-        try:
-            state.handle = adapter.start_market_data_stream(
-                [symbol], _on_trade, _on_quote, asset_class=asset_class,
-            )
-        except NotImplementedError:
-            logger.warning(
-                "Adapter for %s does not implement start_market_data_stream; aggregator idles",
-                broker,
-            )
-            await self._mark_subscription_error(
-                broker, symbol, "adapter lacks start_market_data_stream"
-            )
-            try:
-                while True:
-                    await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                return
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Failed to open stream for %s/%s", broker, symbol)
-            await self._mark_subscription_error(broker, symbol, f"stream open failed: {e}")
-            return
+    # ------- per-symbol flush task -------
+    async def _run(self, broker: str, symbol: str, asset_class: str = "equities") -> None:
+        """Per-symbol flush / bar-finalizer / rate-update loop.
+
+        Stream opening has moved to ``start_subscription``; this task only
+        handles periodic flush and DB writes.
+        """
+        key = (broker, symbol)
+        state = self._states[key]
+        logger.info("LiveFeedAggregator flush task starting for %s/%s", broker, symbol)
 
         last_minute_flushed: Optional[datetime] = None
         last_rate_update: datetime = self._now()
@@ -404,15 +490,6 @@ class LiveFeedAggregator:
                     last_rate_update = now
         except asyncio.CancelledError:
             pass
-        finally:
-            handle = state.handle
-            if handle is not None:
-                close = getattr(handle, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:  # noqa: BLE001
-                        pass
 
     # ------- helpers -------
     async def _resolve_live_feed_account(self, broker: str) -> Optional[Account]:
