@@ -23,7 +23,7 @@ async def test_aggregator_passes_asset_class_to_adapter(tmp_path, monkeypatch):
 
     from coordinator.services import live_feed_aggregator as mod
 
-    async def fake_adapter_for_broker(broker):
+    async def fake_adapter_for_account(account_id):
         return FakeAdapter()
 
     agg = LiveFeedAggregator(
@@ -32,18 +32,18 @@ async def test_aggregator_passes_asset_class_to_adapter(tmp_path, monkeypatch):
         flush_interval_s=60.0,  # long flush so task parks in sleep, not DB writes
     )
     agg._loop = asyncio.get_running_loop()
-    monkeypatch.setattr(agg, "_adapter_for_broker", fake_adapter_for_broker)
+    monkeypatch.setattr(agg, "_adapter_for_account", fake_adapter_for_account)
     # Path setup: writes go under tmp_path.
     monkeypatch.setattr(agg, "_ticks_dir",
                         lambda b, s: tmp_path / b / s / "ticks")
 
-    await agg.start_subscription("alpaca", "BTCUSD", "crypto")
+    await agg.start_subscription("acct-1", "alpaca", "BTCUSD", "crypto")
 
     # Yield control so the _run task can execute up through start_market_data_stream.
     await asyncio.sleep(0.05)
 
     # Cancel the background task to clean up.
-    await agg.stop_subscription("alpaca", "BTCUSD")
+    await agg.stop_subscription("acct-1", "BTCUSD")
 
     assert captured["symbols"] == ["BTCUSD"]
     assert captured["asset_class"] == "crypto"

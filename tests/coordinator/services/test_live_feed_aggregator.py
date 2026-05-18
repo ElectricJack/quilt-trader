@@ -25,7 +25,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from coordinator.database.connection import create_engine, create_session_factory
-from coordinator.database.models import Account, Base, LiveSubscription, Setting
+from coordinator.database.models import Account, Base, LiveSubscription
 from coordinator.services.data_service import DataService
 from coordinator.services.encryption import EncryptionService
 from coordinator.services.live_feed_aggregator import LiveFeedAggregator
@@ -73,8 +73,7 @@ async def engine_and_factory():
 async def test_aggregator_writes_tick_parquets_and_bars(tmp_path, engine_and_factory):
     engine, sf = engine_and_factory
 
-    # Pre-seed: account + setting that maps live_feed_account.fakebroker → that account,
-    # plus a running LiveSubscription row.
+    # Pre-seed: account + a running LiveSubscription row linked to that account.
     async with sf() as session:
         acct = Account(
             id="acct-fake",
@@ -85,11 +84,8 @@ async def test_aggregator_writes_tick_parquets_and_bars(tmp_path, engine_and_fac
             supported_asset_types=["equities"],
         )
         session.add(acct)
-        session.add(Setting(
-            key="live_feed_account.fakebroker", value="acct-fake", encrypted=False
-        ))
         session.add(LiveSubscription(
-            broker="fakebroker", symbol="SPY", status="running", dependent_count=1,
+            account_id="acct-fake", broker="fakebroker", symbol="SPY", status="running",
         ))
         await session.commit()
 
@@ -167,15 +163,27 @@ async def test_aggregator_writes_tick_parquets_and_bars(tmp_path, engine_and_fac
 
 @pytest.mark.asyncio
 async def test_aggregator_idles_when_no_account(tmp_path, engine_and_factory):
-    """Should not crash when there's no live_feed_account setting nor any matching account."""
+    """Should not crash when the account_id on the subscription doesn't exist in DB."""
     engine, sf = engine_and_factory
 
+    # Create an account so the FK constraint is satisfied, then reference a
+    # *different* (non-existent) account_id so _adapter_for_account returns None.
     async with sf() as session:
+        acct = Account(
+            id="acct-real",
+            name="real",
+            broker_type="nobroker",
+            environment="paper",
+            credentials=_TEST_ENCRYPTION.encrypt_json({}),
+            supported_asset_types=["equities"],
+        )
+        session.add(acct)
         session.add(LiveSubscription(
-            broker="nobroker", symbol="SPY", status="running", dependent_count=1,
+            account_id="acct-real", broker="nobroker", symbol="SPY", status="running",
         ))
         await session.commit()
 
+    # Monkeypatch _adapter_for_account to simulate "no adapter" (returns None).
     market_dir = str(tmp_path / "market")
     agg = LiveFeedAggregator(
         session_factory=sf,
@@ -184,6 +192,12 @@ async def test_aggregator_idles_when_no_account(tmp_path, engine_and_factory):
         market_dir=market_dir,
         flush_interval_s=0.05,
     )
+
+    async def _no_adapter(account_id):
+        return None
+
+    agg._adapter_for_account = _no_adapter  # type: ignore[method-assign]
+
     await agg.start()
     await asyncio.sleep(0.2)
     await agg.stop()
@@ -196,7 +210,7 @@ async def test_aggregator_idles_when_no_account(tmp_path, engine_and_factory):
             )
         ).scalar_one()
         assert sub.last_error is not None
-        assert "live_feed_account" in (sub.last_error or "")
+        assert "No adapter for account" in (sub.last_error or "")
 
 
 @pytest.mark.asyncio
@@ -213,11 +227,8 @@ async def test_aggregator_updates_rate_and_last_tick(tmp_path, engine_and_factor
             credentials=_TEST_ENCRYPTION.encrypt_json({"api_key": "x", "secret_key": "y"}),
             supported_asset_types=["equities"],
         ))
-        session.add(Setting(
-            key="live_feed_account.fakebroker", value="acct-fake", encrypted=False
-        ))
         session.add(LiveSubscription(
-            broker="fakebroker", symbol="SPY", status="running", dependent_count=1,
+            account_id="acct-fake", broker="fakebroker", symbol="SPY", status="running",
         ))
         await session.commit()
 
