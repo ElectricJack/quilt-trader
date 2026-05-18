@@ -1,218 +1,173 @@
-"""Tests for I1: startup gating + auto-subscribe in LifecycleManager.
-
-A broker_live data dependency requires a running LiveSubscription on the
-account's broker. When that gate passes, the instance is added to the
-LiveFeedManager as a dependent and the row's dependent_count is bumped.
-"""
-from __future__ import annotations
-
 import pytest
-import pytest_asyncio
-from unittest.mock import AsyncMock, MagicMock
 from sqlalchemy import select
 
-from coordinator.database.models import LiveSubscription
-from coordinator.services.lifecycle import (
-    CompatibilityError,
-    LifecycleManager,
-    StartError,
+from coordinator.database.connection import create_engine, create_session_factory
+from coordinator.database.models import (
+    Account, Algorithm, AlgorithmInstance, Base,
+    LiveSubscription, SubscriptionConsumer, Worker,
 )
+from coordinator.services.lifecycle import LifecycleService
 from coordinator.services.live_feed_manager import LiveFeedManager
-
-
-@pytest_asyncio.fixture
-async def empty_manager() -> LiveFeedManager:
-    return LiveFeedManager()
-
-
-def _account(broker: str = "alpaca"):
-    return MagicMock(
-        locked_by=None,
-        supported_asset_types=["equities"],
-        options_level=None,
-        account_features=[],
-        broker_type=broker,
-    )
-
-
-def _algorithm(deps=None):
-    return MagicMock(
-        required_asset_types=["equities"],
-        required_options_level=None,
-        required_account_features=[],
-        supported_brokers=None,
-        data_dependencies=deps,
-    )
+from coordinator.services.scraper_manager import ScraperManager
 
 
 @pytest.mark.asyncio
-async def test_start_refuses_when_no_live_sub(test_app, empty_manager):
-    """Manifest declares broker_live dep but no LiveSubscription row exists."""
-    from coordinator.api.dependencies import get_container
+async def test_pre_start_creates_live_subscription_and_consumer():
+    """Algorithm with assets in its manifest: auto-creates subscription + algo consumer."""
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = create_session_factory(engine)
 
-    container = get_container()
-    lifecycle = LifecycleManager(
-        worker_manager=AsyncMock(),
-        scraper_manager=MagicMock(is_registered=MagicMock(return_value=False)),
-        event_bus=AsyncMock(),
-        live_feed_manager=empty_manager,
-        session_factory=container.session_factory,
-    )
-
-    deps = [{"name": "spy-feed", "symbol": "SPY", "source": "broker_live"}]
-    with pytest.raises(StartError, match="no live subscription for SPY on alpaca"):
-        await lifecycle.pre_start_checks(
-            _account("alpaca"),
-            _algorithm(deps),
-            MagicMock(id="inst-1"),
+    async with sf() as session:
+        worker = Worker(name="W", status="online")
+        acct = Account(name="A", broker_type="alpaca", credentials="{}",
+                       supported_asset_types=["equities", "crypto"])
+        algo = Algorithm(
+            repo_url="x", name="multi",
+            assets=[
+                {"broker": "alpaca", "symbol": "SPY", "asset_class": "equities"},
+                {"broker": "alpaca", "symbol": "BTCUSD", "asset_class": "crypto"},
+            ],
         )
-
-
-@pytest.mark.asyncio
-async def test_start_refuses_when_sub_exists_but_not_running(test_app, empty_manager):
-    from coordinator.api.dependencies import get_container
-
-    container = get_container()
-    async with container.session_factory() as session:
-        sub = LiveSubscription(
-            broker="alpaca", symbol="SPY", status="stopped", dependent_count=0
+        session.add_all([worker, acct, algo])
+        await session.flush()
+        inst = AlgorithmInstance(
+            algorithm_id=algo.id, account_id=acct.id, worker_id=worker.id,
+            status="stopped",
         )
-        session.add(sub)
+        session.add(inst)
         await session.commit()
+        inst_id = inst.id
 
-    lifecycle = LifecycleManager(
-        worker_manager=AsyncMock(),
-        scraper_manager=MagicMock(is_registered=MagicMock(return_value=False)),
-        event_bus=AsyncMock(),
-        live_feed_manager=empty_manager,
-        session_factory=container.session_factory,
+    service = LifecycleService(
+        scraper_manager=ScraperManager(),
+        live_feed_manager=LiveFeedManager(),
+        session_factory=sf,
     )
-    deps = [{"name": "spy-feed", "symbol": "SPY", "source": "broker_live"}]
-    with pytest.raises(StartError, match="no live subscription for SPY on alpaca"):
-        await lifecycle.pre_start_checks(
-            _account("alpaca"),
-            _algorithm(deps),
-            MagicMock(id="inst-1"),
-        )
 
+    async with sf() as session:
+        algo = (await session.execute(select(Algorithm))).scalar_one()
+        acct = (await session.execute(select(Account))).scalar_one()
+        inst = (await session.execute(select(AlgorithmInstance))).scalar_one()
+        await service.pre_start_checks(acct, algo, inst)
 
-@pytest.mark.asyncio
-async def test_start_adds_dependent_and_increments_count(test_app, empty_manager):
-    from coordinator.api.dependencies import get_container
-
-    container = get_container()
-    async with container.session_factory() as session:
-        sub = LiveSubscription(
-            broker="alpaca", symbol="SPY", status="running", dependent_count=0
-        )
-        session.add(sub)
-        await session.commit()
-
-    lifecycle = LifecycleManager(
-        worker_manager=AsyncMock(),
-        scraper_manager=MagicMock(is_registered=MagicMock(return_value=False)),
-        event_bus=AsyncMock(),
-        live_feed_manager=empty_manager,
-        session_factory=container.session_factory,
-    )
-    deps = [{"name": "spy-feed", "symbol": "SPY", "source": "broker_live"}]
-    await lifecycle.pre_start_checks(
-        _account("alpaca"),
-        _algorithm(deps),
-        MagicMock(id="inst-1"),
-    )
-    assert empty_manager.dependent_count("alpaca", "SPY") == 1
-
-    async with container.session_factory() as session:
-        row = (
-            await session.execute(
-                select(LiveSubscription).where(
-                    LiveSubscription.broker == "alpaca",
-                    LiveSubscription.symbol == "SPY",
+    async with sf() as session:
+        subs = (await session.execute(select(LiveSubscription))).scalars().all()
+        assert len(subs) == 2
+        symbols = sorted(s.symbol for s in subs)
+        assert symbols == ["BTCUSD", "SPY"]
+        for s in subs:
+            consumers = (await session.execute(
+                select(SubscriptionConsumer).where(
+                    SubscriptionConsumer.subscription_id == s.id
                 )
-            )
-        ).scalar_one()
-        assert row.dependent_count == 1
+            )).scalars().all()
+            assert len(consumers) == 1
+            assert consumers[0].consumer_type == "algo"
+            assert consumers[0].consumer_id == inst_id
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_post_stop_releases_dependent_and_decrements(test_app, empty_manager):
-    from coordinator.api.dependencies import get_container
+async def test_post_stop_deletes_algo_consumer_and_auto_deletes_orphan_subscription():
+    """Post-stop releases the algo consumer; if no other consumers, the
+    subscription row is auto-deleted."""
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = create_session_factory(engine)
 
-    container = get_container()
-    async with container.session_factory() as session:
-        sub = LiveSubscription(
-            broker="alpaca", symbol="SPY", status="running", dependent_count=1
+    async with sf() as session:
+        worker = Worker(name="W", status="online")
+        acct = Account(name="A", broker_type="alpaca", credentials="{}",
+                       supported_asset_types=["equities"])
+        algo = Algorithm(
+            repo_url="x", name="single",
+            assets=[{"broker": "alpaca", "symbol": "SPY", "asset_class": "equities"}],
         )
-        session.add(sub)
+        session.add_all([worker, acct, algo])
+        await session.flush()
+        inst = AlgorithmInstance(
+            algorithm_id=algo.id, account_id=acct.id, worker_id=worker.id,
+            status="stopped",
+        )
+        session.add(inst)
         await session.commit()
-    # Seed in-memory manager so release() finds the dependent.
-    empty_manager.register("alpaca", "SPY")
-    empty_manager.add_dependent("alpaca", "SPY", "inst-1")
-    empty_manager.start("alpaca", "SPY")
 
-    lifecycle = LifecycleManager(
-        worker_manager=AsyncMock(),
-        scraper_manager=MagicMock(is_registered=MagicMock(return_value=False)),
-        event_bus=AsyncMock(),
-        live_feed_manager=empty_manager,
-        session_factory=container.session_factory,
+    service = LifecycleService(
+        scraper_manager=ScraperManager(),
+        live_feed_manager=LiveFeedManager(),
+        session_factory=sf,
     )
-    deps = [{"name": "spy-feed", "symbol": "SPY", "source": "broker_live"}]
-    await lifecycle.post_stop_actions(
-        _account("alpaca"),
-        _algorithm(deps),
-        MagicMock(id="inst-1"),
-    )
-    assert empty_manager.dependent_count("alpaca", "SPY") == 0
+    async with sf() as session:
+        algo = (await session.execute(select(Algorithm))).scalar_one()
+        acct = (await session.execute(select(Account))).scalar_one()
+        inst = (await session.execute(select(AlgorithmInstance))).scalar_one()
+        await service.pre_start_checks(acct, algo, inst)
+        await service.post_stop_actions(acct, algo, inst)
 
-    async with container.session_factory() as session:
-        row = (
-            await session.execute(
-                select(LiveSubscription).where(
-                    LiveSubscription.broker == "alpaca",
-                    LiveSubscription.symbol == "SPY",
-                )
+    async with sf() as session:
+        subs = (await session.execute(select(LiveSubscription))).scalars().all()
+        assert subs == [], "subscription should be auto-deleted when last consumer is released"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_post_stop_preserves_subscription_held_by_manual_consumer():
+    """Post-stop deletes only the algo consumer; manual consumer keeps the sub alive."""
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = create_session_factory(engine)
+
+    async with sf() as session:
+        worker = Worker(name="W", status="online")
+        acct = Account(name="A", broker_type="alpaca", credentials="{}",
+                       supported_asset_types=["equities"])
+        algo = Algorithm(
+            repo_url="x", name="single",
+            assets=[{"broker": "alpaca", "symbol": "SPY", "asset_class": "equities"}],
+        )
+        session.add_all([worker, acct, algo])
+        await session.flush()
+        inst = AlgorithmInstance(
+            algorithm_id=algo.id, account_id=acct.id, worker_id=worker.id,
+            status="stopped",
+        )
+        # Pre-existing subscription with a manual consumer.
+        sub = LiveSubscription(broker="alpaca", symbol="SPY", asset_class="equities",
+                               status="running")
+        session.add_all([inst, sub])
+        await session.flush()
+        session.add(SubscriptionConsumer(
+            subscription_id=sub.id, consumer_type="manual", consumer_id=None,
+        ))
+        await session.commit()
+
+    service = LifecycleService(
+        scraper_manager=ScraperManager(),
+        live_feed_manager=LiveFeedManager(),
+        session_factory=sf,
+    )
+    async with sf() as session:
+        algo = (await session.execute(select(Algorithm))).scalar_one()
+        acct = (await session.execute(select(Account))).scalar_one()
+        inst = (await session.execute(select(AlgorithmInstance))).scalar_one()
+        await service.pre_start_checks(acct, algo, inst)
+        await service.post_stop_actions(acct, algo, inst)
+
+    async with sf() as session:
+        subs = (await session.execute(select(LiveSubscription))).scalars().all()
+        assert len(subs) == 1
+        consumers = (await session.execute(
+            select(SubscriptionConsumer).where(
+                SubscriptionConsumer.subscription_id == subs[0].id
             )
-        ).scalar_one()
-        assert row.dependent_count == 0
+        )).scalars().all()
+        assert len(consumers) == 1
+        assert consumers[0].consumer_type == "manual"
 
-
-@pytest.mark.asyncio
-async def test_historical_deps_do_not_gate(test_app, empty_manager):
-    """Non-broker_live deps should not require a live subscription."""
-    from coordinator.api.dependencies import get_container
-
-    container = get_container()
-    lifecycle = LifecycleManager(
-        worker_manager=AsyncMock(),
-        scraper_manager=MagicMock(is_registered=MagicMock(return_value=False)),
-        event_bus=AsyncMock(),
-        live_feed_manager=empty_manager,
-        session_factory=container.session_factory,
-    )
-    deps = [{"name": "spy-polygon", "symbol": "SPY", "source": "polygon"}]
-    # No exception
-    await lifecycle.pre_start_checks(
-        _account("alpaca"),
-        _algorithm(deps),
-        MagicMock(id="inst-1"),
-    )
-    assert empty_manager.dependent_count("alpaca", "SPY") == 0
-
-
-@pytest.mark.asyncio
-async def test_no_live_feed_manager_is_backwards_compatible():
-    """Existing call sites that don't pass live_feed_manager should still work."""
-    lifecycle = LifecycleManager(
-        worker_manager=AsyncMock(),
-        scraper_manager=MagicMock(is_registered=MagicMock(return_value=False)),
-        event_bus=AsyncMock(),
-    )
-    deps = [{"name": "spy-feed", "symbol": "SPY", "source": "broker_live"}]
-    # When the live-feed manager is absent, gating is skipped (early phases).
-    await lifecycle.pre_start_checks(
-        _account("alpaca"),
-        _algorithm(deps),
-        MagicMock(id="inst-1"),
-    )
+    await engine.dispose()

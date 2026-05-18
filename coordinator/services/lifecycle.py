@@ -55,6 +55,23 @@ def _split_data_deps(deps: Any) -> tuple[list[dict], list[dict]]:
     return broker_live, historical
 
 
+def _parse_assets(assets: Any) -> list[dict]:
+    """Return list of {broker, symbol, asset_class} dicts. ``assets`` may be
+    None or a list of dicts in the new structured format."""
+    out: list[dict] = []
+    if not assets:
+        return out
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        broker = a.get("broker")
+        symbol = a.get("symbol")
+        asset_class = a.get("asset_class", "equities")
+        if broker and symbol:
+            out.append({"broker": broker, "symbol": symbol, "asset_class": asset_class})
+    return out
+
+
 class LifecycleManager:
     def __init__(
         self,
@@ -191,4 +208,122 @@ class LifecycleManager:
                 ).scalar_one_or_none()
                 if sub is not None:
                     sub.dependent_count = max(0, (sub.dependent_count or 0) - 1)
+            await session.commit()
+
+
+class LifecycleService:
+    """Lightweight lifecycle service that reads from ``algorithm.assets``
+    (the new structured format) to auto-create LiveSubscription + consumer
+    rows on deploy and tear them down on stop."""
+
+    def __init__(
+        self,
+        scraper_manager: ScraperManager,
+        live_feed_manager: Optional[LiveFeedManager] = None,
+        session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
+    ) -> None:
+        self._scraper_manager = scraper_manager
+        self._live_feed_manager = live_feed_manager
+        self._session_factory = session_factory
+
+    @staticmethod
+    def check_compatibility(account: dict, algorithm: dict) -> CompatibilityResult:
+        return LifecycleManager.check_compatibility(account, algorithm)
+
+    async def pre_start_checks(self, account: Any, algorithm: Any, instance: Any) -> None:
+        if account.locked_by is not None and account.locked_by != instance.id:
+            raise CompatibilityError(f"Account is locked by instance {account.locked_by}")
+        result = self.check_compatibility(
+            {
+                "supported_asset_types": account.supported_asset_types or [],
+                "options_level": account.options_level,
+                "account_features": account.account_features or [],
+                "broker_type": account.broker_type,
+            },
+            {
+                "required_asset_types": algorithm.required_asset_types or [],
+                "required_options_level": algorithm.required_options_level,
+                "required_account_features": algorithm.required_account_features or [],
+                "supported_brokers": algorithm.supported_brokers,
+            },
+        )
+        if not result.compatible:
+            raise CompatibilityError(
+                f"Compatibility check failed: {'; '.join(result.mismatches)}"
+            )
+
+        assets = _parse_assets(algorithm.assets)
+        if not assets or self._live_feed_manager is None or self._session_factory is None:
+            return
+
+        from coordinator.database.models import LiveSubscription, SubscriptionConsumer
+        from sqlalchemy.orm import selectinload
+
+        async with self._session_factory() as session:
+            for asset in assets:
+                broker = asset["broker"]
+                symbol = asset["symbol"]
+                asset_class = asset["asset_class"]
+                sub = (await session.execute(
+                    select(LiveSubscription)
+                    .where(LiveSubscription.broker == broker, LiveSubscription.symbol == symbol)
+                    .options(selectinload(LiveSubscription.consumers))
+                )).scalar_one_or_none()
+                if sub is None:
+                    sub = LiveSubscription(
+                        broker=broker, symbol=symbol, asset_class=asset_class,
+                        status="running",
+                    )
+                    session.add(sub)
+                    await session.flush()
+                # Idempotent: if this deployment already has a consumer row, skip.
+                already = (await session.execute(
+                    select(SubscriptionConsumer).where(
+                        SubscriptionConsumer.subscription_id == sub.id,
+                        SubscriptionConsumer.consumer_type == "algo",
+                        SubscriptionConsumer.consumer_id == instance.id,
+                    )
+                )).scalar_one_or_none()
+                if already is None:
+                    session.add(SubscriptionConsumer(
+                        subscription_id=sub.id, consumer_type="algo",
+                        consumer_id=instance.id,
+                    ))
+                self._live_feed_manager.ensure_running(broker, symbol, instance.id)
+            await session.commit()
+
+    async def post_stop_actions(
+        self, account: Any, algorithm: Any, instance: Any
+    ) -> None:
+        """Release any algo consumers this instance held. If a subscription has
+        no remaining consumers, delete the row (symmetric auto-delete)."""
+        assets = _parse_assets(algorithm.assets)
+        if not assets or self._live_feed_manager is None or self._session_factory is None:
+            return
+
+        from coordinator.database.models import LiveSubscription, SubscriptionConsumer
+        from sqlalchemy.orm import selectinload
+
+        async with self._session_factory() as session:
+            for asset in assets:
+                broker = asset["broker"]
+                symbol = asset["symbol"]
+                self._live_feed_manager.release(broker, symbol, instance.id)
+
+                sub = (await session.execute(
+                    select(LiveSubscription)
+                    .where(LiveSubscription.broker == broker, LiveSubscription.symbol == symbol)
+                    .options(selectinload(LiveSubscription.consumers))
+                )).scalar_one_or_none()
+                if sub is None:
+                    continue
+                # Delete this deployment's algo consumer rows.
+                for c in list(sub.consumers):
+                    if c.consumer_type == "algo" and c.consumer_id == instance.id:
+                        await session.delete(c)
+                await session.flush()
+                await session.refresh(sub, ["consumers"])
+                # Auto-delete the sub if no consumers remain.
+                if not sub.consumers:
+                    await session.delete(sub)
             await session.commit()
