@@ -192,7 +192,9 @@ export function LiveSubscriptionsSection() {
                     </span>
                     {s.tick_rate_per_min != null && (
                       <span className="text-xs text-gray-500">
-                        ~{Math.round(s.tick_rate_per_min)}/min
+                        {s.tick_rate_per_min >= 1
+                          ? `~${Math.round(s.tick_rate_per_min)}/min`
+                          : `~${Math.round(s.tick_rate_per_min * 60)}/hr`}
                       </span>
                     )}
                     <span
