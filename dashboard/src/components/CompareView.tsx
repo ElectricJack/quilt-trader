@@ -327,6 +327,7 @@ function syncTimeScales(charts: IChartApi[]): () => void {
 
 /** Base chart options shared by all sub-charts. */
 const CHART_OPTIONS = {
+  autoSize: true,
   layout: {
     background: { type: ColorType.Solid, color: "#111827" },
     textColor: "#9ca3af",
@@ -421,18 +422,10 @@ function OverlayChart({ loaded, chartType }: SubChartProps) {
     if (!containerRef.current) return;
     const c = createChart(containerRef.current, {
       ...CHART_OPTIONS,
-      width: containerRef.current.clientWidth,
-      height: 420,
     });
     setChart(c);
     didFitRef.current = false;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) c.applyOptions({ width: entry.contentRect.width });
-    });
-    observer.observe(containerRef.current);
     return () => {
-      observer.disconnect();
       c.remove();
       setChart(null);
       seriesRefs.current = [];
@@ -471,12 +464,11 @@ function OverlayChart({ loaded, chartType }: SubChartProps) {
   }, [chart, loaded, chartType]);
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col flex-1 min-h-0 space-y-2">
       <Legend loaded={loaded} chartType={chartType} />
       <div
         ref={containerRef}
-        className="w-full rounded-lg border border-gray-800"
-        style={{ height: 420 }}
+        className="flex-1 min-h-0 w-full rounded-lg border border-gray-800"
       />
     </div>
   );
@@ -505,28 +497,40 @@ function StackedCharts({ loaded, chartType }: SubChartProps) {
     const live = chartsRef.current.filter((c): c is IChartApi => c != null);
     if (live.length < 2) return;
 
-    // Align all charts to the union of their data extents before syncing, so
-    // they start showing the same time window even if data spans differ.
-    const allTimes = loaded.flatMap((l) => l.rows.map((r) => r.time as number));
-    if (allTimes.length > 0) {
-      const minTime = Math.min(...allTimes) as UTCTimestamp;
-      const maxTime = Math.max(...allTimes) as UTCTimestamp;
-      for (const c of live) {
-        try {
-          c.timeScale().setVisibleRange({ from: minTime, to: maxTime });
-        } catch {
-          // ignore if chart has no data yet
+    // Helper: align all live charts to the union of their data extents.
+    const applyUnionRange = () => {
+      const allTimes = loaded.flatMap((l) => l.rows.map((r) => r.time as number));
+      if (allTimes.length > 0) {
+        const minTime = Math.min(...allTimes) as UTCTimestamp;
+        const maxTime = Math.max(...allTimes) as UTCTimestamp;
+        for (const c of live) {
+          try {
+            c.timeScale().setVisibleRange({ from: minTime, to: maxTime });
+          } catch {
+            // ignore if chart has no data yet
+          }
         }
       }
-    }
+    };
+
+    // Align immediately (catches cases where data is already present).
+    applyUnionRange();
+
+    // Re-align after a short delay to catch any late data loads — the series
+    // data may arrive slightly after the chart instance is created, causing
+    // the initial alignment to see empty rows for some charts.
+    const timerId = setTimeout(applyUnionRange, 100);
 
     const cleanup = syncTimeScales(live);
-    return cleanup;
+    return () => {
+      clearTimeout(timerId);
+      cleanup();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncVersion, loaded]);
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col flex-1 min-h-0 gap-3">
       {loaded.map((l, i) => (
         <StackedRow
           key={datasetLabel(l.dataset)}
@@ -566,19 +570,11 @@ function StackedRow({
     if (!containerRef.current) return;
     const c = createChart(containerRef.current, {
       ...CHART_OPTIONS,
-      width: containerRef.current.clientWidth,
-      height: 220,
     });
     setChart(c);
     didFitRef.current = false;
     onChartReadyRef.current(c);
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) c.applyOptions({ width: entry.contentRect.width });
-    });
-    observer.observe(containerRef.current);
     return () => {
-      observer.disconnect();
       c.remove();
       setChart(null);
       seriesRef.current = null;
@@ -614,8 +610,8 @@ function StackedRow({
   const lineColor = SERIES_COLORS[colorIdx % SERIES_COLORS.length];
 
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-1 text-xs font-mono text-gray-300">
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="flex items-center gap-2 mb-1 text-xs font-mono text-gray-300 shrink-0">
         {chartType === "candlestick" ? (
           <CandleDot upColor={dc.up} downColor={dc.down} />
         ) : (
@@ -628,8 +624,7 @@ function StackedRow({
       </div>
       <div
         ref={containerRef}
-        className="w-full rounded-lg border border-gray-800"
-        style={{ height: 220 }}
+        className="flex-1 min-h-0 w-full rounded-lg border border-gray-800"
       />
     </div>
   );
@@ -678,18 +673,10 @@ function DiffChart({ loaded }: SubChartProps) {
     if (!containerRef.current) return;
     const c = createChart(containerRef.current, {
       ...CHART_OPTIONS,
-      width: containerRef.current.clientWidth,
-      height: 360,
     });
     setChart(c);
     didFitRef.current = false;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) c.applyOptions({ width: entry.contentRect.width });
-    });
-    observer.observe(containerRef.current);
     return () => {
-      observer.disconnect();
       c.remove();
       setChart(null);
       seriesRef.current = null;
@@ -739,8 +726,8 @@ function DiffChart({ loaded }: SubChartProps) {
 
   const [a, b] = loaded;
   return (
-    <div className="space-y-2">
-      <div className="text-xs text-gray-400">
+    <div className="flex flex-col flex-1 min-h-0 space-y-2">
+      <div className="text-xs text-gray-400 shrink-0">
         Diff: <span className="font-mono text-gray-200">{datasetLabel(b.dataset)}</span>
         <span className="mx-1">−</span>
         <span className="font-mono text-gray-200">{datasetLabel(a.dataset)}</span>
@@ -752,8 +739,7 @@ function DiffChart({ loaded }: SubChartProps) {
       </div>
       <div
         ref={containerRef}
-        className="w-full rounded-lg border border-gray-800"
-        style={{ height: 360 }}
+        className="flex-1 min-h-0 w-full rounded-lg border border-gray-800"
       />
     </div>
   );
@@ -867,7 +853,7 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
 
   return (
     <ViewportCtx.Provider value={ctxValue}>
-      <div className="space-y-3">
+      <div className="flex flex-col h-full gap-3">
         <ModeBar
           mode={mode}
           setMode={setMode}

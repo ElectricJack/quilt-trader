@@ -785,7 +785,7 @@ export function Data() {
               <X size={18} />
             </button>
           </div>
-          <div className="flex-1 overflow-auto p-6">
+          <div className="flex-1 overflow-hidden flex flex-col min-h-0 p-6">
             <CompareView
               datasets={selected}
               mode={compareMode}
