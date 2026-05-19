@@ -104,8 +104,14 @@ async def create_run(body: BacktestRunCreate, db: AsyncSession = Depends(get_db)
     )
     db.add(run)
     await db.flush()
-    _dispatch_runner(get_container(), run.id)
-    return _to_response(run)
+    run_id = run.id
+    response = _to_response(run)
+    # Commit BEFORE dispatching the background runner so its session can
+    # read the row. get_db's auto-commit fires after the handler returns,
+    # but the background task may start before that.
+    await db.commit()
+    _dispatch_runner(get_container(), run_id)
+    return response
 
 
 @router.get("")
