@@ -133,6 +133,21 @@ def worker_regenerate_token(ctx, worker_id):
         click.echo(f"new install_token: {body.get('install_token')}")
 
 
+@worker_group.command("update")
+@click.argument("worker_id")
+@click.pass_context
+def worker_update(ctx, worker_id):
+    """Send an update command to a worker (git pull + restart)."""
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.post(f"/api/workers/{worker_id}/update")
+        finally:
+            await c.aclose()
+    body = _run(go())
+    click.echo(f"Update command sent to worker {worker_id}. The worker will pull latest code and restart.")
+
+
 @worker_group.command("delete")
 @click.argument("worker_id")
 @click.option("--yes", is_flag=True, help="Confirm deletion.")
