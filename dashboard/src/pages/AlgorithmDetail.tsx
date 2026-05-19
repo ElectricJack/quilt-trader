@@ -22,6 +22,7 @@ import { FormField } from "../components/FormField";
 import { DataTable } from "../components/DataTable";
 import type { ColumnDef } from "../components/DataTable";
 import { useUIStore } from "../stores/ui";
+import { ParameterSetsSection } from "../components/ParameterSetsSection";
 
 // ─── Create Instance schema ────────────────────────────────────────────────────
 
@@ -328,6 +329,24 @@ export function AlgorithmDetail() {
           </div>
         )}
       </div>
+
+      {/* Parameter Sets */}
+      <ParameterSetsSection
+        algorithmId={algorithm.id}
+        manifestConfig={
+          (algorithm.config_schema?.parameters as Array<{
+            name: string;
+            type: string;
+            default?: unknown;
+          }>) ?? []
+        }
+        onBacktest={(setId) => {
+          // We'll wire this properly in Phase 5
+          void setId;
+          setBacktestOpen(true);
+        }}
+        onDeploy={() => setCreateOpen(true)}
+      />
 
       {/* Config Schema */}
       {algorithm.config_schema && (
