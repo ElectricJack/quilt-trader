@@ -303,6 +303,15 @@ class LiveFeedAggregator:
             stream_key = (f"provider:{broker}", asset_class)
         else:
             stream_key = (account_id, asset_class)
+
+        # Coinbase only supports crypto market data.
+        provider_type = broker if account_id is None else None
+        if provider_type == "coinbase" and asset_class != "crypto":
+            logger.warning(
+                "Coinbase only supports crypto; ignoring %s/%s", broker, symbol
+            )
+            return
+
         state_key = (broker, symbol)
 
         if state_key not in self._states:
@@ -496,6 +505,14 @@ class LiveFeedAggregator:
                     return ThetaDataStreamAdapter(username=username, password=password)
                 except Exception:
                     logger.exception("Failed to construct ThetaDataStreamAdapter")
+                    return None
+            elif provider_type == "coinbase":
+                # Coinbase public market data requires no API key
+                try:
+                    from worker.coinbase_stream_adapter import CoinbaseStreamAdapter
+                    return CoinbaseStreamAdapter()
+                except Exception:
+                    logger.exception("Failed to construct CoinbaseStreamAdapter")
                     return None
             else:
                 logger.warning("Unknown provider_type: %s", provider_type)
