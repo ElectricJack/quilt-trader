@@ -51,6 +51,8 @@ class BacktestTickContext(TickContext):
         account_value: Optional[float] = None,
         buying_power: Optional[float] = None,
         default_source: Optional[str] = None,
+        data_service: Optional[Any] = None,
+        on_miss: Optional[Any] = None,  # sync callable(symbol, timeframe, source) -> Optional[pd.DataFrame]
     ) -> None:
         self._bars = bars
         self._positions = positions
@@ -58,6 +60,8 @@ class BacktestTickContext(TickContext):
         self._account_value = account_value if account_value is not None else cash
         self._buying_power = buying_power if buying_power is not None else cash
         self._default_source = default_source
+        self._data_service = data_service
+        self._on_miss = on_miss
         self._sim_time_now: Optional[datetime] = None
         self._custom_data_cache: Optional[dict[str, pd.DataFrame]] = None
 
@@ -116,16 +120,55 @@ class BacktestTickContext(TickContext):
                 if sym == symbol and tf == timeframe:
                     src = s
                     break
+        # Use "polygon" as the last-resort default provider
+        src = src or "polygon"
         key = (src, symbol, timeframe)
         df = self._bars.get(key)
+
+        # On a cache miss, try loading from disk first (fast path, no network).
+        if (df is None or df.empty) and self._data_service is not None:
+            disk_df = self._data_service.load_market_data(src, symbol, timeframe)
+            if disk_df is not None and not disk_df.empty:
+                if "timestamp" in disk_df.columns:
+                    disk_df = disk_df.copy()
+                    disk_df["timestamp"] = pd.to_datetime(disk_df["timestamp"]).dt.tz_localize(None)
+                self._bars[key] = disk_df
+                df = disk_df
+
+        # If still not found, call the on_miss hook (downloads and caches to disk).
+        if (df is None or df.empty) and self._on_miss is not None:
+            import logging
+            logging.getLogger(__name__).info(
+                "market_data miss — auto-downloading %s %s (%s)", symbol, timeframe, src
+            )
+            try:
+                fetched = self._on_miss(symbol, timeframe, src)
+                if fetched is not None and not fetched.empty:
+                    if "timestamp" in fetched.columns:
+                        fetched = fetched.copy()
+                        fetched["timestamp"] = pd.to_datetime(fetched["timestamp"]).dt.tz_localize(None)
+                    self._bars[key] = fetched
+                    df = fetched
+            except Exception:
+                import logging as _log
+                _log.getLogger(__name__).exception(
+                    "Auto-download failed for %s %s", symbol, timeframe
+                )
+
         if df is None or df.empty:
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
         duration_s = timeframe_to_seconds(timeframe)
-        cutoff = self._sim_time_now
+        cutoff = pd.Timestamp(self._sim_time_now)
+        # Normalize cutoff tz to match the column. On-disk bars are stored tz-naive
+        # (UTC by convention); pre-loaded bars may be tz-aware. If the column is
+        # tz-naive, strip tz from the cutoff so the comparison succeeds.
+        ts_col = pd.to_datetime(df["timestamp"])
+        if ts_col.dt.tz is None and cutoff.tz is not None:
+            cutoff = cutoff.tz_convert("UTC").tz_localize(None)
         # A bar is "fully closed" if its close time (start + duration) is <= cutoff.
         # For 1tick (duration=0), this collapses to timestamp <= cutoff.
         delta = pd.Timedelta(seconds=duration_s)
-        visible = df[df["timestamp"] + delta <= pd.Timestamp(cutoff)]
+        visible = df[ts_col + delta <= cutoff]
         return visible.tail(bars).reset_index(drop=True)
 
     def data(self, source_name: str) -> pd.DataFrame:

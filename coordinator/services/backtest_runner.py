@@ -244,9 +244,12 @@ class BacktestRunner:
                     "volume": np.zeros(len(dates)),
                 })
 
+            on_miss = self._make_on_miss(date_range_start, date_range_end)
             ctx = BacktestTickContext(
                 bars=bars, positions={}, cash=initial_cash,
                 default_source=clock_source,
+                data_service=self._ds,
+                on_miss=on_miss,
             )
 
             AlgoClass = _load_algorithm_class(pkg_dir_name, manifest)
@@ -387,6 +390,68 @@ class BacktestRunner:
                     )
                 return
             await asyncio.sleep(poll_s)
+
+    def _make_on_miss(self, date_range_start, date_range_end):
+        """Return a sync callable for BacktestTickContext._on_miss.
+
+        Called from the engine thread when market_data() doesn't find a symbol
+        in the pre-loaded bars dict or on disk.  It blocks until the async
+        download finishes by submitting the coroutine to the running event loop
+        via run_coroutine_threadsafe (safe because the engine runs in a thread
+        executor while the loop keeps running on the main thread).
+
+        The event loop is captured here (in the async run() context) so the
+        closure can reference it from the engine's executor thread, where
+        asyncio.get_event_loop() is not available in Python 3.10+.
+        """
+        import concurrent.futures
+        loop = asyncio.get_running_loop()
+
+        def on_miss(symbol: str, timeframe: str, source: str):
+            # First check disk — a previous auto-download may have already saved it.
+            df = self._ds.load_market_data(source, symbol, timeframe)
+            if df is not None and not df.empty:
+                return df
+            # Download via the DownloadManager (async).  The backtest engine runs
+            # inside run_in_executor so the event loop is still running on the main
+            # thread; use run_coroutine_threadsafe to bridge the thread boundary.
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._download_and_wait(
+                        symbol, timeframe, source,
+                        date_range_start, date_range_end,
+                    ),
+                    loop,
+                )
+                future.result(timeout=120)  # block up to 2 min
+            except concurrent.futures.TimeoutError:
+                logger.error(
+                    "Auto-download timed out for %s %s (%s)", symbol, timeframe, source
+                )
+                return None
+            except Exception:
+                logger.exception(
+                    "Auto-download failed for %s %s (%s)", symbol, timeframe, source
+                )
+                return None
+            # Re-read from disk after the download completed.
+            return self._ds.load_market_data(source, symbol, timeframe)
+
+        return on_miss
+
+    async def _download_and_wait(
+        self, symbol: str, timeframe: str, source: str,
+        start, end,
+    ) -> None:
+        """Create a DownloadManager job and wait for it to finish."""
+        dl = await self._dm.create_download(
+            symbols=[symbol],
+            date_range_start=start.date() if hasattr(start, "date") else start,
+            date_range_end=end.date() if hasattr(end, "date") else end,
+            provider=source,
+            timeframe=timeframe,
+        )
+        await self._wait_for_download(dl["id"])
 
     def _smallest_timeframe_key(self, bars: dict) -> tuple:
         from coordinator.services.backtest_tick_context import timeframe_to_seconds

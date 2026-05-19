@@ -94,3 +94,139 @@ def test_timeframe_to_seconds():
     assert timeframe_to_seconds("1tick") == 0
     with pytest.raises(ValueError):
         timeframe_to_seconds("invalid")
+
+
+# ---- auto-download / on-miss tests ----
+
+def _make_daily_naive(start, days):
+    """Like _make_daily but with tz-naive timestamps (as stored on disk)."""
+    return pd.DataFrame({
+        "timestamp": pd.date_range(start, periods=days, freq="D"),  # tz-naive
+        "open": [100.0 + i for i in range(days)],
+        "high": [101.0 + i for i in range(days)],
+        "low":  [ 99.0 + i for i in range(days)],
+        "close":[100.5 + i for i in range(days)],
+        "volume": [1_000_000] * days,
+    })
+
+
+def test_market_data_loads_from_disk_on_miss():
+    """When symbol is missing from pre-loaded bars, data_service.load_market_data is used."""
+    disk_df = _make_daily_naive("2026-01-01", 30)
+
+    mock_ds = type("DS", (), {
+        "load_market_data": lambda self, src, sym, tf: disk_df
+    })()
+
+    ctx = BacktestTickContext(
+        bars={},  # empty — nothing pre-loaded
+        positions={}, cash=100_000.0,
+        data_service=mock_ds,
+    )
+    ctx.set_sim_time(datetime(2026, 1, 15, 14, 30, tzinfo=timezone.utc))
+    out = ctx.market_data("AAPL", timeframe="1day", bars=100, source="polygon")
+
+    assert not out.empty, "Expected rows loaded from disk"
+    # No-look-ahead still applies: 2026-01-15 must not appear
+    assert pd.Timestamp("2026-01-15") not in out["timestamp"].values
+
+
+def test_market_data_caches_disk_result_in_bars():
+    """After the first disk load the data is stored in _bars so subsequent
+    calls skip data_service entirely."""
+    disk_df = _make_daily_naive("2026-01-01", 10)
+    call_count = [0]
+
+    def _load(src, sym, tf):
+        call_count[0] += 1
+        return disk_df
+
+    mock_ds = type("DS", (), {"load_market_data": lambda self, s, sym, tf: _load(s, sym, tf)})()
+
+    ctx = BacktestTickContext(bars={}, positions={}, cash=0, data_service=mock_ds)
+    ctx.set_sim_time(datetime(2026, 1, 15, tzinfo=timezone.utc))
+
+    ctx.market_data("AAPL", "1day", 10, source="polygon")
+    ctx.market_data("AAPL", "1day", 10, source="polygon")  # second call
+
+    assert call_count[0] == 1, "DataService should be called only once (result is cached in _bars)"
+
+
+def test_market_data_calls_on_miss_when_not_on_disk():
+    """When data_service returns None, on_miss is invoked and its result is used."""
+    disk_df = _make_daily_naive("2026-01-01", 20)
+    on_miss_calls = []
+
+    def on_miss(symbol, timeframe, source):
+        on_miss_calls.append((symbol, timeframe, source))
+        return disk_df
+
+    mock_ds = type("DS", (), {"load_market_data": lambda self, s, sym, tf: None})()
+
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        data_service=mock_ds,
+        on_miss=on_miss,
+    )
+    ctx.set_sim_time(datetime(2026, 1, 15, tzinfo=timezone.utc))
+    out = ctx.market_data("TSLA", "1day", 100, source="polygon")
+
+    assert len(on_miss_calls) == 1
+    assert on_miss_calls[0] == ("TSLA", "1day", "polygon")
+    assert not out.empty
+
+
+def test_market_data_on_miss_not_called_when_disk_has_data():
+    """on_miss must NOT be called if data_service already returns data from disk."""
+    disk_df = _make_daily_naive("2026-01-01", 20)
+    on_miss_calls = []
+
+    mock_ds = type("DS", (), {"load_market_data": lambda self, s, sym, tf: disk_df})()
+
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        data_service=mock_ds,
+        on_miss=lambda sym, tf, src: on_miss_calls.append(1) or None,
+    )
+    ctx.set_sim_time(datetime(2026, 1, 15, tzinfo=timezone.utc))
+    ctx.market_data("MSFT", "1day", 100, source="polygon")
+
+    assert len(on_miss_calls) == 0, "on_miss should be skipped when disk has data"
+
+
+def test_market_data_on_miss_exception_returns_empty():
+    """If on_miss raises an exception, market_data returns an empty DataFrame gracefully."""
+    def bad_on_miss(symbol, timeframe, source):
+        raise RuntimeError("network error")
+
+    mock_ds = type("DS", (), {"load_market_data": lambda self, s, sym, tf: None})()
+
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        data_service=mock_ds,
+        on_miss=bad_on_miss,
+    )
+    ctx.set_sim_time(datetime(2026, 1, 15, tzinfo=timezone.utc))
+    out = ctx.market_data("BAD", "1day", 100, source="polygon")
+
+    assert out.empty
+    assert list(out.columns) == ["timestamp", "open", "high", "low", "close", "volume"]
+
+
+def test_market_data_default_source_falls_back_to_polygon():
+    """When no source and no pre-loaded key hint, the default provider is 'polygon'."""
+    disk_df = _make_daily_naive("2026-01-01", 10)
+    loaded_sources = []
+
+    def _load(src, sym, tf):
+        loaded_sources.append(src)
+        return disk_df if src == "polygon" else None
+
+    mock_ds = type("DS", (), {"load_market_data": lambda self, s, sym, tf: _load(s, sym, tf)})()
+
+    ctx = BacktestTickContext(bars={}, positions={}, cash=0, data_service=mock_ds)
+    ctx.set_sim_time(datetime(2026, 1, 15, tzinfo=timezone.utc))
+    out = ctx.market_data("SPY", "1day", 10)  # no source= kwarg
+
+    assert "polygon" in loaded_sources
+    assert not out.empty
