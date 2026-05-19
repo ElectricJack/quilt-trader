@@ -13,6 +13,17 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+
+
+def _json_safe(obj):
+    """Recursively convert datetime objects to ISO strings for JSON serialization."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -136,27 +147,27 @@ class _InstanceContext:
 
     def _make_bar_callback(self, symbol: str, tf: str):
         async def cb(bar: dict) -> None:
-            tick = {
+            tick = _json_safe({
                 "instance_id": self.instance_id,
                 "run_id": self.run_id,
                 "timestamp": bar.get("timestamp") or datetime.now(timezone.utc).isoformat(),
                 "trigger_kind": "bar",
                 "trigger_meta": {"timeframe": tf},
                 "data": {symbol: {"timeframe": tf, "bars": [bar]}},
-            }
+            })
             await self._scheduler._enqueue_tick(self.worker_id, tick)
         return cb
 
     def _make_event_callback(self, symbol: str):
         async def cb(event: dict) -> None:
-            tick = {
+            tick = _json_safe({
                 "instance_id": self.instance_id,
                 "run_id": self.run_id,
                 "timestamp": event.get("timestamp") or datetime.now(timezone.utc).isoformat(),
                 "trigger_kind": "event",
                 "trigger_meta": {},
                 "data": {symbol: {"event": event}},
-            }
+            })
             await self._scheduler._enqueue_tick(self.worker_id, tick)
         return cb
 
