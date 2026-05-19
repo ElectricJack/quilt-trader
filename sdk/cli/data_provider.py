@@ -29,14 +29,35 @@ class StandaloneDataProvider(DataProvider):
 
     def get_custom_data(self, source_name: str) -> Optional[pd.DataFrame]:
         custom_dir = self.data_dir / "custom"
+
+        # 1. Exact path (e.g., "alpha-picks-scraper.csv")
         path = custom_dir / source_name
-        if not path.exists():
-            return None
-        if source_name.endswith(".csv"):
+        if path.is_file():
+            return self._read_df(path)
+
+        # 2. Try common extensions (e.g., "alpha-picks-scraper" → .csv, .parquet, .json)
+        for ext in (".csv", ".parquet", ".json"):
+            candidate = custom_dir / f"{source_name}{ext}"
+            if candidate.is_file():
+                return self._read_df(candidate)
+
+        # 3. Look inside a subdirectory (scrapers output to data/custom/<name>/<file>)
+        subdir = custom_dir / source_name
+        if subdir.is_dir():
+            for ext in (".csv", ".parquet", ".json"):
+                for f in sorted(subdir.glob(f"*{ext}")):
+                    return self._read_df(f)
+
+        return None
+
+    @staticmethod
+    def _read_df(path: Path) -> Optional[pd.DataFrame]:
+        suffix = path.suffix.lower()
+        if suffix == ".csv":
             return pd.read_csv(path)
-        elif source_name.endswith(".json"):
+        elif suffix == ".json":
             return pd.read_json(path)
-        elif source_name.endswith(".parquet"):
+        elif suffix == ".parquet":
             return pd.read_parquet(path)
         return None
 
