@@ -69,6 +69,11 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** the immediate fix (smarter path resolution in `StandaloneDataProvider`) unblocks the user. The structural fix — declaring custom data deps in the manifest — requires design work on how scrapers + custom CSVs fit into the manifest schema alongside `assets:`.
 - **What's needed:** add a `data:` block to the manifest: `[{source: "alpha-picks-scraper", type: "scraper"}]`. The backtest runner pre-checks that all declared data sources exist before starting. The deploy flow ensures the scraper is registered and has run at least once. The system surfaces "missing data dependency" errors clearly instead of failing mid-backtest.
 
+### Replace synthetic backtest clock with union-of-symbol-timelines clock
+- **Surfaced by:** backtest engine edge cases on alpha-picks-rebalancer (2026-05-19). The synthetic clock (all-zeros business-day series) broke fills ($0 prices), position valuation ($0 market value), and position snapshots. Each was patched individually with per-symbol lookups, but the root cause remains.
+- **Why deferred:** the per-symbol lookup patches work for v1. The structural fix requires rethinking the engine's clock construction: instead of pre-building the clock before the first tick, discover which symbols the algo actually uses after the first tick, merge their timestamps into a real clock, then replay.
+- **What's needed:** after the first `on_tick` call, inspect `ctx._bars` for all symbols the algo loaded via `market_data()`. Build the clock from the UNION of all those timelines (deduped + sorted). Re-run from bar 0 with the real clock. This eliminates the synthetic clock entirely — every bar in the clock corresponds to a real price in at least one symbol, so fills, valuation, and snapshots all use real data without special-case lookups. The per-symbol lookup code can then be simplified back to using the clock bar directly.
+
 ### Push updated `quilt.yaml` for `simple-ma-crossover` to upstream GitHub repo
 - **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
 - **Why deferred:** `data/packages/quilt-trader-test-algo/quilt.yaml` was updated locally to the new `assets:` format, but `data/packages/` is gitignored. A re-install from the upstream GitHub repo will revert to the old format.
