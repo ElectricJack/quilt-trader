@@ -51,12 +51,26 @@ class WorkerAgent:
         raw = await self._ws.recv()
         return json.loads(raw)
 
+    @staticmethod
+    def _get_git_sha() -> str | None:
+        import subprocess, os
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            r = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return r.stdout.strip() if r.returncode == 0 else None
+        except Exception:
+            return None
+
     async def send_heartbeat(self) -> None:
         payload: dict = {
             "type": "heartbeat",
             "worker_id": self.worker_id,
             "worker_name": self.worker_name,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "version": self._get_git_sha(),
         }
         if self.tailscale_ip:
             payload["tailscale_ip"] = self.tailscale_ip

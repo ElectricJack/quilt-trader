@@ -45,6 +45,7 @@ def _to_response(worker: Worker) -> dict:
         "last_heartbeat": to_iso_utc(worker.last_heartbeat),
         "max_algorithms": worker.max_algorithms,
         "install_status": worker.install_status,
+        "version": worker.version,
         # install_token is included so the UI can render the one-liner after create.
         "install_token": worker.install_token,
         "created_at": to_iso_utc(worker.created_at),

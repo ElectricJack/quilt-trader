@@ -206,6 +206,8 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
                 worker.status = "online"
                 if data.get("tailscale_ip"):
                     worker.tailscale_ip = data["tailscale_ip"]
+                if data.get("version"):
+                    worker.version = data["version"]
                 await session.commit()
 
                 if prior_status != "online":

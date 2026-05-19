@@ -51,7 +51,7 @@ def worker_list(ctx):
             r["id"] = _short_id(r.get("id", ""))
         print_table(
             rows,
-            columns=["id", "name", "status", "tailscale_ip", "last_heartbeat", "install_status"],
+            columns=["id", "name", "status", "version", "tailscale_ip", "last_heartbeat"],
         )
 
 

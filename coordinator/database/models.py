@@ -88,6 +88,7 @@ class Worker(Base):
     max_algorithms: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     install_token: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True, unique=True)
     install_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     instances: Mapped[list["AlgorithmInstance"]] = relationship(back_populates="worker")
 
