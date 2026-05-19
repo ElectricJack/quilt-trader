@@ -1124,7 +1124,7 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
         {/* Chart area: flex column, main view + optional diff panel below */}
         <div className="flex flex-col flex-1 min-h-0">
           {/* Main view — 70% height when diff is visible, 100% otherwise */}
-          <div className={`min-h-0 ${showDiff && diffAvailable ? "basis-[70%]" : "flex-1"}`}>
+          <div className={`min-h-0 flex-1 ${showDiff && diffAvailable ? "max-h-[70%]" : ""}`}>
             {mode === "overlay" ? (
               <OverlayChart
                 loaded={loaded}
@@ -1149,7 +1149,7 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
 
           {/* Diff panel — 30% height, shown when showDiff is on */}
           {showDiff && diffAvailable && (
-            <div className="basis-[30%] min-h-0 border-t border-gray-700">
+            <div className="flex-none h-[30%] min-h-0 border-t border-gray-700">
               <DiffChart
                 loaded={loaded}
                 chartType={chartType}
