@@ -24,6 +24,18 @@ def _range_to_cutoff(rng: str) -> datetime | None:
     }[rng]
 
 
+async def _visible_accounts(db: AsyncSession) -> list:
+    """Return accounts with show_in_overview=True."""
+    return (await db.execute(
+        select(Account).where(Account.show_in_overview == True)  # noqa: E712
+    )).scalars().all()
+
+
+async def _visible_account_ids(db: AsyncSession) -> list[str]:
+    accounts = await _visible_accounts(db)
+    return [a.id for a in accounts]
+
+
 @router.get("/equity")
 async def portfolio_equity(
     range: RangeLiteral = Query("1m"),
@@ -31,8 +43,7 @@ async def portfolio_equity(
 ):
     cutoff = _range_to_cutoff(range)
 
-    accts_result = await db.execute(select(Account))
-    accounts = accts_result.scalars().all()
+    accounts = await _visible_accounts(db)
 
     out = []
     for acct in accounts:
@@ -63,9 +74,9 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Total equity: sum of latest snapshot per account
-    accts_result = await db.execute(select(Account))
-    accounts = accts_result.scalars().all()
+    # Total equity: sum of latest snapshot per visible account
+    accounts = await _visible_accounts(db)
+    visible_ids = [a.id for a in accounts]
     total_equity = 0.0
     total_cash = 0.0
     total_positions_value = 0.0
@@ -82,25 +93,32 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
             total_cash += snap.cash
             total_positions_value += snap.positions_value
 
-    # Open positions
-    pos_q = select(Position).where(Position.status == "open")
+    # Open positions (visible accounts only)
+    pos_q = select(Position).where(
+        Position.status == "open",
+        Position.account_id.in_(visible_ids),
+    )
     open_positions = (await db.execute(pos_q)).scalars().all()
     open_risk = sum(p.unrealized_pnl or 0.0 for p in open_positions)
 
-    # Today's trades
-    trade_q = select(func.count(TradeLog.id)).where(TradeLog.timestamp >= today_start)
+    # Today's trades (visible accounts only)
+    trade_q = select(func.count(TradeLog.id)).where(
+        TradeLog.timestamp >= today_start,
+        TradeLog.account_id.in_(visible_ids),
+    )
     trades_today = (await db.execute(trade_q)).scalar() or 0
 
     deployed_pct = (
         (total_positions_value / total_equity * 100.0) if total_equity > 0 else 0.0
     )
 
-    # Today's closed positions for trades_today_wins/losses
+    # Today's closed positions for trades_today_wins/losses (visible accounts only)
     today_closed_q = (
         select(Position)
         .where(Position.status == "closed")
         .where(Position.closed_at >= today_start)
         .where(Position.net_pnl.is_not(None))
+        .where(Position.account_id.in_(visible_ids))
     )
     today_closed = (await db.execute(today_closed_q)).scalars().all()
     today_wins = sum(1 for p in today_closed if (p.net_pnl or 0) > 0)
@@ -108,13 +126,14 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
     today_total = today_wins + today_losses
     today_win_rate = (today_wins / today_total * 100.0) if today_total > 0 else 0.0
 
-    # Rolling 7-day win rate
+    # Rolling 7-day win rate (visible accounts only)
     week_start = now - timedelta(days=7)
     week_closed_q = (
         select(Position)
         .where(Position.status == "closed")
         .where(Position.closed_at >= week_start)
         .where(Position.net_pnl.is_not(None))
+        .where(Position.account_id.in_(visible_ids))
     )
     week_closed = (await db.execute(week_closed_q)).scalars().all()
     week_wins = sum(1 for p in week_closed if (p.net_pnl or 0) > 0)
@@ -163,8 +182,8 @@ SYMBOL_PALETTE = [
 
 @router.get("/allocation")
 async def portfolio_allocation(db: AsyncSession = Depends(get_db)):
-    # Cash: sum across latest snapshots per account
-    accts = (await db.execute(select(Account))).scalars().all()
+    # Cash: sum across latest snapshots per visible account
+    accts = await _visible_accounts(db)
     total_cash = 0.0
     for acct in accts:
         snap_q = (
