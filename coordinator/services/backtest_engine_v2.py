@@ -187,9 +187,23 @@ class BacktestEngine:
                 if po.scheduled_for_bar_index > bar_idx:
                     still_pending.append(po)
                     continue
+                # Resolve the fill bar: prefer the SYMBOL's own data over the
+                # clock bar. The clock may be a different symbol (multi-asset
+                # algo) or synthetic (scraper-only algo with no market deps).
+                fill_bar = bar
+                sym = po.leg.symbol
+                for (src, s, tf), df in ctx._bars.items():
+                    if s == sym and not df.empty:
+                        ts_col = pd.to_datetime(df["timestamp"])
+                        if ts_col.dt.tz is not None:
+                            ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                        at_time = ts_col <= pd.Timestamp(sim_time).tz_localize(None)
+                        if at_time.any():
+                            fill_bar = df.loc[at_time].iloc[-1]
+                        break
                 # Try to fill against THIS bar
                 fill, advance_for_stop = self._try_fill(
-                    po, bar=bar, slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
+                    po, bar=fill_bar, slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
                     cash=cash, positions=positions, rng=rng, sim_time=bar["timestamp"].to_pydatetime(),
                 )
                 if fill is not None:
