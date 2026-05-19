@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     JSON,
     Date,
+    PrimaryKeyConstraint,
     UniqueConstraint,
 )
 from sqlalchemy.orm import (
@@ -29,6 +30,12 @@ def _utcnow() -> datetime:
 
 def _new_uuid() -> str:
     return str(uuid.uuid4())
+
+
+def compute_parameter_set_id(config_values: dict) -> str:
+    import hashlib, json
+    canonical = json.dumps(config_values, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:6]
 
 
 class Base(DeclarativeBase):
@@ -76,6 +83,27 @@ class Algorithm(Base):
     installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     instances: Mapped[list["AlgorithmInstance"]] = relationship(back_populates="algorithm")
+    parameter_sets: Mapped[list["ParameterSet"]] = relationship(
+        back_populates="algorithm", cascade="all, delete-orphan"
+    )
+
+
+class ParameterSet(Base):
+    __tablename__ = "parameter_sets"
+    __table_args__ = (
+        PrimaryKeyConstraint("algorithm_id", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(6), nullable=False)
+    algorithm_id: Mapped[str] = mapped_column(
+        String, ForeignKey("algorithms.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    config_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    algorithm: Mapped["Algorithm"] = relationship(back_populates="parameter_sets")
 
 
 class Worker(Base):
@@ -102,6 +130,7 @@ class AlgorithmInstance(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="stopped")
     active_run_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("algorithm_runs.id"), nullable=True)
     config_values: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    parameter_set_id: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
     persisted_state: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     state_stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lifetime_metrics: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
@@ -384,6 +413,7 @@ class BacktestRun(Base):
     date_range_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     initial_cash: Mapped[float] = mapped_column(Float, nullable=False, default=100_000.0)
     config_overrides: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    parameter_set_id: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
     buy_trading_fees: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     sell_trading_fees: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     slippage_model: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
