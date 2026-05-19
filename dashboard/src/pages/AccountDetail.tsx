@@ -688,15 +688,9 @@ export function AccountDetail() {
           </DetailItem>
           <DetailItem label="PDT">{account.pdt_mode}</DetailItem>
           <DetailItem label="Type">
-            {account.can_trade ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded border bg-gray-800 text-gray-400 border-gray-700">
-                trading
-              </span>
-            ) : (
-              <span className="text-[10px] px-1.5 py-0.5 rounded border bg-yellow-900/40 text-yellow-300 border-yellow-800">
-                data-only
-              </span>
-            )}
+            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-gray-800 text-gray-400 border-gray-700">
+              trading
+            </span>
           </DetailItem>
           <DetailItem label="Assets">
             {(account.supported_asset_types ?? []).join(", ") || "—"}

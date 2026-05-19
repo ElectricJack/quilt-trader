@@ -12,6 +12,13 @@ import { useUIStore } from "../stores/ui";
 
 type AssetClass = "equities" | "crypto" | "options";
 
+// Source selector values encode whether we're using an account or a provider.
+// Format: "account:<id>" or "provider:<type>".
+const PROVIDER_OPTIONS = [
+  { value: "provider:polygon", label: "Polygon.io" },
+  { value: "provider:thetadata", label: "ThetaData" },
+] as const;
+
 function formatBytes(n: number | null | undefined): string {
   if (n == null) return "—";
   if (n < 1024) return `${n} B`;
@@ -28,6 +35,13 @@ function timeSince(iso: string | null): string {
   return `${Math.floor(ms / 3_600_000)}h ago`;
 }
 
+/** Human-readable label for a source value like "provider:polygon". */
+function providerLabel(type: string): string {
+  if (type === "polygon") return "Polygon.io";
+  if (type === "thetadata") return "ThetaData";
+  return type;
+}
+
 export function LiveSubscriptionsSection() {
   const { data: subs = [], isLoading } = useLiveSubscriptions();
   const { data: accounts = [] } = useAccounts();
@@ -36,28 +50,57 @@ export function LiveSubscriptionsSection() {
   const addAlert = useUIStore((s) => s.addAlert);
 
   const [adding, setAdding] = useState(false);
-  const [accountId, setAccountId] = useState<string>("");
+  // sourceValue is "account:<id>" or "provider:<type>" or ""
+  const [sourceValue, setSourceValue] = useState<string>("");
   const [assetClass, setAssetClass] = useState<AssetClass>("equities");
   const [symbol, setSymbol] = useState("");
   const [retention, setRetention] = useState(168);
 
   const trimmedSymbol = symbol.trim();
+
+  // Derive accountId / providerType from the compound selector value.
+  const isProviderSource = sourceValue.startsWith("provider:");
+  const selectedAccountId = !isProviderSource && sourceValue.startsWith("account:")
+    ? sourceValue.slice("account:".length)
+    : null;
+  const selectedProviderType = isProviderSource
+    ? sourceValue.slice("provider:".length)
+    : null;
+
+  // Storage estimate: pass broker string for provider, or account id for account.
+  const estimateBroker = selectedProviderType ?? selectedAccountId ?? null;
   const { data: estimate } = useLiveSubStorageEstimate(
-    adding && trimmedSymbol && accountId ? accountId : null,
+    adding && trimmedSymbol && estimateBroker ? estimateBroker : null,
     adding && trimmedSymbol ? trimmedSymbol : null,
     retention
   );
 
   async function handleAdd() {
-    if (!trimmedSymbol || !accountId) return;
+    if (!trimmedSymbol || !sourceValue) return;
     try {
-      const acct = accounts.find((a) => a.id === accountId);
-      await create.mutateAsync({
-        account_id: accountId, symbol: trimmedSymbol, asset_class: assetClass,
-        tick_retention_hours: retention,
-      });
+      let label: string;
+      if (selectedProviderType) {
+        label = `${providerLabel(selectedProviderType)}:${trimmedSymbol}`;
+        await create.mutateAsync({
+          provider_type: selectedProviderType,
+          symbol: trimmedSymbol,
+          asset_class: assetClass,
+          tick_retention_hours: retention,
+        });
+      } else if (selectedAccountId) {
+        const acct = accounts.find((a) => a.id === selectedAccountId);
+        label = `${acct?.name ?? selectedAccountId}:${trimmedSymbol}`;
+        await create.mutateAsync({
+          account_id: selectedAccountId,
+          symbol: trimmedSymbol,
+          asset_class: assetClass,
+          tick_retention_hours: retention,
+        });
+      } else {
+        return;
+      }
       addAlert({
-        message: `Subscribed to ${acct?.name ?? accountId}:${trimmedSymbol}.`,
+        message: `Subscribed to ${label}.`,
         severity: "success",
       });
       setAdding(false);
@@ -115,7 +158,11 @@ export function LiveSubscriptionsSection() {
       ) : (
         <div className="space-y-2">
           {subs.map((s) => {
-            const label = `${s.account_name}:${s.symbol}`;
+            // Source label: account link or provider name.
+            const isAccountSub = s.account_id != null;
+            const label = isAccountSub
+              ? `${s.account_name ?? s.account_id}:${s.symbol}`
+              : `${providerLabel(s.provider_type ?? s.broker)}:${s.symbol}`;
             const stale = !s.last_tick_at ||
               (Date.now() - new Date(s.last_tick_at).getTime()) > 60_000;
             return (
@@ -125,12 +172,18 @@ export function LiveSubscriptionsSection() {
               >
                 <div className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-3 flex-wrap min-w-0">
-                    <Link
-                      to={`/accounts/${s.account_id}`}
-                      className="text-indigo-400 font-mono hover:underline"
-                    >
-                      {s.account_name}
-                    </Link>
+                    {isAccountSub ? (
+                      <Link
+                        to={`/accounts/${s.account_id}`}
+                        className="text-indigo-400 font-mono hover:underline"
+                      >
+                        {s.account_name}
+                      </Link>
+                    ) : (
+                      <span className="text-indigo-400 font-mono">
+                        {providerLabel(s.provider_type ?? s.broker)}
+                      </span>
+                    )}
                     <span className="font-mono text-gray-200">{s.symbol}</span>
                     <span className="text-[10px] px-1.5 py-0.5 rounded border bg-gray-800 text-gray-400 border-gray-700">
                       {s.asset_class}
@@ -189,18 +242,29 @@ export function LiveSubscriptionsSection() {
       {adding && (
         <div className="mt-3 bg-gray-900 border border-gray-700 rounded p-3 flex gap-2 items-end flex-wrap">
           <label className="flex flex-col gap-1 text-xs text-gray-400">
-            <span>Account</span>
+            <span>Source</span>
             <select
-              value={accountId}
-              onChange={(e) => setAccountId(e.target.value)}
+              value={sourceValue}
+              onChange={(e) => setSourceValue(e.target.value)}
               className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100"
             >
-              <option value="">— select account —</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}{!a.can_trade ? " (data-only)" : ""} [{a.broker_type}]
-                </option>
-              ))}
+              <option value="">— select source —</option>
+              {accounts.length > 0 && (
+                <optgroup label="Accounts">
+                  {accounts.map((a) => (
+                    <option key={a.id} value={`account:${a.id}`}>
+                      {a.name} [{a.broker_type}]
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label="Data Providers">
+                {PROVIDER_OPTIONS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </label>
           <label className="flex flex-col gap-1 text-xs text-gray-400">
@@ -244,13 +308,13 @@ export function LiveSubscriptionsSection() {
           )}
           <button
             onClick={handleAdd}
-            disabled={!trimmedSymbol || !accountId || create.isPending}
+            disabled={!trimmedSymbol || !sourceValue || create.isPending}
             className="px-3 py-1.5 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 transition-colors"
           >
             Add
           </button>
           <button
-            onClick={() => { setAdding(false); setSymbol(""); }}
+            onClick={() => { setAdding(false); setSymbol(""); setSourceValue(""); }}
             className="px-3 py-1.5 rounded text-sm text-gray-300 bg-gray-700 hover:bg-gray-600 transition-colors"
           >
             Cancel

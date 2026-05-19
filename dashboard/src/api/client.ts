@@ -42,7 +42,6 @@ export interface AccountCreate {
   options_level?: number;
   account_features?: string[];
   pdt_mode?: string;
-  can_trade?: boolean;
 }
 
 export interface AccountUpdate {
@@ -53,7 +52,6 @@ export interface AccountUpdate {
   options_level?: number;
   account_features?: string[];
   pdt_mode?: string;
-  can_trade?: boolean;
 }
 
 export interface TestConnectionRequest {
@@ -675,7 +673,8 @@ export const api = {
     return request<LiveSubscription[]>("/api/live-subscriptions");
   },
   createLiveSubscription(body: {
-    account_id: string;
+    account_id?: string;
+    provider_type?: string;
     symbol: string;
     asset_class: string;
     tick_retention_hours?: number;
@@ -838,8 +837,9 @@ export interface SubscriptionConsumer {
 
 export interface LiveSubscription {
   id: string;
-  account_id: string;
-  account_name: string;
+  account_id: string | null;
+  account_name: string | null;
+  provider_type: string | null;
   broker: string;
   symbol: string;
   asset_class: string;

@@ -10,6 +10,7 @@ vi.mock("../api/hooks", () => ({
         id: "sub-1",
         account_id: "acct-42",
         account_name: "Alpaca Live",
+        provider_type: null,
         broker: "alpaca",
         symbol: "SPY",
         asset_class: "equities",

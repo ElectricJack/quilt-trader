@@ -357,9 +357,8 @@ export function AlgorithmDetail() {
                   <option
                     key={account.id}
                     value={account.id}
-                    disabled={!account.can_trade}
                   >
-                    {account.name}{!account.can_trade ? " (data-only)" : ""}
+                    {account.name}
                   </option>
                 ))}
               </select>
