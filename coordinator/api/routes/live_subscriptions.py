@@ -33,7 +33,7 @@ _TICK_RATE_DEFAULTS: dict[str, float] = {
 _BYTES_PER_TRADE = 80
 _BYTES_PER_QUOTE = 90
 
-_VALID_PROVIDERS = ("polygon", "thetadata")
+_VALID_PROVIDERS = ("polygon", "thetadata", "coinbase")
 
 
 class SubscriptionCreate(BaseModel):
@@ -154,6 +154,10 @@ async def _build_algo_index(
 
 async def _check_provider_credentials(db: AsyncSession, provider_type: str) -> None:
     """Raise 422 if the required Settings keys are not configured."""
+    if provider_type == "coinbase":
+        # No credentials needed — public market data is free and keyless
+        return
+
     async def _get(key: str) -> Optional[str]:
         row = (await db.execute(
             select(Setting).where(Setting.key == key)

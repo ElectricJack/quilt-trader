@@ -188,6 +188,30 @@ async def test_provider_subscription_response_has_null_account_name(client, db_s
 
 
 @pytest.mark.asyncio
+async def test_provider_subscription_coinbase_no_credentials_needed(client, db_session):
+    """Coinbase requires no credentials — subscription should succeed without Settings."""
+    body = {"provider_type": "coinbase", "symbol": "BTCUSD", "asset_class": "crypto"}
+    r = await client.post("/api/live-subscriptions", json=body)
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["account_id"] is None
+    assert data["provider_type"] == "coinbase"
+    assert data["broker"] == "coinbase"
+    assert data["symbol"] == "BTCUSD"
+    assert data["asset_class"] == "crypto"
+    assert len(data["consumers"]) == 1
+    assert data["consumers"][0]["consumer_type"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_provider_subscription_coinbase_invalid_type_returns_422(client, db_session):
+    """Unknown provider_type values are rejected by the validator."""
+    body = {"provider_type": "notabroker", "symbol": "BTCUSD", "asset_class": "crypto"}
+    r = await client.post("/api/live-subscriptions", json=body)
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
 async def test_response_includes_algorithm_name_on_algo_consumer(
     client, db_session,
 ):
