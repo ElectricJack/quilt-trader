@@ -1,25 +1,28 @@
 """REST API for live market-data subscriptions.
 
 Subscriptions are tracked in two tables:
-- LiveSubscription: one row per (account_id, symbol) pair.
+- LiveSubscription: one row per (account_id|provider_type, symbol) pair.
 - SubscriptionConsumer: one row per consumer (manual user OR algorithm deployment).
 
 A subscription is alive as long as at least one consumer row exists; when the
 last consumer is released, the LiveSubscription row is deleted.
+
+Sources: either an account (account_id set, provider_type null) or a data
+provider (provider_type set, account_id null). Exactly one must be set.
 """
 from __future__ import annotations
 
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_container, get_db
 from coordinator.api.serialization import to_iso_utc
-from coordinator.database.models import LiveSubscription, SubscriptionConsumer, Account
+from coordinator.database.models import LiveSubscription, SubscriptionConsumer, Account, Setting
 
 router = APIRouter(prefix="/api/live-subscriptions", tags=["live-subscriptions"])
 
@@ -30,12 +33,26 @@ _TICK_RATE_DEFAULTS: dict[str, float] = {
 _BYTES_PER_TRADE = 80
 _BYTES_PER_QUOTE = 90
 
+_VALID_PROVIDERS = ("polygon", "thetadata")
+
 
 class SubscriptionCreate(BaseModel):
-    account_id: str
+    # Exactly one of account_id or provider_type must be set.
+    account_id: Optional[str] = None
+    provider_type: Optional[str] = None  # "polygon" | "thetadata"
     symbol: str
     asset_class: str = "equities"
     tick_retention_hours: int = 168
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> "SubscriptionCreate":
+        has_account = bool(self.account_id)
+        has_provider = bool(self.provider_type)
+        if has_account and has_provider:
+            raise ValueError("Provide either account_id or provider_type, not both")
+        if not has_account and not has_provider:
+            raise ValueError("One of account_id or provider_type is required")
+        return self
 
     @field_validator("tick_retention_hours")
     @classmethod
@@ -51,6 +68,13 @@ class SubscriptionCreate(BaseModel):
     def _validate_asset_class(cls, v: str) -> str:
         if v not in ("equities", "crypto", "options"):
             raise ValueError(f"asset_class must be one of equities, crypto, options; got {v!r}")
+        return v
+
+    @field_validator("provider_type")
+    @classmethod
+    def _validate_provider_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in _VALID_PROVIDERS:
+            raise ValueError(f"provider_type must be one of {_VALID_PROVIDERS}; got {v!r}")
         return v
 
 
@@ -91,6 +115,7 @@ def _to_response(s: LiveSubscription, algo_index: dict[str, dict]) -> dict:
         "id": s.id,
         "account_id": s.account_id,
         "account_name": s.account.name if s.account else None,
+        "provider_type": s.provider_type,
         "broker": s.broker,
         "symbol": s.symbol,
         "asset_class": s.asset_class,
@@ -127,6 +152,33 @@ async def _build_algo_index(
     }
 
 
+async def _check_provider_credentials(db: AsyncSession, provider_type: str) -> None:
+    """Raise 422 if the required Settings keys are not configured."""
+    async def _get(key: str) -> Optional[str]:
+        row = (await db.execute(
+            select(Setting).where(Setting.key == key)
+        )).scalar_one_or_none()
+        return row.value if row and row.value else None
+
+    if provider_type == "polygon":
+        if not await _get("polygon_api_key"):
+            raise HTTPException(
+                status_code=422,
+                detail="Polygon API key not configured in Settings",
+            )
+    elif provider_type == "thetadata":
+        missing = []
+        if not await _get("theta_data_username"):
+            missing.append("theta_data_username")
+        if not await _get("theta_data_password"):
+            missing.append("theta_data_password")
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"ThetaData credentials not configured in Settings: {', '.join(missing)}",
+            )
+
+
 @router.get("")
 async def list_subs(db: AsyncSession = Depends(get_db)):
     from sqlalchemy.orm import selectinload
@@ -147,22 +199,55 @@ async def list_subs(db: AsyncSession = Depends(get_db)):
 
 @router.post("", status_code=201)
 async def create_sub(body: SubscriptionCreate, db: AsyncSession = Depends(get_db)):
-    account = (await db.execute(
-        select(Account).where(Account.id == body.account_id)
-    )).scalar_one_or_none()
-    if account is None:
-        raise HTTPException(status_code=404, detail=f"Account {body.account_id} not found")
-    if body.asset_class not in (account.supported_asset_types or []):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Account does not support asset_class {body.asset_class!r}",
-        )
-    # Snapshot broker/account info before flush (expires on commit with some configs).
-    broker_type = account.broker_type
-    account_id = account.id
     symbol_upper = body.symbol.upper()
+
+    if body.account_id:
+        # Account-based subscription (existing behaviour).
+        account = (await db.execute(
+            select(Account).where(Account.id == body.account_id)
+        )).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=404, detail=f"Account {body.account_id} not found")
+        if body.asset_class not in (account.supported_asset_types or []):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Account does not support asset_class {body.asset_class!r}",
+            )
+        broker_type = account.broker_type
+        account_id = account.id
+        provider_type = None
+    else:
+        # Provider-based subscription.
+        assert body.provider_type is not None  # guaranteed by model validator
+        await _check_provider_credentials(db, body.provider_type)
+        broker_type = body.provider_type
+        account_id = None
+        provider_type = body.provider_type
+
+    # Route-level duplicate check (DB constraint was dropped to support nullable account_id).
+    existing_stmt = select(LiveSubscription).where(
+        LiveSubscription.symbol == symbol_upper,
+    )
+    if account_id is not None:
+        existing_stmt = existing_stmt.where(
+            LiveSubscription.account_id == account_id,
+        )
+    else:
+        existing_stmt = existing_stmt.where(
+            LiveSubscription.provider_type == provider_type,
+            LiveSubscription.account_id.is_(None),
+        )
+    existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+    if existing is not None:
+        source_label = account.name if account_id else provider_type  # type: ignore[possibly-undefined]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Subscription already exists for {source_label}/{symbol_upper}",
+        )
+
     sub = LiveSubscription(
         account_id=account_id,
+        provider_type=provider_type,
         broker=broker_type,
         symbol=symbol_upper,
         asset_class=body.asset_class,
@@ -174,9 +259,10 @@ async def create_sub(body: SubscriptionCreate, db: AsyncSession = Depends(get_db
         await db.flush()
     except IntegrityError:
         await db.rollback()
+        source_label = account.name if account_id else provider_type  # type: ignore[possibly-undefined]
         raise HTTPException(
             status_code=409,
-            detail=f"Subscription already exists for {account.name}/{body.symbol}",
+            detail=f"Subscription already exists for {source_label}/{symbol_upper}",
         )
     db.add(SubscriptionConsumer(
         subscription_id=sub.id, consumer_type="manual", consumer_id=None,
@@ -196,21 +282,10 @@ async def create_sub(body: SubscriptionCreate, db: AsyncSession = Depends(get_db
                 broker_type, symbol_upper, "manual"
             )
         if container.live_feed_aggregator is not None:
-            # NOTE: aggregator's start_subscription signature changes in Task 5.
-            # For now, the route's try/except accepts BOTH the old (broker, symbol, asset_class)
-            # form AND the new (account_id, broker, symbol, asset_class) form.
-            # Task 5 will commit to the new form and we can simplify.
             try:
-                try:
-                    await container.live_feed_aggregator.start_subscription(
-                        account_id, broker_type, symbol_upper, body.asset_class,
-                    )
-                except TypeError:
-                    # Aggregator still on old 3-arg signature (broker, symbol, asset_class).
-                    # Task 5 will fix.
-                    await container.live_feed_aggregator.start_subscription(
-                        broker_type, symbol_upper, body.asset_class,
-                    )
+                await container.live_feed_aggregator.start_subscription(
+                    account_id, broker_type, symbol_upper, body.asset_class,
+                )
             except Exception:  # noqa: BLE001
                 # Aggregator errors (credential issues, adapter not ready, etc.)
                 # should not prevent the subscription from being created in DB.
@@ -337,11 +412,8 @@ async def unsubscribe(sub_id: str, db: AsyncSession = Depends(get_db)):
                 await container.live_feed_aggregator.stop_subscription(
                     sub.account_id, sub.symbol,
                 )
-            except TypeError:
-                # Old 2-arg form (broker, symbol)
-                await container.live_feed_aggregator.stop_subscription(
-                    sub.broker, sub.symbol,
-                )
+            except Exception:  # noqa: BLE001
+                pass
         if container is not None and container.live_feed_manager is not None:
             container.live_feed_manager.release(sub.broker, sub.symbol, "manual")
         await db.delete(sub)
@@ -384,7 +456,7 @@ async def delete_sub(sub_id: str, db: AsyncSession = Depends(get_db)):
     if container is not None and container.live_feed_aggregator is not None:
         try:
             await container.live_feed_aggregator.stop_subscription(sub.account_id, sub.symbol)
-        except TypeError:
-            await container.live_feed_aggregator.stop_subscription(sub.broker, sub.symbol)
+        except Exception:  # noqa: BLE001
+            pass
 
     await db.delete(sub)

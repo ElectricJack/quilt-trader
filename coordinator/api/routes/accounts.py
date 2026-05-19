@@ -39,7 +39,6 @@ class AccountCreate(BaseModel):
     options_level: Optional[int] = None
     account_features: Optional[list[str]] = None
     pdt_mode: str = "off"
-    can_trade: bool = True
 
 
 class AccountUpdate(BaseModel):
@@ -50,7 +49,6 @@ class AccountUpdate(BaseModel):
     options_level: Optional[int] = None
     account_features: Optional[list[str]] = None
     pdt_mode: Optional[str] = None
-    can_trade: Optional[bool] = None
 
 
 class TestConnectionRequest(BaseModel):
@@ -68,7 +66,6 @@ class AccountResponse(BaseModel):
     options_level: Optional[int]
     account_features: Optional[list[str]]
     pdt_mode: str
-    can_trade: bool
     locked_by: Optional[str]
     created_at: str
     updated_at: str
@@ -86,7 +83,6 @@ def _to_response(account: Account) -> dict:
         "options_level": account.options_level,
         "account_features": account.account_features,
         "pdt_mode": account.pdt_mode,
-        "can_trade": account.can_trade,
         "locked_by": account.locked_by,
         "created_at": to_iso_utc(account.created_at),
         "updated_at": to_iso_utc(account.updated_at),
@@ -112,7 +108,6 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
         options_level=body.options_level,
         account_features=body.account_features,
         pdt_mode=body.pdt_mode,
-        can_trade=body.can_trade,
     )
     db.add(account)
     await db.flush()
@@ -601,8 +596,6 @@ async def update_account(
         account.account_features = body.account_features
     if body.pdt_mode is not None:
         account.pdt_mode = body.pdt_mode
-    if body.can_trade is not None:
-        account.can_trade = body.can_trade
 
     await db.flush()
     return _to_response(account)

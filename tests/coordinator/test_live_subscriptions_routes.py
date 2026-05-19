@@ -122,6 +122,72 @@ async def test_create_subscription_requires_account_id(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_provider_subscription_requires_neither_or_both_raises_422(client, db_session):
+    """Providing neither account_id nor provider_type should return 422."""
+    body = {"symbol": "SPY", "asset_class": "equities"}
+    r = await client.post("/api/live-subscriptions", json=body)
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_provider_subscription_both_raises_422(client, db_session):
+    """Providing both account_id and provider_type should return 422."""
+    from coordinator.database.models import Account
+    acct = Account(name="A", broker_type="alpaca", credentials="{}",
+                   supported_asset_types=["equities"])
+    db_session.add(acct)
+    await db_session.commit()
+
+    body = {"account_id": acct.id, "provider_type": "polygon",
+            "symbol": "SPY", "asset_class": "equities"}
+    r = await client.post("/api/live-subscriptions", json=body)
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_provider_subscription_polygon_no_key_returns_422(client, db_session):
+    """Creating a polygon subscription without polygon_api_key in Settings returns 422."""
+    body = {"provider_type": "polygon", "symbol": "SPY", "asset_class": "equities"}
+    r = await client.post("/api/live-subscriptions", json=body)
+    assert r.status_code == 422, r.text
+    assert "Polygon API key" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_provider_subscription_polygon_with_key_creates_sub(client, db_session):
+    """With polygon_api_key configured, provider-based sub creates a row."""
+    from coordinator.database.models import Setting
+    db_session.add(Setting(key="polygon_api_key", value="fake-key", encrypted=False))
+    await db_session.commit()
+
+    body = {"provider_type": "polygon", "symbol": "AAPL", "asset_class": "equities"}
+    r = await client.post("/api/live-subscriptions", json=body)
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["account_id"] is None
+    assert data["provider_type"] == "polygon"
+    assert data["broker"] == "polygon"
+    assert data["symbol"] == "AAPL"
+    assert len(data["consumers"]) == 1
+    assert data["consumers"][0]["consumer_type"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_provider_subscription_response_has_null_account_name(client, db_session):
+    """Provider-based subscriptions should have account_name=None."""
+    from coordinator.database.models import Setting
+    db_session.add(Setting(key="polygon_api_key", value="fake-key", encrypted=False))
+    await db_session.commit()
+
+    body = {"provider_type": "polygon", "symbol": "TSLA", "asset_class": "equities"}
+    r = await client.post("/api/live-subscriptions", json=body)
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["account_name"] is None
+    assert data["provider_type"] == "polygon"
+
+
+@pytest.mark.asyncio
 async def test_response_includes_algorithm_name_on_algo_consumer(
     client, db_session,
 ):
