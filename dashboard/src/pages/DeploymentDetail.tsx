@@ -9,6 +9,7 @@ import {
   useStartDeployment,
   useStopDeployment,
   useDeleteDeployment,
+  useRedeployDeployment,
 } from "../api/hooks";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusBadge } from "../components/StatusBadge";
@@ -108,6 +109,7 @@ export function DeploymentDetail() {
   const start = useStartDeployment();
   const stop = useStopDeployment();
   const del = useDeleteDeployment();
+  const redeploy = useRedeployDeployment();
   const addAlert = useUIStore((s) => s.addAlert);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -209,6 +211,28 @@ export function DeploymentDetail() {
               Stop
             </button>
           )}
+          <button
+            onClick={() =>
+              redeploy.mutate(id, {
+                onSuccess: (data) => {
+                  addAlert({
+                    message: `Redeployed with commit ${data.commit_hash_short}${data.restarted ? " — instance restarted" : ""}`,
+                    severity: "success",
+                  });
+                },
+                onError: (err) => {
+                  addAlert({
+                    message: `Redeploy failed: ${(err as Error).message}`,
+                    severity: "error",
+                  });
+                },
+              })
+            }
+            disabled={redeploy.isPending}
+            className="px-4 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 transition-colors"
+          >
+            {redeploy.isPending ? "Redeploying…" : "Redeploy"}
+          </button>
           <button
             onClick={() => setDeleteOpen(true)}
             disabled={isRunning}

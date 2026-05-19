@@ -995,6 +995,17 @@ export function useStopDeployment() {
   });
 }
 
+export function useRedeployDeployment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.redeployDeployment(id),
+    onSuccess: (_data, id) => {
+      void qc.invalidateQueries({ queryKey: keys.deployment(id) });
+      void qc.invalidateQueries({ queryKey: ["deployments"] });
+    },
+  });
+}
+
 export function useDeploymentReport(
   id: string,
   opts?: { refetchInterval?: number | false },

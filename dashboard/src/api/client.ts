@@ -382,6 +382,19 @@ export const api = {
       body: JSON.stringify({}),
     });
   },
+  redeployDeployment(id: string): Promise<{
+    id: string;
+    status: string;
+    commit_hash: string;
+    commit_hash_short: string;
+    was_running: boolean;
+    restarted: boolean;
+    active_run_id: string | null;
+  }> {
+    return request(`/api/deployments/${encodeURIComponent(id)}/redeploy`, {
+      method: "POST",
+    });
+  },
   getDeploymentReport(id: string): Promise<DeploymentReport> {
     return request<DeploymentReport>(`/api/deployments/${id}/report`);
   },
