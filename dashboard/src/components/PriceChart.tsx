@@ -10,16 +10,31 @@ import {
   type Time,
 } from "lightweight-charts";
 import type { MarketDataBar } from "../types";
+import { wsManager } from "../api/websocket";
 
 export type ChartType = "line" | "bars";
+
+interface LiveTick {
+  type: string;
+  broker: string;
+  symbol: string;
+  price: number;
+  size: number;
+  timestamp: string;
+}
 
 interface PriceChartProps {
   bars: MarketDataBar[];
   height?: number;
   chartType?: ChartType;
+  /** When set, the chart subscribes to live_data:<broker>:<symbol> and updates
+   * the current candle in real-time as ticks arrive. Strip the "_live" suffix
+   * from the provider string before passing (e.g. "coinbase", not "coinbase_live"). */
+  liveBroker?: string;
+  liveSymbol?: string;
 }
 
-export function PriceChart({ bars, height = 280, chartType = "bars" }: PriceChartProps) {
+export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker, liveSymbol }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Line"> | ISeriesApi<"Candlestick"> | null>(null);
@@ -27,6 +42,8 @@ export function PriceChart({ bars, height = 280, chartType = "bars" }: PriceChar
   // switch, height change) so the user keeps their pan/zoom position.
   const savedRangeRef = useRef<LogicalRange | null>(null);
   const restorePendingRef = useRef(false);
+  // Tracks the live candle state for real-time updates.
+  const liveCandleRef = useRef<{ time: number; open: number; high: number; low: number; close: number } | null>(null);
 
   // Create chart + series. Recreates when chartType changes so the right
   // series implementation is mounted.
@@ -149,7 +166,77 @@ export function PriceChart({ bars, height = 280, chartType = "bars" }: PriceChar
         chartRef.current.timeScale().fitContent();
       }
     }
+
+    // Seed the live candle from the last bar so incoming ticks continue from it.
+    if (deduped.length > 0) {
+      const last = deduped[deduped.length - 1];
+      liveCandleRef.current = { ...last };
+    }
   }, [bars, chartType]);
+
+  // Subscribe to live ticks when liveBroker + liveSymbol are provided.
+  useEffect(() => {
+    if (!liveBroker || !liveSymbol) return;
+
+    const target = `live_data:${liveBroker}:${liveSymbol}`;
+    wsManager.send({ type: "subscribe", target });
+
+    const unsub = wsManager.subscribe("live_tick", (data: unknown) => {
+      const tick = data as LiveTick;
+      if (tick.broker !== liveBroker || tick.symbol !== liveSymbol) return;
+
+      const price = Number(tick.price);
+      if (!Number.isFinite(price)) return;
+
+      // Compute which 1-minute bucket this tick belongs to (seconds-since-epoch).
+      const tickMs = new Date(tick.timestamp).getTime();
+      if (!Number.isFinite(tickMs)) return;
+      const tickMinute = Math.floor(tickMs / 60000) * 60; // seconds
+
+      const series = seriesRef.current;
+      if (!series) return;
+
+      const current = liveCandleRef.current;
+
+      if (current && current.time === tickMinute) {
+        // Same minute — update existing candle.
+        current.high = Math.max(current.high, price);
+        current.low = Math.min(current.low, price);
+        current.close = price;
+      } else {
+        // New minute — start a fresh candle.
+        const newCandle = {
+          time: tickMinute,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+        };
+        liveCandleRef.current = newCandle;
+      }
+
+      const candle = liveCandleRef.current!;
+      if (chartType === "bars") {
+        (series as ISeriesApi<"Candlestick">).update({
+          time: candle.time as Time,
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+        });
+      } else {
+        (series as ISeriesApi<"Line">).update({
+          time: candle.time as Time,
+          value: candle.close,
+        });
+      }
+    });
+
+    return () => {
+      wsManager.send({ type: "unsubscribe", target });
+      unsub();
+    };
+  }, [liveBroker, liveSymbol, chartType]);
 
   return (
     <div

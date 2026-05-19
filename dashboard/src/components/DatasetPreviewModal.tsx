@@ -224,7 +224,13 @@ export function DatasetPreviewModal({
                       ))}
                     </div>
                   </div>
-                  <PriceChart bars={bars} height={280} chartType={chartType} />
+                  <PriceChart
+                    bars={bars}
+                    height={280}
+                    chartType={chartType}
+                    liveBroker={provider?.endsWith("_live") ? provider.slice(0, -"_live".length) : undefined}
+                    liveSymbol={symbol ?? undefined}
+                  />
                 </div>
               )}
 
