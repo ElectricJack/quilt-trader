@@ -47,15 +47,20 @@ class LiveTickContext:
     def buying_power(self) -> float:
         return self._broker.get_account_info()["buying_power"]
 
-    async def market_data(self, symbol: str, timeframe: str = "1min", bars: int = 100) -> pd.DataFrame:
+    def market_data(self, symbol: str, timeframe: str = "1min", bars: int = 100):
+        """Return bars from the rolling buffer (sync, fast). Falls back to the
+        coordinator HTTP endpoint if the symbol/timeframe isn't buffered, but
+        that path logs a warning because algorithm on_tick handlers are sync —
+        the async HTTP call can't be awaited inline."""
         if self._buffer is not None and self._buffer.has(symbol, timeframe):
             return self._buffer.get(symbol, timeframe, bars)
         logger.warning(
-            "market_data(%s, %s) not in buffer; HTTP fallback. "
-            "Declare this in data_dependencies to avoid the slow path.",
+            "market_data(%s, %s) not in buffer; cannot fetch inline from "
+            "a sync on_tick handler. Declare this in the manifest's assets "
+            "so the rolling buffer is pre-populated.",
             symbol, timeframe,
         )
-        return await self._data_client.get_market_data(symbol, timeframe=timeframe, bars=bars)
+        return None
 
     async def data(self, source_name: str) -> pd.DataFrame:
         return await self._data_client.get_custom_data(source_name)

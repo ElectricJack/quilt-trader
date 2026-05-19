@@ -47,13 +47,32 @@ def test_tick_context_account_values(mock_broker, mock_data_client):
     assert ctx.buying_power == 100000.0
 
 
-@pytest.mark.asyncio
-async def test_tick_context_market_data(mock_broker, mock_data_client):
-    ctx = LiveTickContext(timestamp=datetime.now(timezone.utc), mode="live", broker=mock_broker, data_client=mock_data_client)
-    df = await ctx.market_data("AAPL", timeframe="1min", bars=100)
+def test_tick_context_market_data_from_buffer(mock_broker, mock_data_client):
+    """When the buffer has data, market_data returns it synchronously."""
+    from unittest.mock import MagicMock
+    buffer = MagicMock()
+    buffer.has.return_value = True
+    buffer.get.return_value = pd.DataFrame({
+        "timestamp": ["2025-01-01T09:30:00"], "close": [150.0],
+    })
+    ctx = LiveTickContext(
+        timestamp=datetime.now(timezone.utc), mode="live",
+        broker=mock_broker, data_client=mock_data_client, buffer=buffer,
+    )
+    df = ctx.market_data("AAPL", timeframe="1min", bars=100)
     assert isinstance(df, pd.DataFrame)
-    assert len(df) == 2
-    mock_data_client.get_market_data.assert_called_once_with("AAPL", timeframe="1min", bars=100)
+    assert len(df) == 1
+    buffer.get.assert_called_once_with("AAPL", "1min", 100)
+
+
+def test_tick_context_market_data_no_buffer_returns_none(mock_broker, mock_data_client):
+    """Without a buffer, market_data returns None (can't await from sync on_tick)."""
+    ctx = LiveTickContext(
+        timestamp=datetime.now(timezone.utc), mode="live",
+        broker=mock_broker, data_client=mock_data_client,
+    )
+    result = ctx.market_data("AAPL", timeframe="1min", bars=100)
+    assert result is None
 
 
 @pytest.mark.asyncio
