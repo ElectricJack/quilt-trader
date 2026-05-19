@@ -245,9 +245,13 @@ class BacktestRunner:
                 })
 
             on_miss = self._make_on_miss(date_range_start, date_range_end)
+            # Use a real provider as the default source for on-demand downloads,
+            # not "synthetic" (which is only used for the clock when no market
+            # bars are pre-loaded).
+            default_src = clock_source if clock_source != "synthetic" else "polygon"
             ctx = BacktestTickContext(
                 bars=bars, positions={}, cash=initial_cash,
-                default_source=clock_source,
+                default_source=default_src,
                 data_service=self._ds,
                 on_miss=on_miss,
             )
