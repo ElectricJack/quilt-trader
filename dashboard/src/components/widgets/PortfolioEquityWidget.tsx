@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Widget } from "../Widget";
 import { StackedAreaChart, type StackedAreaBand } from "../StackedAreaChart";
 import { usePortfolioEquity } from "../../api/hooks";
+import { useOverviewFilter } from "../../stores/overviewFilter";
 
 type Range = "1d" | "1w" | "1m" | "all";
 
@@ -15,8 +16,13 @@ function formatDollar(v: number): string {
 export function PortfolioEquityWidget() {
   const [range, setRange] = useState<Range>("1m");
   const { data, isLoading } = usePortfolioEquity(range);
+  const { selectedIds } = useOverviewFilter();
 
-  const bands: StackedAreaBand[] = (data?.accounts ?? []).map((a, i) => ({
+  const filteredAccounts = (data?.accounts ?? []).filter(
+    (a) => selectedIds.size === 0 || selectedIds.has(a.account_id)
+  );
+
+  const bands: StackedAreaBand[] = filteredAccounts.map((a, i) => ({
     key: a.account_id,
     name: a.account_name,
     color: COLORS[i % COLORS.length],

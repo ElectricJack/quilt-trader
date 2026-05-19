@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Widget } from "../Widget";
 import { useAccountSnapshotsLatest } from "../../api/hooks";
+import { useOverviewFilter } from "../../stores/overviewFilter";
 
 function fmtMoney(v: number): string {
   return `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -9,7 +10,11 @@ function fmtMoney(v: number): string {
 export function AccountBalancesWidget() {
   const navigate = useNavigate();
   const { data, isLoading } = useAccountSnapshotsLatest();
-  const items = data?.items ?? [];
+  const { selectedIds } = useOverviewFilter();
+  const allItems = data?.items ?? [];
+  const items = selectedIds.size > 0
+    ? allItems.filter((a) => selectedIds.has(a.account_id))
+    : allItems;
 
   return (
     <Widget title="Account Balances" isLoading={isLoading} bodyClass="">

@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { Widget } from "../Widget";
 import { Sparkline } from "../Sparkline";
 import { useDeployments } from "../../api/hooks";
+import { useOverviewFilter } from "../../stores/overviewFilter";
 
 function formatMoney(v: number): string {
   const sign = v >= 0 ? "+" : "";
@@ -12,9 +13,14 @@ function formatMoney(v: number): string {
 
 export function AlgorithmsWidget() {
   const navigate = useNavigate();
-  const { data: instances, isLoading } = useDeployments();
+  const { data: allInstances, isLoading } = useDeployments();
+  const { selectedIds } = useOverviewFilter();
 
-  const rows = (instances ?? []).map((inst) => {
+  const instances = selectedIds.size > 0
+    ? (allInstances ?? []).filter((inst) => selectedIds.has(inst.account_id))
+    : (allInstances ?? []);
+
+  const rows = instances.map((inst) => {
     const metrics = inst.lifetime_metrics ?? {};
     const lifetime = typeof metrics.total_pnl === "number" ? metrics.total_pnl : 0;
     const tradeCount = typeof metrics.trade_count === "number" ? metrics.trade_count : 0;

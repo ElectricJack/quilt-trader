@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Widget } from "../Widget";
 import { useOpenPositions } from "../../api/hooks";
+import { useOverviewFilter } from "../../stores/overviewFilter";
 
 function formatMoney(v: number | null | undefined): string {
   if (v == null) return "—";
@@ -18,7 +19,11 @@ function formatPct(unrealized: number | null, cost: number): string {
 export function OpenPositionsWidget() {
   const navigate = useNavigate();
   const { data, isLoading } = useOpenPositions(10);
-  const items = data?.items ?? [];
+  const { selectedIds } = useOverviewFilter();
+  const allItems = data?.items ?? [];
+  const items = selectedIds.size > 0
+    ? allItems.filter((p) => selectedIds.has(p.account_id))
+    : allItems;
 
   return (
     <Widget title="Open Positions" isLoading={isLoading} bodyClass="">

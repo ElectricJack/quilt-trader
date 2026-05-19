@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Widget } from "../Widget";
 import { useRecentTrades } from "../../api/hooks";
+import { useOverviewFilter } from "../../stores/overviewFilter";
 
 function fmtTime(iso: string | null): string {
   if (!iso) return "—";
@@ -14,7 +15,11 @@ function fmtDollar(v: number): string {
 export function RecentTradesWidget() {
   const navigate = useNavigate();
   const { data, isLoading } = useRecentTrades(10);
-  const items = data?.items ?? [];
+  const { selectedIds } = useOverviewFilter();
+  const allItems = data?.items ?? [];
+  const items = selectedIds.size > 0
+    ? allItems.filter((t) => selectedIds.has(t.account_id))
+    : allItems;
 
   return (
     <Widget title="Recent Trades" isLoading={isLoading} bodyClass="">
