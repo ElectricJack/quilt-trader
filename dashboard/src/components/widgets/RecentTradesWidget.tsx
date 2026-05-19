@@ -17,9 +17,7 @@ export function RecentTradesWidget() {
   const { data, isLoading } = useRecentTrades(10);
   const { selectedIds } = useOverviewFilter();
   const allItems = data?.items ?? [];
-  const items = selectedIds.size > 0
-    ? allItems.filter((t) => selectedIds.has(t.account_id))
-    : allItems;
+  const items = allItems.filter((t) => selectedIds.has(t.account_id));
 
   return (
     <Widget title="Recent Trades" isLoading={isLoading} bodyClass="">

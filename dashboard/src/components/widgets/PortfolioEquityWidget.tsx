@@ -19,7 +19,7 @@ export function PortfolioEquityWidget() {
   const { selectedIds } = useOverviewFilter();
 
   const filteredAccounts = (data?.accounts ?? []).filter(
-    (a) => selectedIds.size === 0 || selectedIds.has(a.account_id)
+    (a) => selectedIds.has(a.account_id)
   );
 
   const bands: StackedAreaBand[] = filteredAccounts.map((a, i) => ({

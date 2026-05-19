@@ -16,9 +16,7 @@ export function AlgorithmsWidget() {
   const { data: allInstances, isLoading } = useDeployments();
   const { selectedIds } = useOverviewFilter();
 
-  const instances = selectedIds.size > 0
-    ? (allInstances ?? []).filter((inst) => selectedIds.has(inst.account_id))
-    : (allInstances ?? []);
+  const instances = (allInstances ?? []).filter((inst) => selectedIds.has(inst.account_id));
 
   const rows = instances.map((inst) => {
     const metrics = inst.lifetime_metrics ?? {};

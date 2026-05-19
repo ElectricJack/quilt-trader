@@ -12,9 +12,7 @@ export function AccountBalancesWidget() {
   const { data, isLoading } = useAccountSnapshotsLatest();
   const { selectedIds } = useOverviewFilter();
   const allItems = data?.items ?? [];
-  const items = selectedIds.size > 0
-    ? allItems.filter((a) => selectedIds.has(a.account_id))
-    : allItems;
+  const items = allItems.filter((a) => selectedIds.has(a.account_id));
 
   return (
     <Widget title="Account Balances" isLoading={isLoading} bodyClass="">

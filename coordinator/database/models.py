@@ -46,6 +46,7 @@ class Account(Base):
     options_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     account_features: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     pdt_mode: Mapped[str] = mapped_column(String, nullable=False, default="off")
+    show_in_overview: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     locked_by: Mapped[Optional[str]] = mapped_column(String, ForeignKey("algorithm_instances.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

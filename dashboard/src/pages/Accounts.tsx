@@ -59,6 +59,7 @@ const editAccountSchema = z.object({
   environment: z.enum(["paper", "live"]),
   supported_asset_types: z.array(z.string()).min(1, "Select at least one asset type"),
   pdt_mode: z.string().min(1, "PDT mode is required"),
+  show_in_overview: z.boolean(),
   // Optional credential rotation; empty means "leave unchanged".
   alpaca_api_key: z.string().optional(),
   alpaca_secret_key: z.string().optional(),
@@ -340,6 +341,17 @@ function EditAccountFormBody({
         </select>
       </FormField>
 
+      <FormField label="Overview">
+        <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-300">
+          <input
+            type="checkbox"
+            className="accent-indigo-500"
+            {...form.register("show_in_overview")}
+          />
+          Show in Overview
+        </label>
+      </FormField>
+
       <div className="border-t border-gray-800 pt-3 mt-2">
         <p className="text-xs text-gray-500 mb-2">
           Rotate credentials (leave blank to keep current values)
@@ -554,6 +566,7 @@ export function Accounts() {
         environment: values.environment,
         supported_asset_types: values.supported_asset_types,
         pdt_mode: values.pdt_mode,
+        show_in_overview: values.show_in_overview,
         ...(credentials ? { credentials } : {}),
       },
     });
@@ -643,6 +656,7 @@ export function Accounts() {
                 environment: editTarget.environment,
                 supported_asset_types: editTarget.supported_asset_types ?? [],
                 pdt_mode: editTarget.pdt_mode,
+                show_in_overview: editTarget.show_in_overview,
                 alpaca_api_key: "",
                 alpaca_secret_key: "",
                 tradier_access_token: "",
@@ -653,6 +667,7 @@ export function Accounts() {
                 environment: "paper",
                 supported_asset_types: [],
                 pdt_mode: "off",
+                show_in_overview: true,
                 alpaca_api_key: "",
                 alpaca_secret_key: "",
                 tradier_access_token: "",

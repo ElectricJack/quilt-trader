@@ -52,6 +52,7 @@ export interface AccountUpdate {
   options_level?: number;
   account_features?: string[];
   pdt_mode?: string;
+  show_in_overview?: boolean;
 }
 
 export interface TestConnectionRequest {

@@ -98,6 +98,7 @@ const accountEditSchema = z.object({
   environment: z.enum(["paper", "live"]),
   supported_asset_types: z.string().min(1, "At least one asset type is required"),
   pdt_mode: z.string().min(1, "PDT mode is required"),
+  show_in_overview: z.boolean(),
 });
 
 type AccountEditValues = z.infer<typeof accountEditSchema>;
@@ -466,6 +467,7 @@ export function AccountDetail() {
         environment: values.environment,
         supported_asset_types: assetTypes,
         pdt_mode: values.pdt_mode,
+        show_in_overview: values.show_in_overview,
       },
     });
     addAlert({ message: "Account updated.", severity: "success" });
@@ -701,6 +703,9 @@ export function AccountDetail() {
           <DetailItem label="Features">
             {(account.account_features ?? []).join(", ") || "—"}
           </DetailItem>
+          <DetailItem label="In Overview">
+            {account.show_in_overview ? "Yes" : "No"}
+          </DetailItem>
           {account.locked_by && (
             <DetailItem label="Locked by">{account.locked_by}</DetailItem>
           )}
@@ -802,6 +807,7 @@ export function AccountDetail() {
           environment: account.environment,
           supported_asset_types: (account.supported_asset_types ?? []).join(", "),
           pdt_mode: account.pdt_mode,
+          show_in_overview: account.show_in_overview,
         }}
         onSubmit={handleEdit}
         submitLabel="Save Changes"
@@ -857,6 +863,17 @@ export function AccountDetail() {
                   <option value="warn">Warn</option>
                   <option value="block">Block</option>
                 </select>
+              </FormField>
+
+              <FormField label="Overview">
+                <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-300">
+                  <input
+                    type="checkbox"
+                    className="accent-indigo-500"
+                    {...form.register("show_in_overview")}
+                  />
+                  Show in Overview
+                </label>
               </FormField>
 
               <p className="text-xs text-gray-500 pt-1">

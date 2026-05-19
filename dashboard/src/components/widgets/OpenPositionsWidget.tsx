@@ -21,9 +21,7 @@ export function OpenPositionsWidget() {
   const { data, isLoading } = useOpenPositions(10);
   const { selectedIds } = useOverviewFilter();
   const allItems = data?.items ?? [];
-  const items = selectedIds.size > 0
-    ? allItems.filter((p) => selectedIds.has(p.account_id))
-    : allItems;
+  const items = allItems.filter((p) => selectedIds.has(p.account_id));
 
   return (
     <Widget title="Open Positions" isLoading={isLoading} bodyClass="">

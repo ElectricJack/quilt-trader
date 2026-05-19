@@ -23,6 +23,7 @@ async def test_create_account(db_session):
     assert fetched.broker_type == "alpaca"
     assert fetched.supported_asset_types == ["equities", "options", "crypto"]
     assert fetched.pdt_mode == "warn"
+    assert fetched.show_in_overview is True
     assert fetched.locked_by is None
     assert fetched.created_at is not None
 
@@ -35,7 +36,7 @@ async def test_create_algorithm(db_session):
         version="1.0.0", commit_hash="abc123",
         required_asset_types=["equities", "options"], required_options_level=3,
         required_account_features=["margin"], supported_brokers=None,
-        data_dependencies=[{"name": "alpha-picks-scraper", "repo": "ElectricJack/alpha-picks-scraper"}],
+        assets=[{"name": "alpha-picks-scraper", "repo": "ElectricJack/alpha-picks-scraper"}],
         config_schema={"parameters": [{"name": "risk_per_trade", "type": "float"}]},
         custom_events=[{"name": "unusual_volume", "severity": "info"}],
         install_status="installed",
@@ -45,7 +46,7 @@ async def test_create_algorithm(db_session):
     result = await db_session.execute(select(Algorithm).where(Algorithm.name == "momentum-scalper"))
     fetched = result.scalar_one()
     assert fetched.id is not None
-    assert fetched.data_dependencies[0]["name"] == "alpha-picks-scraper"
+    assert fetched.assets[0]["name"] == "alpha-picks-scraper"
 
 
 @pytest.mark.asyncio
