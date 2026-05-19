@@ -146,18 +146,85 @@ def worker_regenerate_token(ctx, worker):
 
 @worker_group.command("update")
 @click.argument("worker")
+@click.option("--no-wait", is_flag=True, help="Don't wait for the worker to restart.")
 @click.pass_context
-def worker_update(ctx, worker):
+def worker_update(ctx, worker, no_wait):
     """Send an update command to a worker — git pull + restart (accepts name, short ID, or full UUID)."""
+    import time
+
     worker_id = _run(_resolve_worker_id(ctx, worker))
-    async def go():
+
+    async def send_update():
         c = _client(ctx)
         try:
             return await c.post(f"/api/workers/{worker_id}/update")
         finally:
             await c.aclose()
-    _run(go())
-    click.echo(f"Update command sent to worker. It will pull latest code and restart.")
+
+    async def get_worker():
+        c = _client(ctx)
+        try:
+            return await c.get(f"/api/workers/{worker_id}")
+        finally:
+            await c.aclose()
+
+    _run(send_update())
+    click.echo("Update command sent. Worker is pulling latest code...")
+
+    if no_wait:
+        return
+
+    # Get the current heartbeat so we can detect a fresh one after restart.
+    before = _run(get_worker())
+    old_heartbeat = before.get("last_heartbeat")
+
+    # Wait for the worker to go offline (it exits after git pull).
+    click.echo("  Waiting for worker to restart...", nl=False)
+    went_offline = False
+    for _ in range(60):  # up to 60s
+        time.sleep(1)
+        try:
+            w = _run(get_worker())
+        except SystemExit:
+            # fail() calls sys.exit; worker might be unreachable briefly
+            click.echo(" offline", nl=False)
+            went_offline = True
+            break
+        if w.get("status") == "offline":
+            click.echo(" offline", nl=False)
+            went_offline = True
+            break
+        # Or: heartbeat changed (worker restarted fast without going offline)
+        if w.get("last_heartbeat") != old_heartbeat and w.get("status") == "online":
+            click.echo("")
+            click.echo(f"  Worker restarted (new heartbeat: {w['last_heartbeat']})")
+            click.echo("Update complete.")
+            return
+        click.echo(".", nl=False)
+
+    if not went_offline:
+        click.echo("")
+        click.echo("  Timed out waiting for worker to restart. Check manually.")
+        return
+
+    # Wait for it to come back online.
+    click.echo(" → waiting for online...", nl=False)
+    for _ in range(60):  # up to 60s
+        time.sleep(2)
+        try:
+            w = _run(get_worker())
+        except SystemExit:
+            click.echo(".", nl=False)
+            continue
+        if w.get("status") == "online":
+            click.echo("")
+            click.echo(f"  Worker back online (heartbeat: {w['last_heartbeat']})")
+            click.echo("Update complete.")
+            return
+        click.echo(".", nl=False)
+
+    click.echo("")
+    click.echo("  Timed out waiting for worker to come back online. Check manually.")
 
 
 @worker_group.command("delete")
