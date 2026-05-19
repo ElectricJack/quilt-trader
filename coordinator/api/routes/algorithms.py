@@ -25,6 +25,7 @@ from coordinator.database.models import (
     BacktestComparison,
     DecisionLog,
     PDTTracking,
+    ParameterSet,
     Position,
     Setting,
     TradeLog,
@@ -104,6 +105,7 @@ class InstanceCreate(BaseModel):
     account_id: str
     worker_id: str
     config_values: Optional[dict] = None
+    parameter_set_id: Optional[str] = None
 
 
 def _algo_to_response(algo: Algorithm) -> dict:
@@ -410,11 +412,25 @@ async def create_instance(
     if algo is None:
         raise HTTPException(status_code=404, detail="Algorithm not found")
 
+    config_values = body.config_values
+    parameter_set_id = body.parameter_set_id
+    if parameter_set_id is not None:
+        ps = (await db.execute(
+            select(ParameterSet).where(
+                ParameterSet.algorithm_id == algorithm_id,
+                ParameterSet.id == parameter_set_id,
+            )
+        )).scalar_one_or_none()
+        if ps is None:
+            raise HTTPException(status_code=404, detail="Parameter set not found")
+        config_values = ps.config_values
+
     instance = AlgorithmInstance(
         algorithm_id=algorithm_id,
         account_id=body.account_id,
         worker_id=body.worker_id,
-        config_values=body.config_values,
+        config_values=config_values,
+        parameter_set_id=parameter_set_id,
         status="stopped",
     )
     db.add(instance)

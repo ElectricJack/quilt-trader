@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db, get_container
 from coordinator.api.serialization import to_iso_utc
-from coordinator.database.models import BacktestRun, Algorithm
+from coordinator.database.models import BacktestRun, Algorithm, ParameterSet
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backtest-runs", tags=["backtest-runs"])
@@ -41,6 +41,7 @@ class BacktestRunCreate(BaseModel):
     date_range_end: datetime
     initial_cash: float = 100_000.0
     config_overrides: Optional[dict] = None
+    parameter_set_id: Optional[str] = None
     buy_trading_fees: Optional[list[TradingFeeIn]] = None
     sell_trading_fees: Optional[list[TradingFeeIn]] = None
     slippage_model: Optional[SlippageModelIn] = None
@@ -50,7 +51,7 @@ class BacktestRunCreate(BaseModel):
 
 def _to_response(r: BacktestRun) -> dict:
     return {
-        "id": r.id, "algorithm_id": r.algorithm_id, "status": r.status,
+        "id": r.id, "algorithm_id": r.algorithm_id, "parameter_set_id": r.parameter_set_id, "status": r.status,
         "date_range_start": to_iso_utc(r.date_range_start),
         "date_range_end": to_iso_utc(r.date_range_end),
         "initial_cash": r.initial_cash,
@@ -90,12 +91,27 @@ async def create_run(body: BacktestRunCreate, db: AsyncSession = Depends(get_db)
     algo = (await db.execute(select(Algorithm).where(Algorithm.id == body.algorithm_id))).scalar_one_or_none()
     if algo is None:
         raise HTTPException(404, detail=f"Algorithm not found: {body.algorithm_id}")
+
+    config_overrides = body.config_overrides
+    parameter_set_id = body.parameter_set_id
+    if parameter_set_id is not None:
+        ps = (await db.execute(
+            select(ParameterSet).where(
+                ParameterSet.algorithm_id == algo.id,
+                ParameterSet.id == parameter_set_id,
+            )
+        )).scalar_one_or_none()
+        if ps is None:
+            raise HTTPException(404, detail="Parameter set not found")
+        config_overrides = ps.config_values
+
     run = BacktestRun(
         algorithm_id=body.algorithm_id,
         date_range_start=body.date_range_start,
         date_range_end=body.date_range_end,
         initial_cash=body.initial_cash,
-        config_overrides=body.config_overrides,
+        config_overrides=config_overrides,
+        parameter_set_id=parameter_set_id,
         buy_trading_fees=[f.model_dump() for f in body.buy_trading_fees] if body.buy_trading_fees else None,
         sell_trading_fees=[f.model_dump() for f in body.sell_trading_fees] if body.sell_trading_fees else None,
         slippage_model=body.slippage_model.model_dump() if body.slippage_model else None,
