@@ -534,9 +534,9 @@ function OverlayChart({ loaded, chartType, onChartReady }: OverlayChartProps) {
   const anyFetchingMore = loaded.some((l) => l.fetchingMore);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 space-y-2">
+    <div className="flex flex-col h-full space-y-1">
       <Legend loaded={loaded} chartType={chartType} />
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1">
         {anyFetchingMore && (
           <div className="absolute top-1 left-2 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded bg-gray-900/80 border border-gray-700 text-[10px] text-gray-400 pointer-events-none">
             <span className="inline-block w-2 h-2 border border-gray-400 border-t-transparent rounded-full animate-spin" />
@@ -637,7 +637,7 @@ function StackedCharts({ loaded, chartType, onChartsReady }: StackedChartsProps)
   }, [syncVersion, loaded]);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-3">
+    <div className="flex flex-col h-full gap-1">
       {loaded.map((l, i) => (
         <StackedRow
           key={datasetLabel(l.dataset)}
@@ -764,7 +764,7 @@ function StackedRow({
   const lineColor = SERIES_COLORS[colorIdx % SERIES_COLORS.length];
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="flex flex-col flex-1" style={{ minHeight: 0 }}>
       <div className="relative flex items-center gap-2 mb-1 text-xs font-mono text-gray-300 shrink-0">
         {chartType === "candlestick" ? (
           <CandleDot upColor={dc.up} downColor={dc.down} />
@@ -782,10 +782,12 @@ function StackedRow({
           </span>
         )}
       </div>
-      <div
-        ref={containerRef}
-        className="flex-1 min-h-0 w-full rounded-lg border border-gray-800"
-      />
+      <div className="relative flex-1" style={{ minHeight: "150px" }}>
+        <div
+          ref={containerRef}
+          className="absolute inset-0 rounded-lg border border-gray-800"
+        />
+      </div>
     </div>
   );
 }
@@ -935,10 +937,12 @@ function DiffChart({ loaded, onChartReady }: DiffChartProps) {
           </span>
         )}
       </div>
-      <div
-        ref={containerRef}
-        className="flex-1 min-h-0 w-full rounded-lg border border-gray-800"
-      />
+      <div className="relative flex-1" style={{ minHeight: "120px" }}>
+        <div
+          ref={containerRef}
+          className="absolute inset-0 rounded-lg border border-gray-800"
+        />
+      </div>
     </div>
   );
 }
@@ -1121,10 +1125,11 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
           setChartType={setChartType}
         />
 
-        {/* Chart area: flex column, main view + optional diff panel below */}
-        <div className="flex flex-col flex-1 min-h-0">
-          {/* Main view — 70% height when diff is visible, 100% otherwise */}
-          <div className={`min-h-0 flex-1 ${showDiff && diffAvailable ? "max-h-[70%]" : ""}`}>
+        {/* Chart area: flex column, main view + optional diff panel below.
+            Use calc-based explicit heights to avoid flex-chain collapse. */}
+        <div className="flex flex-col" style={{ height: "calc(100vh - 180px)" }}>
+          {/* Main view */}
+          <div style={{ height: showDiff && diffAvailable ? "70%" : "100%" }}>
             {mode === "overlay" ? (
               <OverlayChart
                 loaded={loaded}
@@ -1149,7 +1154,7 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
 
           {/* Diff panel — 30% height, shown when showDiff is on */}
           {showDiff && diffAvailable && (
-            <div className="flex-none h-[30%] min-h-0 border-t border-gray-700">
+            <div style={{ height: "30%" }} className="border-t border-gray-700">
               <DiffChart
                 loaded={loaded}
                 chartType={chartType}
