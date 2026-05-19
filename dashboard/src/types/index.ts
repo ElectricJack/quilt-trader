@@ -9,6 +9,7 @@ export interface Account {
   options_level: number | null;
   account_features: string[] | null;
   pdt_mode: string;
+  can_trade: boolean;
   locked_by: string | null;
   created_at: string;
   updated_at: string;

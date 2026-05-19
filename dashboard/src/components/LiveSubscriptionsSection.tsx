@@ -198,7 +198,7 @@ export function LiveSubscriptionsSection() {
               <option value="">— select account —</option>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name}
+                  {a.name}{!a.can_trade ? " (data-only)" : ""} [{a.broker_type}]
                 </option>
               ))}
             </select>

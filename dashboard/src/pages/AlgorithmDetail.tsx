@@ -354,8 +354,12 @@ export function AlgorithmDetail() {
               >
                 <option value="">Select an account</option>
                 {(accounts ?? []).map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
+                  <option
+                    key={account.id}
+                    value={account.id}
+                    disabled={!account.can_trade}
+                  >
+                    {account.name}{!account.can_trade ? " (data-only)" : ""}
                   </option>
                 ))}
               </select>

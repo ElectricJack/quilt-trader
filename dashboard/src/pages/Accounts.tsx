@@ -24,12 +24,17 @@ import { useUIStore } from "../stores/ui";
 const BROKER_OPTIONS = [
   { value: "alpaca", label: "Alpaca" },
   { value: "tradier", label: "Tradier" },
+  { value: "polygon", label: "Polygon.io (data-only)" },
+  { value: "thetadata", label: "ThetaData (data-only)" },
 ] as const;
+
+// Brokers that are data-only (cannot run algorithms)
+const DATA_ONLY_BROKERS = new Set(["polygon", "thetadata"]);
 
 const createAccountSchema = z
   .object({
     name: z.string().min(1, "Name is required"),
-    broker_type: z.enum(["alpaca", "tradier"]),
+    broker_type: z.enum(["alpaca", "tradier", "polygon", "thetadata"]),
     environment: z.enum(["paper", "live"]),
     supported_asset_types: z.array(z.string()).min(1, "Select at least one asset type"),
     pdt_mode: z.string().min(1, "PDT mode is required"),
@@ -37,6 +42,9 @@ const createAccountSchema = z
     alpaca_secret_key: z.string().optional(),
     tradier_access_token: z.string().optional(),
     tradier_account_id: z.string().optional(),
+    polygon_api_key: z.string().optional(),
+    theta_username: z.string().optional(),
+    theta_password: z.string().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.broker_type === "alpaca") {
@@ -49,6 +57,14 @@ const createAccountSchema = z
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["tradier_access_token"], message: "Access Token is required" });
       if (!data.tradier_account_id?.trim())
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["tradier_account_id"], message: "Account ID is required" });
+    } else if (data.broker_type === "polygon") {
+      if (!data.polygon_api_key?.trim())
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["polygon_api_key"], message: "API Key is required" });
+    } else if (data.broker_type === "thetadata") {
+      if (!data.theta_username?.trim())
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["theta_username"], message: "Username is required" });
+      if (!data.theta_password?.trim())
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["theta_password"], message: "Password is required" });
     }
   });
 
@@ -77,6 +93,9 @@ function buildCredentials(values: {
   alpaca_secret_key?: string;
   tradier_access_token?: string;
   tradier_account_id?: string;
+  polygon_api_key?: string;
+  theta_username?: string;
+  theta_password?: string;
 }): Record<string, string> | null {
   if (values.broker_type === "alpaca") {
     if (!values.alpaca_api_key && !values.alpaca_secret_key) return null;
@@ -90,6 +109,17 @@ function buildCredentials(values: {
     return {
       access_token: values.tradier_access_token ?? "",
       account_id: values.tradier_account_id ?? "",
+    };
+  }
+  if (values.broker_type === "polygon") {
+    if (!values.polygon_api_key) return null;
+    return { api_key: values.polygon_api_key };
+  }
+  if (values.broker_type === "thetadata") {
+    if (!values.theta_username && !values.theta_password) return null;
+    return {
+      username: values.theta_username ?? "",
+      password: values.theta_password ?? "",
     };
   }
   return null;
@@ -245,6 +275,54 @@ function AddAccountFormBody({
               autoComplete="off"
               placeholder="VA1234567"
               {...form.register("tradier_account_id")}
+            />
+          </FormField>
+        </>
+      )}
+
+      {broker === "polygon" && (
+        <>
+          <div className="rounded border border-yellow-700/50 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-300">
+            Polygon.io is a data-only provider. Algorithms cannot be deployed to this account.
+          </div>
+          <FormField
+            label="Polygon API Key"
+            error={form.formState.errors.polygon_api_key?.message}
+          >
+            <input
+              type="password"
+              className={INPUT_CLASS}
+              autoComplete="off"
+              {...form.register("polygon_api_key")}
+            />
+          </FormField>
+        </>
+      )}
+
+      {broker === "thetadata" && (
+        <>
+          <div className="rounded border border-yellow-700/50 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-300">
+            ThetaData is a data-only provider. Algorithms cannot be deployed to this account.
+          </div>
+          <FormField
+            label="ThetaData Username"
+            error={form.formState.errors.theta_username?.message}
+          >
+            <input
+              className={INPUT_CLASS}
+              autoComplete="off"
+              {...form.register("theta_username")}
+            />
+          </FormField>
+          <FormField
+            label="ThetaData Password"
+            error={form.formState.errors.theta_password?.message}
+          >
+            <input
+              type="password"
+              className={INPUT_CLASS}
+              autoComplete="off"
+              {...form.register("theta_password")}
             />
           </FormField>
         </>
@@ -455,6 +533,24 @@ export function Accounts() {
       accessorKey: "pdt_mode",
     },
     {
+      id: "can_trade",
+      header: "Type",
+      cell: ({ row }) => {
+        if (!row.original.can_trade) {
+          return (
+            <span className="text-xs px-2 py-0.5 rounded border bg-yellow-900/40 text-yellow-300 border-yellow-800">
+              data-only
+            </span>
+          );
+        }
+        return (
+          <span className="text-xs px-2 py-0.5 rounded border bg-gray-800 text-gray-400 border-gray-700">
+            trading
+          </span>
+        );
+      },
+    },
+    {
       id: "status",
       header: "Status",
       accessorFn: (row) => (row.locked_by ? "locked" : "available"),
@@ -526,12 +622,14 @@ export function Accounts() {
 
   async function handleCreate(values: CreateAccountValues) {
     const credentials = buildCredentials(values) ?? {};
+    const isDataOnly = DATA_ONLY_BROKERS.has(values.broker_type);
     await createAccount.mutateAsync({
       name: values.name,
       broker_type: values.broker_type,
       environment: values.environment,
       supported_asset_types: values.supported_asset_types,
       pdt_mode: values.pdt_mode,
+      can_trade: !isDataOnly,
       credentials,
     });
     addAlert({ message: "Account created.", severity: "success" });
@@ -616,6 +714,9 @@ export function Accounts() {
           alpaca_secret_key: "",
           tradier_access_token: "",
           tradier_account_id: "",
+          polygon_api_key: "",
+          theta_username: "",
+          theta_password: "",
         }}
         onSubmit={handleCreate}
         submitLabel="Create Account"

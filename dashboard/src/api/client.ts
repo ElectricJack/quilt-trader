@@ -42,6 +42,7 @@ export interface AccountCreate {
   options_level?: number;
   account_features?: string[];
   pdt_mode?: string;
+  can_trade?: boolean;
 }
 
 export interface AccountUpdate {
@@ -52,6 +53,7 @@ export interface AccountUpdate {
   options_level?: number;
   account_features?: string[];
   pdt_mode?: string;
+  can_trade?: boolean;
 }
 
 export interface TestConnectionRequest {
