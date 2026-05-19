@@ -456,6 +456,225 @@ async def update_deployment(
     return {"ok": True}
 
 
+@router.post("/{deployment_id}/redeploy")
+async def redeploy(deployment_id: str, db: AsyncSession = Depends(get_db)):
+    """Pull latest algorithm code from GitHub, rebuild package, and restart if running."""
+    import asyncio
+    import json as _json
+    import re
+    import subprocess
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from sdk.manifest import QuiltManifest
+
+    inst = (await db.execute(
+        select(AlgorithmInstance).where(AlgorithmInstance.id == deployment_id)
+    )).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+
+    algo = (await db.execute(
+        select(Algorithm).where(Algorithm.id == inst.algorithm_id)
+    )).scalar_one_or_none()
+    if algo is None:
+        raise HTTPException(status_code=500, detail="Algorithm missing")
+
+    account = (await db.execute(
+        select(Account).where(Account.id == inst.account_id)
+    )).scalar_one_or_none()
+
+    # 1. Derive package directory from repo URL
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", algo.repo_url or "")
+    if not m:
+        raise HTTPException(status_code=422, detail=f"Cannot derive package dir from {algo.repo_url!r}")
+    pkg_name = m.group(1).split("/", 1)[1]
+    pkg_dir = Path("data/packages") / pkg_name
+
+    if not pkg_dir.exists():
+        raise HTTPException(
+            status_code=422,
+            detail=f"Package directory {pkg_dir} does not exist. Re-install the algorithm first.",
+        )
+
+    # 2. Pull latest from GitHub
+    try:
+        subprocess.run(
+            ["git", "-C", str(pkg_dir), "fetch", "origin"],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        result = subprocess.run(
+            ["git", "-C", str(pkg_dir), "symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+            capture_output=True, text=True, timeout=10,
+        )
+        default_branch = result.stdout.strip() if result.returncode == 0 else "origin/main"
+        subprocess.run(
+            ["git", "-C", str(pkg_dir), "reset", "--hard", default_branch],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Git pull failed: {e.stderr}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Git pull timed out")
+
+    # 3. Read new commit SHA
+    try:
+        sha_result = subprocess.run(
+            ["git", "-C", str(pkg_dir), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        new_sha = sha_result.stdout.strip()
+    except subprocess.CalledProcessError:
+        new_sha = f"local-{int(datetime.now(timezone.utc).timestamp())}"
+
+    # 4. Re-parse manifest for updated assets
+    try:
+        manifest = QuiltManifest.from_file(pkg_dir / "quilt.yaml")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Manifest parse failed: {e}")
+
+    # 5. Update Algorithm row
+    algo.commit_hash = new_sha
+    if manifest.assets:
+        algo.assets = manifest.assets
+    await db.flush()
+
+    # 6. If running: stop then restart with new SHA
+    was_running = inst.status in ("running", "starting")
+    new_run_id = None
+
+    if was_running:
+        # Stop the running instance
+        worker_ws = ws_manager.worker_connections.get(inst.worker_id)
+        inst.status = "stopping"
+        await db.commit()
+        await _broadcast_status_changed(inst.id, "stopping", inst.active_run_id)
+
+        container = get_container()
+
+        if getattr(container, "tick_scheduler", None) is not None:
+            try:
+                await container.tick_scheduler.stop_instance(inst.id)
+            except Exception:
+                logger.exception("tick_scheduler.stop_instance failed during redeploy")
+
+        if worker_ws is not None:
+            try:
+                await worker_ws.send_json({"type": "stop_instance", "instance_id": inst.id})
+            except Exception:
+                pass
+
+        # Brief wait for stop to propagate before restart
+        await asyncio.sleep(1.0)
+
+        # Create a new run
+        next_n = (await db.execute(
+            select(func.coalesce(func.max(AlgorithmRun.run_number), 0))
+            .where(AlgorithmRun.instance_id == inst.id)
+        )).scalar_one() + 1
+        run = AlgorithmRun(instance_id=inst.id, run_number=next_n, status="running")
+        db.add(run)
+        await db.flush()
+
+        inst.status = "starting"
+        inst.active_run_id = run.id
+        await db.commit()
+
+        await _broadcast_status_changed(inst.id, "starting", run.id)
+
+        # Run lifecycle pre-start checks
+        lifecycle = getattr(container, "lifecycle_service", None)
+        if lifecycle is not None and account is not None:
+            try:
+                await lifecycle.pre_start_checks(account, algo, inst)
+            except Exception as e:
+                inst.status = "error"
+                run.status = "error"
+                await db.commit()
+                await _broadcast_status_changed(inst.id, "error", run.id)
+                raise HTTPException(status_code=400, detail=f"pre-start checks failed: {e}")
+
+        # Decrypt credentials
+        if account is None:
+            inst.status = "error"
+            run.status = "error"
+            await db.commit()
+            raise HTTPException(status_code=500, detail="Account missing")
+
+        encryption = container.encryption
+        try:
+            creds = _json.loads(encryption.decrypt(account.credentials))
+        except Exception:
+            inst.status = "error"
+            run.status = "error"
+            await db.commit()
+            await _broadcast_status_changed(inst.id, "error", run.id)
+            raise HTTPException(status_code=500, detail="Failed to decrypt account credentials")
+
+        manifest_dict = _load_manifest_dict(algo)
+
+        payload = {
+            "type": "start_instance",
+            "instance_id": inst.id,
+            "run_id": run.id,
+            "algorithm_id": algo.id,
+            "algorithm_commit_sha": new_sha,  # new SHA forces fresh package download on worker
+            "manifest": manifest_dict,
+            "broker_type": account.broker_type,
+            "environment": account.environment,
+            "credentials": creds,
+            "config": inst.config_values or {},
+            "persisted_state": inst.persisted_state,
+        }
+
+        # Re-fetch worker_ws in case it changed
+        worker_ws = ws_manager.worker_connections.get(inst.worker_id)
+        if worker_ws is None:
+            inst.status = "error"
+            run.status = "error"
+            await db.commit()
+            await _broadcast_status_changed(inst.id, "error", run.id)
+            raise HTTPException(status_code=502, detail="Worker offline")
+
+        try:
+            await worker_ws.send_json(payload)
+        except Exception:
+            inst.status = "error"
+            run.status = "error"
+            await db.commit()
+            await _broadcast_status_changed(inst.id, "error", run.id)
+            raise HTTPException(status_code=502, detail="Failed to reach worker")
+
+        new_run_id = run.id
+
+        # Start tick scheduler
+        if getattr(container, "tick_scheduler", None) is not None:
+            try:
+                await container.tick_scheduler.start_instance({
+                    "instance_id": inst.id,
+                    "run_id": run.id,
+                    "worker_id": inst.worker_id,
+                    "broker_type": account.broker_type,
+                    "asset_type": (account.supported_asset_types or ["equities"])[0],
+                    "trigger": manifest_dict.get("trigger", "bar:1min"),
+                    "symbols": (manifest_dict.get("requirements") or {}).get("data_dependencies") or [],
+                })
+            except Exception:
+                logger.exception("tick_scheduler.start_instance failed during redeploy")
+    else:
+        await db.commit()
+
+    return {
+        "id": inst.id,
+        "status": inst.status,
+        "commit_hash": new_sha,
+        "commit_hash_short": new_sha[:8],
+        "was_running": was_running,
+        "restarted": was_running,
+        "active_run_id": new_run_id,
+    }
+
+
 @router.delete("/{deployment_id}", status_code=204)
 async def delete_deployment(deployment_id: str, db: AsyncSession = Depends(get_db)):
     inst = (await db.execute(
