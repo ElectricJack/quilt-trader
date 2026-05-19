@@ -150,14 +150,18 @@ class BacktestRunner:
         try:
             pkg_dir_name = _package_dir_name(algo_repo_url)
             manifest = _load_manifest(pkg_dir_name)
-            deps = manifest.requirements.data_dependencies or []
+            # Read from manifest.assets (new format) with fallback to
+            # requirements.data_dependencies (legacy).
+            deps = manifest.assets or manifest.requirements.data_dependencies or []
 
             # Stage 1: data coverage
             download_ids: list[str] = []
             for dep in deps:
+                symbol = dep.get("symbol")
+                if not symbol:
+                    continue
                 source = dep.get("source") or "polygon"
-                symbol = dep["symbol"]
-                timeframe = dep["timeframe"]
+                timeframe = dep.get("timeframe") or "1min"
                 if not _has_coverage(self._ds, source, symbol, timeframe,
                                      date_range_start, date_range_end):
                     msg = f"Downloading {symbol} {timeframe} from {source}"
