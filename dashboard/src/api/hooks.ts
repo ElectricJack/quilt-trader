@@ -258,6 +258,68 @@ export function useUpdateAlgorithm() {
   });
 }
 
+// ─── Parameter Sets ──────────────────────────────────────────────────────────
+
+export function useParameterSets(algorithmId: string) {
+  return useQuery({
+    queryKey: ["algorithms", algorithmId, "parameter-sets"] as const,
+    queryFn: () => api.listParameterSets(algorithmId),
+    enabled: !!algorithmId,
+  });
+}
+
+export function useCreateParameterSet(algorithmId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; config_values: Record<string, unknown> }) =>
+      api.createParameterSet(algorithmId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        queryKey: ["algorithms", algorithmId, "parameter-sets"],
+      });
+    },
+  });
+}
+
+export function useUpdateParameterSet(algorithmId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ setId, name }: { setId: string; name: string }) =>
+      api.updateParameterSet(algorithmId, setId, { name }),
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        queryKey: ["algorithms", algorithmId, "parameter-sets"],
+      });
+    },
+  });
+}
+
+export function useDeleteParameterSet(algorithmId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (setId: string) =>
+      api.deleteParameterSet(algorithmId, setId),
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        queryKey: ["algorithms", algorithmId, "parameter-sets"],
+      });
+    },
+  });
+}
+
+export function useImportParameterSets(algorithmId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sets: Array<{ name: string; config_values: Record<string, unknown> }>) =>
+      api.importParameterSets(algorithmId, sets),
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        queryKey: ["algorithms", algorithmId, "parameter-sets"],
+      });
+    },
+  });
+}
+
 // ─── Instances ────────────────────────────────────────────────────────────────
 
 export function useCreateInstance(algorithmId: string) {

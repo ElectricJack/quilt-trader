@@ -47,6 +47,21 @@ export interface Algorithm {
   updated_at: string | null;
 }
 
+export interface ParameterSet {
+  id: string;
+  algorithm_id: string;
+  name: string;
+  config_values: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  best_backtest: {
+    sharpe_ratio: number | null;
+    total_return: number | null;
+    max_drawdown: number | null;
+    run_count: number;
+  } | null;
+}
+
 export interface AlgorithmInstance {
   id: string;
   algorithm_id: string;

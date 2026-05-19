@@ -6,6 +6,7 @@ import type {
   AlgorithmRun,
   Deployment,
   InstalledAlgorithmResponse,
+  ParameterSet,
   Worker,
   SystemEvent,
   PaginatedResponse,
@@ -329,6 +330,52 @@ export const api = {
   },
   updateAlgorithm(id: string): Promise<Algorithm> {
     return request<Algorithm>(`/api/algorithms/${id}/update`, { method: "POST" });
+  },
+
+  // Parameter Sets
+  listParameterSets(algorithmId: string): Promise<ParameterSet[]> {
+    return request<ParameterSet[]>(
+      `/api/algorithms/${algorithmId}/parameter-sets`
+    );
+  },
+  createParameterSet(
+    algorithmId: string,
+    body: { name: string; config_values: Record<string, unknown> }
+  ): Promise<ParameterSet> {
+    return request<ParameterSet>(
+      `/api/algorithms/${algorithmId}/parameter-sets`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+  },
+  updateParameterSet(
+    algorithmId: string,
+    setId: string,
+    body: { name: string }
+  ): Promise<ParameterSet> {
+    return request<ParameterSet>(
+      `/api/algorithms/${algorithmId}/parameter-sets/${setId}`,
+      { method: "PATCH", body: JSON.stringify(body) }
+    );
+  },
+  deleteParameterSet(algorithmId: string, setId: string): Promise<void> {
+    return request<void>(
+      `/api/algorithms/${algorithmId}/parameter-sets/${setId}`,
+      { method: "DELETE" }
+    );
+  },
+  exportParameterSets(algorithmId: string): Promise<Blob> {
+    return fetch(`/api/algorithms/${algorithmId}/parameter-sets/export`).then(
+      (r) => r.blob()
+    );
+  },
+  importParameterSets(
+    algorithmId: string,
+    sets: Array<{ name: string; config_values: Record<string, unknown> }>
+  ): Promise<{ imported: number; skipped: number }> {
+    return request<{ imported: number; skipped: number }>(
+      `/api/algorithms/${algorithmId}/parameter-sets/import`,
+      { method: "POST", body: JSON.stringify({ sets }) }
+    );
   },
 
   // Instances
