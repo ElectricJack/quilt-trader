@@ -1,6 +1,7 @@
 from datetime import date
 from typing import Optional
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -49,8 +50,8 @@ class DownloadRequest(BaseModel):
     timeframe: str = "1day"
 
 
-@router.get("/market/{symbol}")
-async def get_market_data(
+@router.get("/market/{symbol}/meta")
+async def get_market_data_meta(
     symbol: str,
     timeframe: str = Query("1day"),
     provider: str = Query("polygon"),
@@ -61,7 +62,48 @@ async def get_market_data(
     df = svc.load_market_data(resolved_provider, symbol, timeframe)
     if df is None:
         raise HTTPException(status_code=404, detail=f"No data for {resolved_provider}/{symbol}/{timeframe}")
-    return {"data": df.to_dict(orient="records")}
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        return {
+            "total_bars": len(df),
+            "first_timestamp": df["timestamp"].min().isoformat() if len(df) > 0 else None,
+            "last_timestamp": df["timestamp"].max().isoformat() if len(df) > 0 else None,
+        }
+    return {"total_bars": len(df), "first_timestamp": None, "last_timestamp": None}
+
+
+@router.get("/market/{symbol}")
+async def get_market_data(
+    symbol: str,
+    timeframe: str = Query("1day"),
+    provider: str = Query("polygon"),
+    source: Optional[str] = Query(None),
+    start: Optional[str] = Query(None, description="ISO timestamp — include bars at or after this time"),
+    end: Optional[str] = Query(None, description="ISO timestamp — include bars at or before this time"),
+    limit: int = Query(5000, description="Maximum number of rows to return (most-recent N after filtering)"),
+):
+    resolved_provider = source or provider
+    svc = get_data_service()
+    df = svc.load_market_data(resolved_provider, symbol, timeframe)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"No data for {resolved_provider}/{symbol}/{timeframe}")
+
+    # Filter by time window when a timestamp column is present.
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        if start:
+            df = df[df["timestamp"] >= pd.Timestamp(start, tz="UTC")]
+        if end:
+            df = df[df["timestamp"] <= pd.Timestamp(end, tz="UTC")]
+
+    total = len(df)
+    # Return the most-recent `limit` rows so the browser sees recent data first.
+    df = df.tail(limit)
+    return {
+        "data": df.to_dict(orient="records"),
+        "total": total,
+        "truncated": total > limit,
+    }
 
 
 @router.get("/custom/{source_name}")
