@@ -59,6 +59,7 @@ class BacktestTickContext(TickContext):
         self._buying_power = buying_power if buying_power is not None else cash
         self._default_source = default_source
         self._sim_time_now: Optional[datetime] = None
+        self._custom_data_cache: Optional[dict[str, pd.DataFrame]] = None
 
     # ---- mutation hooks called by the engine ----
 
@@ -128,11 +129,47 @@ class BacktestTickContext(TickContext):
         return visible.tail(bars).reset_index(drop=True)
 
     def data(self, source_name: str) -> pd.DataFrame:
-        # Custom (scraper) data sources — backtest treats these as not available in v1.
-        raise NotImplementedError(
-            f"Custom data source '{source_name}' not available in backtest contexts; "
-            f"tracked as a follow-up."
-        )
+        """Load custom data (scraper output, CSV, etc.) from disk."""
+        if self._custom_data_cache is not None and source_name in self._custom_data_cache:
+            return self._custom_data_cache[source_name]
+        # Resolve from data/custom/ using the same smart lookup as StandaloneDataProvider
+        from pathlib import Path
+        custom_dir = Path("data/custom")
+        df = self._resolve_custom_data(custom_dir, source_name)
+        if df is not None:
+            if self._custom_data_cache is None:
+                self._custom_data_cache = {}
+            self._custom_data_cache[source_name] = df
+            return df
+        return pd.DataFrame()
+
+    @staticmethod
+    def _resolve_custom_data(custom_dir, source_name: str):
+        from pathlib import Path
+        path = custom_dir / source_name
+        if path.is_file():
+            return BacktestTickContext._read_df(path)
+        for ext in (".csv", ".parquet", ".json"):
+            candidate = custom_dir / f"{source_name}{ext}"
+            if candidate.is_file():
+                return BacktestTickContext._read_df(candidate)
+        subdir = custom_dir / source_name
+        if subdir.is_dir():
+            for ext in (".csv", ".parquet", ".json"):
+                for f in sorted(subdir.glob(f"*{ext}")):
+                    return BacktestTickContext._read_df(f)
+        return None
+
+    @staticmethod
+    def _read_df(path):
+        suffix = path.suffix.lower()
+        if suffix == ".csv":
+            return pd.read_csv(path)
+        elif suffix == ".json":
+            return pd.read_json(path)
+        elif suffix == ".parquet":
+            return pd.read_parquet(path)
+        return None
 
     def option_chain(self, symbol: str, expiration: Optional[date] = None) -> OptionChain:
         raise NotImplementedError(
