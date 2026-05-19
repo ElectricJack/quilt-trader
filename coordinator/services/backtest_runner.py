@@ -219,10 +219,30 @@ class BacktestRunner:
                     pass
                 bars[(source, symbol, timeframe)] = df
 
-            # Pick the smallest-timeframe series for the clock
-            clock_key = self._smallest_timeframe_key(bars)
-            clock_series = bars[clock_key]
-            clock_source, clock_symbol, clock_tf = clock_key
+            # Pick the smallest-timeframe series for the clock. If no market
+            # bars exist (e.g., scraper-only algo), build a synthetic daily
+            # clock spanning the date range.
+            if bars:
+                clock_key = self._smallest_timeframe_key(bars)
+                clock_series = bars[clock_key]
+                clock_source, clock_symbol, clock_tf = clock_key
+            else:
+                import numpy as np
+                clock_source = "synthetic"
+                clock_symbol = "_clock"
+                clock_tf = "1day"
+                dates = pd.date_range(
+                    start=date_range_start, end=date_range_end, freq="B",  # business days
+                    tz=None,
+                )
+                clock_series = pd.DataFrame({
+                    "timestamp": dates,
+                    "open": np.zeros(len(dates)),
+                    "high": np.zeros(len(dates)),
+                    "low": np.zeros(len(dates)),
+                    "close": np.zeros(len(dates)),
+                    "volume": np.zeros(len(dates)),
+                })
 
             ctx = BacktestTickContext(
                 bars=bars, positions={}, cash=initial_cash,
