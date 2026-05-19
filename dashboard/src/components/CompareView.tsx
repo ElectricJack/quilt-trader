@@ -37,7 +37,7 @@ export interface CompareDataset {
   timeframe: string;
 }
 
-export type CompareMode = "overlay" | "stacked" | "diff";
+export type CompareMode = "overlay" | "stacked";
 export type ChartType = "candlestick" | "line";
 
 interface Viewport {
@@ -195,9 +195,9 @@ function useLoadedSeries(datasets: CompareDataset[]): LoadedSeries[] {
  * Wire one IChartApi instance to the viewport context: on mount, restore the
  * shared logical range; on visible-range change, push back into the context.
  *
- * NOTE: This hook is used only by single-chart modes (overlay, diff). Stacked
- * mode uses direct cross-chart subscription via syncTimeScales() instead, so
- * that time axes stay in lock-step without going through React state.
+ * NOTE: This hook is used only by overlay mode. Stacked + diff sync modes use
+ * direct cross-chart subscription via syncTimeScales() instead, so that time
+ * axes stay in lock-step without going through React state.
  */
 function useChartViewportSync(chart: IChartApi | null) {
   const { vp, setVisibleLogicalRange } = useContext(ViewportCtx);
@@ -428,12 +428,18 @@ interface SubChartProps {
   chartType: ChartType;
 }
 
-function OverlayChart({ loaded, chartType }: SubChartProps) {
+interface OverlayChartProps extends SubChartProps {
+  onChartReady?: (chart: IChartApi | null) => void;
+}
+
+function OverlayChart({ loaded, chartType, onChartReady }: OverlayChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [chart, setChart] = useState<IChartApi | null>(null);
   const seriesRefs = useRef<AnySeries[]>([]);
   // Track whether this is the first data load so we fitContent once.
   const didFitRef = useRef(false);
+  const onChartReadyRef = useRef(onChartReady);
+  useEffect(() => { onChartReadyRef.current = onChartReady; });
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -442,11 +448,13 @@ function OverlayChart({ loaded, chartType }: SubChartProps) {
     });
     setChart(c);
     didFitRef.current = false;
+    onChartReadyRef.current?.(c);
     return () => {
       c.remove();
       setChart(null);
       seriesRefs.current = [];
       didFitRef.current = false;
+      onChartReadyRef.current?.(null);
     };
   }, []);
 
@@ -546,7 +554,11 @@ function OverlayChart({ loaded, chartType }: SubChartProps) {
 
 // ─── StackedCharts ────────────────────────────────────────────────────────────
 
-function StackedCharts({ loaded, chartType }: SubChartProps) {
+interface StackedChartsProps extends SubChartProps {
+  onChartsReady?: (charts: (IChartApi | null)[], series: (AnySeries | null)[]) => void;
+}
+
+function StackedCharts({ loaded, chartType, onChartsReady }: StackedChartsProps) {
   // Collect chart instances and their primary series from each row so we can
   // wire cross-chart time sync and crosshair sync.
   const chartsRef = useRef<(IChartApi | null)[]>([]);
@@ -565,6 +577,10 @@ function StackedCharts({ loaded, chartType }: SubChartProps) {
   // We track changes via a version counter that rows increment on mount/unmount.
   const [syncVersion, setSyncVersion] = useState(0);
   const bumpSync = useCallback(() => setSyncVersion((v) => v + 1), []);
+
+  // Notify parent (for cross-component sync with diff chart).
+  const onChartsReadyRef = useRef(onChartsReady);
+  useEffect(() => { onChartsReadyRef.current = onChartsReady; });
 
   useEffect(() => {
     const live = chartsRef.current.filter((c): c is IChartApi => c != null);
@@ -608,6 +624,10 @@ function StackedCharts({ loaded, chartType }: SubChartProps) {
 
     const cleanupTimeScales = syncTimeScales(live);
     const cleanupCrosshairs = syncCrosshairs(live, liveSeries);
+
+    // Propagate current chart refs to parent.
+    onChartsReadyRef.current?.([...chartsRef.current], [...seriesRef.current]);
+
     return () => {
       clearTimeout(timerId);
       cleanupTimeScales();
@@ -772,17 +792,24 @@ function StackedRow({
 
 // ─── DiffChart ────────────────────────────────────────────────────────────────
 
-function DiffChart({ loaded }: SubChartProps) {
+interface DiffChartProps extends SubChartProps {
+  onChartReady?: (chart: IChartApi | null, series: AnySeries | null) => void;
+}
+
+function DiffChart({ loaded, onChartReady }: DiffChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [chart, setChart] = useState<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const didFitRef = useRef(false);
+  const onChartReadyRef = useRef(onChartReady);
+  useEffect(() => { onChartReadyRef.current = onChartReady; });
 
   // Compute diff. Bin both series' bars by interval-rounded timestamp; for each
   // matched bucket, value_b - value_a. Unmatched bars are dropped (line series
   // gaps appear automatically when consecutive timestamps are missing).
+  // If more than 2 datasets are selected, uses dataset[0] and dataset[1].
   const diffRows = useMemo((): NormalizedRow[] => {
-    if (loaded.length !== 2) return [];
+    if (loaded.length < 2) return [];
     const [a, b] = loaded;
     const intervalA = timeframeSeconds(a.dataset.timeframe);
     const intervalB = timeframeSeconds(b.dataset.timeframe);
@@ -816,15 +843,15 @@ function DiffChart({ loaded }: SubChartProps) {
     });
     setChart(c);
     didFitRef.current = false;
+    onChartReadyRef.current?.(c, null);
     return () => {
       c.remove();
       setChart(null);
       seriesRef.current = null;
       didFitRef.current = false;
+      onChartReadyRef.current?.(null, null);
     };
   }, []);
-
-  useChartViewportSync(chart);
 
   useEffect(() => {
     if (!chart) return;
@@ -857,6 +884,7 @@ function DiffChart({ loaded }: SubChartProps) {
       title: "0",
     });
     seriesRef.current = s;
+    onChartReadyRef.current?.(chart, s);
 
     if (diffRows.length > 0 && !didFitRef.current) {
       chart.timeScale().fitContent();
@@ -864,13 +892,43 @@ function DiffChart({ loaded }: SubChartProps) {
     }
   }, [chart, diffRows]);
 
+  // Edge-detection: fire loadEarlier for all datasets when the user pans near
+  // the left edge of the diff chart.
+  useEffect(() => {
+    if (!chart || loaded.length < 2) return;
+
+    const handler = (range: Range<Time> | null) => {
+      if (!range) return;
+      const from = range.from as number;
+      for (const l of loaded) {
+        if (l.rows.length === 0) continue;
+        const firstBarTime = l.rows[0].time as number;
+        const lastBarTime = l.rows[l.rows.length - 1].time as number;
+        const span = lastBarTime - firstBarTime;
+        const threshold = firstBarTime + span * 0.1;
+        if (from <= threshold) {
+          l.loadEarlier(new Date(firstBarTime * 1000).toISOString());
+        }
+      }
+    };
+
+    chart.timeScale().subscribeVisibleTimeRangeChange(handler);
+    return () => {
+      try {
+        chart.timeScale().unsubscribeVisibleTimeRangeChange(handler);
+      } catch {
+        // ignore if chart already removed
+      }
+    };
+  }, [chart, loaded]);
+
   const [a, b] = loaded;
   return (
-    <div className="flex flex-col flex-1 min-h-0 space-y-2">
-      <div className="text-xs text-gray-400 shrink-0">
-        Diff: <span className="font-mono text-gray-200">{datasetLabel(b.dataset)}</span>
+    <div className="flex flex-col h-full min-h-0">
+      <div className="text-xs text-gray-400 shrink-0 px-1 pt-2 pb-1">
+        Diff: <span className="font-mono text-gray-200">{b ? datasetLabel(b.dataset) : "?"}</span>
         <span className="mx-1">−</span>
-        <span className="font-mono text-gray-200">{datasetLabel(a.dataset)}</span>
+        <span className="font-mono text-gray-200">{a ? datasetLabel(a.dataset) : "?"}</span>
         {diffRows.length === 0 && (
           <span className="ml-2 text-amber-400">
             (no matched bars — check timeframes / time ranges)
@@ -968,14 +1026,8 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
     [isControlled, onModeChange]
   );
 
+  const [showDiff, setShowDiff] = useState(false);
   const [chartType, setChartType] = useState<ChartType>("candlestick");
-
-  // Auto-revert from diff if dataset count changes away from 2.
-  useEffect(() => {
-    if (mode === "diff" && datasets.length !== 2) {
-      setMode("overlay");
-    }
-  }, [mode, datasets.length, setMode]);
 
   const [vp, setVp] = useState<Viewport>({ logicalRange: null });
   const setVisibleLogicalRange = useCallback((r: LogicalRange | null) => {
@@ -989,6 +1041,60 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
     [vp, setVisibleLogicalRange]
   );
 
+  // ── Cross-component time sync for diff panel ──────────────────────────────
+  // We collect one "main" chart ref (from overlay or stacked) and the diff
+  // chart ref, then wire them together with syncTimeScales + syncCrosshairs.
+
+  // For overlay mode: the single overlay chart instance.
+  const overlayChartRef = useRef<IChartApi | null>(null);
+
+  // For stacked mode: all stacked chart instances + their series.
+  const stackedChartsRef = useRef<(IChartApi | null)[]>([]);
+  const stackedSeriesRef = useRef<(AnySeries | null)[]>([]);
+
+  // Diff chart instance + series.
+  const diffChartRef = useRef<IChartApi | null>(null);
+  const diffSeriesRef = useRef<AnySeries | null>(null);
+
+  // Version counter bumped whenever any chart ref changes so the sync effect
+  // re-runs and re-wires all charts including the new diff chart.
+  const [diffSyncVersion, setDiffSyncVersion] = useState(0);
+  const bumpDiffSync = useCallback(() => setDiffSyncVersion((v) => v + 1), []);
+
+  // Wire diff chart to main charts whenever any chart ref changes or
+  // showDiff toggles on/off.
+  useEffect(() => {
+    if (!showDiff || !diffChartRef.current) return;
+
+    const mainCharts: IChartApi[] = [];
+    const mainSeries: (AnySeries | null)[] = [];
+
+    if (mode === "overlay" && overlayChartRef.current) {
+      mainCharts.push(overlayChartRef.current);
+      mainSeries.push(null); // overlay has no single primary series for crosshair
+    } else if (mode === "stacked") {
+      for (let i = 0; i < stackedChartsRef.current.length; i++) {
+        const c = stackedChartsRef.current[i];
+        if (c) {
+          mainCharts.push(c);
+          mainSeries.push(stackedSeriesRef.current[i] ?? null);
+        }
+      }
+    }
+
+    const allCharts = [...mainCharts, diffChartRef.current];
+    const allSeries: (AnySeries | null)[] = [...mainSeries, diffSeriesRef.current];
+
+    const cleanupTimeScales = syncTimeScales(allCharts);
+    const cleanupCrosshairs = syncCrosshairs(allCharts, allSeries);
+
+    return () => {
+      cleanupTimeScales();
+      cleanupCrosshairs();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDiff, mode, diffSyncVersion]);
+
   if (datasets.length === 0) {
     return (
       <p className="text-gray-500 text-sm">
@@ -997,21 +1103,65 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
     );
   }
 
+  const diffAvailable = datasets.length >= 2;
+
   return (
     <ViewportCtx.Provider value={ctxValue}>
       <div className="flex flex-col h-full gap-3">
         <ModeBar
           mode={mode}
           setMode={setMode}
-          diffAvailable={datasets.length === 2}
+          showDiff={showDiff}
+          setShowDiff={(d) => {
+            setShowDiff(d);
+            bumpDiffSync();
+          }}
+          diffAvailable={diffAvailable}
           chartType={chartType}
           setChartType={setChartType}
         />
-        {mode === "overlay" && <OverlayChart loaded={loaded} chartType={chartType} />}
-        {mode === "stacked" && <StackedCharts loaded={loaded} chartType={chartType} />}
-        {mode === "diff" && datasets.length === 2 && (
-          <DiffChart loaded={loaded} chartType={chartType} />
-        )}
+
+        {/* Chart area: flex column, main view + optional diff panel below */}
+        <div className="flex flex-col flex-1 min-h-0">
+          {/* Main view — 70% height when diff is visible, 100% otherwise */}
+          <div className={`min-h-0 ${showDiff && diffAvailable ? "basis-[70%]" : "flex-1"}`}>
+            {mode === "overlay" ? (
+              <OverlayChart
+                loaded={loaded}
+                chartType={chartType}
+                onChartReady={(chart) => {
+                  overlayChartRef.current = chart;
+                  bumpDiffSync();
+                }}
+              />
+            ) : (
+              <StackedCharts
+                loaded={loaded}
+                chartType={chartType}
+                onChartsReady={(charts, series) => {
+                  stackedChartsRef.current = charts;
+                  stackedSeriesRef.current = series;
+                  bumpDiffSync();
+                }}
+              />
+            )}
+          </div>
+
+          {/* Diff panel — 30% height, shown when showDiff is on */}
+          {showDiff && diffAvailable && (
+            <div className="basis-[30%] min-h-0 border-t border-gray-700">
+              <DiffChart
+                loaded={loaded}
+                chartType={chartType}
+                onChartReady={(chart, series) => {
+                  diffChartRef.current = chart;
+                  diffSeriesRef.current = series;
+                  bumpDiffSync();
+                }}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </ViewportCtx.Provider>
   );
@@ -1020,41 +1170,62 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
 function ModeBar({
   mode,
   setMode,
+  showDiff,
+  setShowDiff,
   diffAvailable,
   chartType,
   setChartType,
 }: {
   mode: CompareMode;
   setMode: (m: CompareMode) => void;
+  showDiff: boolean;
+  setShowDiff: (d: boolean) => void;
   diffAvailable: boolean;
   chartType: ChartType;
   setChartType: (t: ChartType) => void;
 }): ReactNode {
-  const modes: CompareMode[] = ["overlay", "stacked", "diff"];
   return (
-    <div className="flex flex-wrap gap-2">
-      {modes.map((m) => {
-        const disabled = m === "diff" && !diffAvailable;
-        return (
+    <div className="flex flex-wrap gap-2 items-center">
+      {/* View mode buttons */}
+      <div className="flex items-center gap-1">
+        {(["overlay", "stacked"] as CompareMode[]).map((m) => (
           <button
             key={m}
-            disabled={disabled}
             onClick={() => setMode(m)}
-            title={
-              disabled
-                ? "Diff requires exactly 2 datasets"
-                : `View as ${m}`
-            }
+            title={`View as ${m}`}
             className={`px-3 py-1.5 rounded text-sm transition-colors ${
               mode === m
                 ? "bg-indigo-600 text-white"
                 : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-            } disabled:opacity-40 disabled:cursor-not-allowed`}
+            }`}
           >
             {m}
           </button>
-        );
-      })}
+        ))}
+      </div>
+
+      {/* Divider */}
+      <div className="w-px h-5 bg-gray-700 mx-1" />
+
+      {/* Diff toggle */}
+      <button
+        onClick={() => setShowDiff(!showDiff)}
+        disabled={!diffAvailable}
+        title={
+          !diffAvailable
+            ? "Diff requires at least 2 datasets"
+            : showDiff
+            ? "Hide diff chart"
+            : "Show diff chart below"
+        }
+        className={`px-3 py-1 rounded text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+          showDiff
+            ? "bg-amber-600 text-white"
+            : "bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700"
+        }`}
+      >
+        diff
+      </button>
 
       {/* Separator */}
       <span className="w-px bg-gray-700 self-stretch mx-1" />

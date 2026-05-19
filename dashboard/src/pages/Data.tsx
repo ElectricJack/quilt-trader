@@ -274,7 +274,7 @@ function readCompareFromUrl(): { datasets: CompareDataset[]; mode: CompareMode; 
         .filter((d): d is CompareDataset => d != null)
     : [];
   const mode: CompareMode =
-    modeRaw === "stacked" || modeRaw === "diff" ? modeRaw : "overlay";
+    modeRaw === "stacked" ? modeRaw : "overlay";
   return { datasets, mode, open: datasets.length > 0 };
 }
 
