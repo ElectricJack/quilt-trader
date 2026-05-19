@@ -48,6 +48,16 @@ class StandaloneDataProvider(DataProvider):
                 for f in sorted(subdir.glob(f"*{ext}")):
                     return self._read_df(f)
 
+        # 4. Strip extension and try as subdirectory
+        #    (e.g., "alpha-picks-scraper.csv" → subdir "alpha-picks-scraper")
+        stem = Path(source_name).stem
+        if stem != source_name:
+            subdir = custom_dir / stem
+            if subdir.is_dir():
+                for ext in (".csv", ".parquet", ".json"):
+                    for f in sorted(subdir.glob(f"*{ext}")):
+                        return self._read_df(f)
+
         return None
 
     @staticmethod

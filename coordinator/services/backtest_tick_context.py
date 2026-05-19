@@ -146,18 +146,30 @@ class BacktestTickContext(TickContext):
     @staticmethod
     def _resolve_custom_data(custom_dir, source_name: str):
         from pathlib import Path
+        # 1. Exact path
         path = custom_dir / source_name
         if path.is_file():
             return BacktestTickContext._read_df(path)
+        # 2. Try appending extensions
         for ext in (".csv", ".parquet", ".json"):
             candidate = custom_dir / f"{source_name}{ext}"
             if candidate.is_file():
                 return BacktestTickContext._read_df(candidate)
+        # 3. Look inside subdirectory matching source_name
         subdir = custom_dir / source_name
         if subdir.is_dir():
             for ext in (".csv", ".parquet", ".json"):
                 for f in sorted(subdir.glob(f"*{ext}")):
                     return BacktestTickContext._read_df(f)
+        # 4. Strip file extension from source_name and try as subdirectory
+        #    (e.g., "alpha-picks-scraper.csv" → subdir "alpha-picks-scraper")
+        stem = Path(source_name).stem
+        if stem != source_name:
+            subdir = custom_dir / stem
+            if subdir.is_dir():
+                for ext in (".csv", ".parquet", ".json"):
+                    for f in sorted(subdir.glob(f"*{ext}")):
+                        return BacktestTickContext._read_df(f)
         return None
 
     @staticmethod
