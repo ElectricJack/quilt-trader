@@ -15,6 +15,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type CandlestickData,
   type Time,
   type UTCTimestamp,
   type LogicalRange,
@@ -36,6 +37,7 @@ export interface CompareDataset {
 }
 
 export type CompareMode = "overlay" | "stacked" | "diff";
+export type ChartType = "candlestick" | "line";
 
 interface Viewport {
   /** Logical (index-based) range — preserved across chart re-mounts. */
@@ -52,7 +54,7 @@ const ViewportCtx = createContext<ViewportCtxValue>({
   setVisibleLogicalRange: () => {},
 });
 
-// Distinct line colors for up to ~8 datasets.
+// Distinct line colors for up to ~8 datasets (used in line mode and legend).
 const SERIES_COLORS = [
   "#6366f1", // indigo
   "#22c55e", // green
@@ -62,6 +64,22 @@ const SERIES_COLORS = [
   "#ec4899", // pink
   "#a855f7", // purple
   "#ef4444", // red
+];
+
+/**
+ * Per-dataset up/down candle colors for candlestick mode.
+ * Each dataset gets a visually distinct pair so overlapping candles are
+ * distinguishable.
+ */
+const DATASET_COLORS = [
+  { up: "#26a69a", down: "#ef5350" }, // green / red  (default)
+  { up: "#2196f3", down: "#ff9800" }, // blue / orange
+  { up: "#ab47bc", down: "#ffd54f" }, // purple / amber
+  { up: "#00bcd4", down: "#e91e63" }, // cyan / pink
+  { up: "#8bc34a", down: "#ff5722" }, // light-green / deep-orange
+  { up: "#009688", down: "#f44336" }, // teal / red
+  { up: "#3f51b5", down: "#ff8a65" }, // indigo / light-orange
+  { up: "#4caf50", down: "#9c27b0" }, // green / purple
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -85,17 +103,26 @@ function timeframeSeconds(tf: string): number {
 
 interface NormalizedRow {
   time: UTCTimestamp;
-  value: number;
+  value: number; // close
+  open: number;
+  high: number;
+  low: number;
 }
 
-/** Convert API bars → sorted, deduped (time, close) tuples for a Line series. */
-function barsToLineData(bars: MarketDataBar[] | undefined): NormalizedRow[] {
+/** Convert API bars → sorted, deduped OHLC rows. */
+function barsToRows(bars: MarketDataBar[] | undefined): NormalizedRow[] {
   if (!bars) return [];
   const rows: NormalizedRow[] = [];
   for (const b of bars) {
     const t = Math.floor(new Date(b.timestamp).getTime() / 1000);
     if (!Number.isFinite(t) || !Number.isFinite(b.close)) continue;
-    rows.push({ time: t as UTCTimestamp, value: b.close });
+    rows.push({
+      time: t as UTCTimestamp,
+      value: b.close,
+      open: Number.isFinite(b.open) ? b.open : b.close,
+      high: Number.isFinite(b.high) ? b.high : b.close,
+      low: Number.isFinite(b.low) ? b.low : b.close,
+    });
   }
   rows.sort((a, b) => (a.time as number) - (b.time as number));
   const seen = new Map<number, NormalizedRow>();
@@ -194,7 +221,7 @@ function useLoadedSeries(datasets: CompareDataset[]): LoadedSeries[] {
     const q = queries[i];
     return {
       dataset: d,
-      rows: barsToLineData(q.data?.data),
+      rows: barsToRows(q.data?.data),
       isLoading: q.isLoading,
       error: q.error,
     };
@@ -206,8 +233,6 @@ function useLoadedSeries(datasets: CompareDataset[]): LoadedSeries[] {
 /**
  * Wire one IChartApi instance to the viewport context: on mount, restore the
  * shared logical range; on visible-range change, push back into the context.
- *
- * Returns a stable callback ref that the caller stores in their chart ref.
  */
 function useChartViewportSync(chart: IChartApi | null) {
   const { vp, setVisibleLogicalRange } = useContext(ViewportCtx);
@@ -244,6 +269,7 @@ function useChartViewportSync(chart: IChartApi | null) {
   }, [chart, setVisibleLogicalRange]);
 }
 
+/** Base chart options shared by all sub-charts. */
 const CHART_OPTIONS = {
   layout: {
     background: { type: ColorType.Solid, color: "#111827" },
@@ -258,19 +284,82 @@ const CHART_OPTIONS = {
     horzLine: { color: "#6366f1" },
   },
   rightPriceScale: { borderColor: "#374151" },
-  timeScale: { borderColor: "#374151", timeVisible: true },
+  timeScale: {
+    borderColor: "#374151",
+    timeVisible: true,
+    // Do NOT lock either edge so the user can pan freely.
+    fixLeftEdge: false,
+    fixRightEdge: false,
+  },
+  // Explicitly enable pan and zoom so they work regardless of platform defaults.
+  handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+  handleScale: { mouseWheel: true, pinchToZoom: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
 } as const;
+
+// ─── Helpers to add a series of the right type ────────────────────────────────
+
+type AnySeries = ISeriesApi<"Line"> | ISeriesApi<"Candlestick">;
+
+function addSeries(
+  chart: IChartApi,
+  chartType: ChartType,
+  colorIdx: number,
+  title: string
+): AnySeries {
+  const dc = DATASET_COLORS[colorIdx % DATASET_COLORS.length];
+  if (chartType === "candlestick") {
+    return chart.addCandlestickSeries({
+      upColor: dc.up,
+      downColor: dc.down,
+      wickUpColor: dc.up,
+      wickDownColor: dc.down,
+      borderVisible: false,
+      title,
+    });
+  }
+  return chart.addLineSeries({
+    color: SERIES_COLORS[colorIdx % SERIES_COLORS.length],
+    lineWidth: 2,
+    priceLineVisible: false,
+    title,
+  });
+}
+
+function setSeriesData(series: AnySeries, rows: NormalizedRow[], chartType: ChartType) {
+  if (chartType === "candlestick") {
+    (series as ISeriesApi<"Candlestick">).setData(
+      rows.map(
+        (r): CandlestickData<Time> => ({
+          time: r.time as Time,
+          open: r.open,
+          high: r.high,
+          low: r.low,
+          close: r.value,
+        })
+      )
+    );
+  } else {
+    (series as ISeriesApi<"Line">).setData(
+      rows.map(
+        (r): LineData<Time> => ({ time: r.time as Time, value: r.value })
+      )
+    );
+  }
+}
 
 // ─── OverlayChart ─────────────────────────────────────────────────────────────
 
 interface SubChartProps {
   loaded: LoadedSeries[];
+  chartType: ChartType;
 }
 
-function OverlayChart({ loaded }: SubChartProps) {
+function OverlayChart({ loaded, chartType }: SubChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [chart, setChart] = useState<IChartApi | null>(null);
-  const seriesRefs = useRef<ISeriesApi<"Line">[]>([]);
+  const seriesRefs = useRef<AnySeries[]>([]);
+  // Track whether this is the first data load so we fitContent once.
+  const didFitRef = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -280,6 +369,7 @@ function OverlayChart({ loaded }: SubChartProps) {
       height: 420,
     });
     setChart(c);
+    didFitRef.current = false;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) c.applyOptions({ width: entry.contentRect.width });
@@ -290,12 +380,13 @@ function OverlayChart({ loaded }: SubChartProps) {
       c.remove();
       setChart(null);
       seriesRefs.current = [];
+      didFitRef.current = false;
     };
   }, []);
 
   useChartViewportSync(chart);
 
-  // (Re)build series whenever `loaded` changes.
+  // (Re)build series whenever `loaded` or `chartType` changes.
   useEffect(() => {
     if (!chart) return;
     // Wipe old series
@@ -308,26 +399,24 @@ function OverlayChart({ loaded }: SubChartProps) {
     }
     seriesRefs.current = [];
 
+    const hasData = loaded.some((l) => l.rows.length > 0);
+
     loaded.forEach((l, i) => {
-      const color = SERIES_COLORS[i % SERIES_COLORS.length];
-      const s = chart.addLineSeries({
-        color,
-        lineWidth: 2,
-        priceLineVisible: false,
-        title: datasetLabel(l.dataset),
-      });
-      s.setData(
-        l.rows.map(
-          (r): LineData<Time> => ({ time: r.time as Time, value: r.value })
-        )
-      );
+      const s = addSeries(chart, chartType, i, datasetLabel(l.dataset));
+      setSeriesData(s, l.rows, chartType);
       seriesRefs.current.push(s);
     });
-  }, [chart, loaded]);
+
+    // Only call fitContent once on the initial data load, not on every toggle.
+    if (hasData && !didFitRef.current) {
+      chart.timeScale().fitContent();
+      didFitRef.current = true;
+    }
+  }, [chart, loaded, chartType]);
 
   return (
     <div className="space-y-2">
-      <Legend loaded={loaded} />
+      <Legend loaded={loaded} chartType={chartType} />
       <div
         ref={containerRef}
         className="w-full rounded-lg overflow-hidden border border-gray-800"
@@ -339,11 +428,16 @@ function OverlayChart({ loaded }: SubChartProps) {
 
 // ─── StackedCharts ────────────────────────────────────────────────────────────
 
-function StackedCharts({ loaded }: SubChartProps) {
+function StackedCharts({ loaded, chartType }: SubChartProps) {
   return (
     <div className="space-y-3">
       {loaded.map((l, i) => (
-        <StackedRow key={datasetLabel(l.dataset)} loaded={l} colorIdx={i} />
+        <StackedRow
+          key={datasetLabel(l.dataset)}
+          loaded={l}
+          colorIdx={i}
+          chartType={chartType}
+        />
       ))}
     </div>
   );
@@ -352,13 +446,16 @@ function StackedCharts({ loaded }: SubChartProps) {
 function StackedRow({
   loaded,
   colorIdx,
+  chartType,
 }: {
   loaded: LoadedSeries;
   colorIdx: number;
+  chartType: ChartType;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [chart, setChart] = useState<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const seriesRef = useRef<AnySeries | null>(null);
+  const didFitRef = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -368,6 +465,7 @@ function StackedRow({
       height: 220,
     });
     setChart(c);
+    didFitRef.current = false;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) c.applyOptions({ width: entry.contentRect.width });
@@ -378,6 +476,7 @@ function StackedRow({
       c.remove();
       setChart(null);
       seriesRef.current = null;
+      didFitRef.current = false;
     };
   }, []);
 
@@ -393,30 +492,30 @@ function StackedRow({
       }
       seriesRef.current = null;
     }
-    const color = SERIES_COLORS[colorIdx % SERIES_COLORS.length];
-    const s = chart.addLineSeries({
-      color,
-      lineWidth: 2,
-      priceLineVisible: false,
-      title: datasetLabel(loaded.dataset),
-    });
-    s.setData(
-      loaded.rows.map(
-        (r): LineData<Time> => ({ time: r.time as Time, value: r.value })
-      )
-    );
+    const s = addSeries(chart, chartType, colorIdx, datasetLabel(loaded.dataset));
+    setSeriesData(s, loaded.rows, chartType);
     seriesRef.current = s;
-  }, [chart, loaded, colorIdx]);
 
-  const color = SERIES_COLORS[colorIdx % SERIES_COLORS.length];
+    if (loaded.rows.length > 0 && !didFitRef.current) {
+      chart.timeScale().fitContent();
+      didFitRef.current = true;
+    }
+  }, [chart, loaded, colorIdx, chartType]);
+
+  const dc = DATASET_COLORS[colorIdx % DATASET_COLORS.length];
+  const lineColor = SERIES_COLORS[colorIdx % SERIES_COLORS.length];
 
   return (
     <div>
       <div className="flex items-center gap-2 mb-1 text-xs font-mono text-gray-300">
-        <span
-          className="inline-block w-3 h-0.5 rounded"
-          style={{ backgroundColor: color }}
-        />
+        {chartType === "candlestick" ? (
+          <CandleDot upColor={dc.up} downColor={dc.down} />
+        ) : (
+          <span
+            className="inline-block w-3 h-0.5 rounded"
+            style={{ backgroundColor: lineColor }}
+          />
+        )}
         {datasetLabel(loaded.dataset)}
       </div>
       <div
@@ -434,6 +533,7 @@ function DiffChart({ loaded }: SubChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [chart, setChart] = useState<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const didFitRef = useRef(false);
 
   // Compute diff. Bin both series' bars by interval-rounded timestamp; for each
   // matched bucket, value_b - value_a. Unmatched bars are dropped (line series
@@ -455,7 +555,8 @@ function DiffChart({ loaded }: SubChartProps) {
       const k = Math.floor((r.time as number) / interval) * interval;
       const va = bucketsA.get(k);
       if (va === undefined) continue;
-      out.push({ time: k as UTCTimestamp, value: r.value - va });
+      const diff = r.value - va;
+      out.push({ time: k as UTCTimestamp, value: diff, open: diff, high: diff, low: diff });
     }
     // Dedupe & sort
     const seen = new Map<number, NormalizedRow>();
@@ -473,6 +574,7 @@ function DiffChart({ loaded }: SubChartProps) {
       height: 360,
     });
     setChart(c);
+    didFitRef.current = false;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) c.applyOptions({ width: entry.contentRect.width });
@@ -483,6 +585,7 @@ function DiffChart({ loaded }: SubChartProps) {
       c.remove();
       setChart(null);
       seriesRef.current = null;
+      didFitRef.current = false;
     };
   }, []);
 
@@ -519,6 +622,11 @@ function DiffChart({ loaded }: SubChartProps) {
       title: "0",
     });
     seriesRef.current = s;
+
+    if (diffRows.length > 0 && !didFitRef.current) {
+      chart.timeScale().fitContent();
+      didFitRef.current = true;
+    }
   }, [chart, diffRows]);
 
   const [a, b] = loaded;
@@ -545,20 +653,41 @@ function DiffChart({ loaded }: SubChartProps) {
 
 // ─── Shared legend ────────────────────────────────────────────────────────────
 
-function Legend({ loaded }: { loaded: LoadedSeries[] }) {
+/** Small two-tone candle icon for candlestick legend entries. */
+function CandleDot({ upColor, downColor }: { upColor: string; downColor: string }) {
+  return (
+    <span className="inline-flex items-center gap-0.5" aria-hidden>
+      <span
+        className="inline-block w-1.5 h-3 rounded-sm"
+        style={{ backgroundColor: upColor }}
+      />
+      <span
+        className="inline-block w-1.5 h-3 rounded-sm"
+        style={{ backgroundColor: downColor }}
+      />
+    </span>
+  );
+}
+
+function Legend({ loaded, chartType }: { loaded: LoadedSeries[]; chartType: ChartType }) {
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
       {loaded.map((l, i) => {
-        const color = SERIES_COLORS[i % SERIES_COLORS.length];
+        const dc = DATASET_COLORS[i % DATASET_COLORS.length];
+        const lineColor = SERIES_COLORS[i % SERIES_COLORS.length];
         return (
           <div
             key={datasetLabel(l.dataset)}
             className="flex items-center gap-2 font-mono text-gray-300"
           >
-            <span
-              className="inline-block w-3 h-0.5 rounded"
-              style={{ backgroundColor: color }}
-            />
+            {chartType === "candlestick" ? (
+              <CandleDot upColor={dc.up} downColor={dc.down} />
+            ) : (
+              <span
+                className="inline-block w-3 h-0.5 rounded"
+                style={{ backgroundColor: lineColor }}
+              />
+            )}
             <span>{datasetLabel(l.dataset)}</span>
             {l.isLoading && <span className="text-gray-500">(loading…)</span>}
             {l.error ? (
@@ -599,6 +728,8 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
     [isControlled, onModeChange]
   );
 
+  const [chartType, setChartType] = useState<ChartType>("candlestick");
+
   // Auto-revert from diff if dataset count changes away from 2.
   useEffect(() => {
     if (mode === "diff" && datasets.length !== 2) {
@@ -633,11 +764,13 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
           mode={mode}
           setMode={setMode}
           diffAvailable={datasets.length === 2}
+          chartType={chartType}
+          setChartType={setChartType}
         />
-        {mode === "overlay" && <OverlayChart loaded={loaded} />}
-        {mode === "stacked" && <StackedCharts loaded={loaded} />}
+        {mode === "overlay" && <OverlayChart loaded={loaded} chartType={chartType} />}
+        {mode === "stacked" && <StackedCharts loaded={loaded} chartType={chartType} />}
         {mode === "diff" && datasets.length === 2 && (
-          <DiffChart loaded={loaded} />
+          <DiffChart loaded={loaded} chartType={chartType} />
         )}
       </div>
     </ViewportCtx.Provider>
@@ -648,14 +781,18 @@ function ModeBar({
   mode,
   setMode,
   diffAvailable,
+  chartType,
+  setChartType,
 }: {
   mode: CompareMode;
   setMode: (m: CompareMode) => void;
   diffAvailable: boolean;
+  chartType: ChartType;
+  setChartType: (t: ChartType) => void;
 }): ReactNode {
   const modes: CompareMode[] = ["overlay", "stacked", "diff"];
   return (
-    <div className="flex gap-2">
+    <div className="flex flex-wrap gap-2">
       {modes.map((m) => {
         const disabled = m === "diff" && !diffAvailable;
         return (
@@ -678,6 +815,33 @@ function ModeBar({
           </button>
         );
       })}
+
+      {/* Separator */}
+      <span className="w-px bg-gray-700 self-stretch mx-1" />
+
+      {/* Chart type toggle */}
+      <button
+        onClick={() => setChartType("candlestick")}
+        title="Candlestick bars"
+        className={`px-3 py-1.5 rounded text-sm transition-colors ${
+          chartType === "candlestick"
+            ? "bg-indigo-600 text-white"
+            : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+        }`}
+      >
+        bars
+      </button>
+      <button
+        onClick={() => setChartType("line")}
+        title="Line chart"
+        className={`px-3 py-1.5 rounded text-sm transition-colors ${
+          chartType === "line"
+            ? "bg-indigo-600 text-white"
+            : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+        }`}
+      >
+        line
+      </button>
     </div>
   );
 }
