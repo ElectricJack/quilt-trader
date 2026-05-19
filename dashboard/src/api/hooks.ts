@@ -200,6 +200,16 @@ export function useRegenerateWorkerInstallToken() {
   });
 }
 
+export function useTriggerWorkerUpdate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.triggerWorkerUpdate(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.workers() });
+    },
+  });
+}
+
 // ─── Algorithms ───────────────────────────────────────────────────────────────
 
 export function useAlgorithms() {

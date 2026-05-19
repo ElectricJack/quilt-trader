@@ -7,6 +7,7 @@ import {
   useUpdateWorker,
   useDeleteWorker,
   useDeployments,
+  useTriggerWorkerUpdate,
 } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
 import { FormModal } from "../components/FormModal";
@@ -71,6 +72,7 @@ export function WorkerDetail() {
   const { data: deployments, isLoading: loadingDeployments } = useDeployments({ worker_id: id });
   const updateWorker = useUpdateWorker();
   const deleteWorker = useDeleteWorker();
+  const triggerUpdate = useTriggerWorkerUpdate();
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -131,6 +133,28 @@ export function WorkerDetail() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0 mt-1">
+          <button
+            onClick={() =>
+              triggerUpdate.mutate(worker.id, {
+                onSuccess: () => {
+                  addAlert({
+                    message: "Update command sent — worker will pull latest code and restart.",
+                    severity: "success",
+                  });
+                },
+                onError: (err) => {
+                  addAlert({
+                    message: `Update failed: ${(err as Error).message}`,
+                    severity: "error",
+                  });
+                },
+              })
+            }
+            disabled={worker.status === "offline" || triggerUpdate.isPending}
+            className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-3 py-2 rounded transition-colors disabled:opacity-50"
+          >
+            {triggerUpdate.isPending ? "Updating…" : "Update"}
+          </button>
           <button
             onClick={() => setEditOpen(true)}
             className="inline-flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm px-3 py-2 rounded transition-colors"

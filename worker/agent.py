@@ -1,5 +1,9 @@
+import asyncio
 import json
 import logging
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Optional
 
@@ -107,6 +111,7 @@ class WorkerAgent:
         self.router.register("stop_instance", self._handle_stop_instance)
         self.router.register("heartbeat_ack", self._handle_heartbeat_ack)
         self.router.register("tick_batch", self._handle_tick_batch)
+        self.router.register("update_worker", self._handle_update_worker)
 
     async def _handle_start_instance(self, message: dict) -> None:
         from worker.live_instance_runtime import LiveInstanceRuntime
@@ -169,7 +174,6 @@ class WorkerAgent:
         pass  # No action needed
 
     async def _handle_tick_batch(self, message: dict) -> None:
-        import asyncio as _asyncio
         for entry in (message.get("ticks") or []):
             inst_id = entry.get("instance_id")
             runtime = self._running_instances.get(inst_id)
@@ -177,4 +181,66 @@ class WorkerAgent:
                 logger.debug("tick_batch entry for unknown instance %s; ignoring", inst_id)
                 continue
             # Per-instance task: a slow algorithm doesn't block sibling instances.
-            _asyncio.create_task(runtime.on_tick_batch_entry(entry))
+            asyncio.create_task(runtime.on_tick_batch_entry(entry))
+
+    async def _handle_update_worker(self, _message: dict) -> None:
+        """Pull latest code from git, reinstall deps, then exit for systemd restart."""
+        logger.info("Received update_worker command — pulling latest code")
+
+        # worker/ is a subdirectory of the repo root
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        try:
+            # git pull
+            result = subprocess.run(
+                ["git", "-C", repo_root, "pull", "origin", "main"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                error = result.stderr.strip() or result.stdout.strip()
+                logger.error("git pull failed: %s", error)
+                await self.send_event("update_complete", "", payload={
+                    "success": False, "error": f"git pull failed: {error}",
+                })
+                return
+
+            # Get new SHA
+            sha_result = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True,
+            )
+            new_sha = sha_result.stdout.strip() if sha_result.returncode == 0 else "unknown"
+
+            # pip install requirements if they exist
+            req_file = os.path.join(repo_root, "requirements.txt")
+            if os.path.exists(req_file):
+                pip_result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if pip_result.returncode != 0:
+                    logger.warning("pip install failed: %s", pip_result.stderr)
+
+            logger.info("Update complete — new SHA: %s. Exiting for systemd restart.", new_sha)
+
+            # Send success event before exiting
+            await self.send_event("update_complete", "", payload={
+                "success": True, "new_sha": new_sha,
+            })
+
+            # Brief delay so the WS message has time to send
+            await asyncio.sleep(0.5)
+
+            # Exit cleanly — systemd Restart=always will restart the process
+            os._exit(0)
+
+        except subprocess.TimeoutExpired:
+            logger.error("Update timed out")
+            await self.send_event("update_complete", "", payload={
+                "success": False, "error": "Update timed out",
+            })
+        except Exception as e:
+            logger.exception("Update failed")
+            await self.send_event("update_complete", "", payload={
+                "success": False, "error": str(e),
+            })

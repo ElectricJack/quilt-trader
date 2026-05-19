@@ -6,6 +6,7 @@ import {
   useWorkers,
   useUpdateWorker,
   useDeleteWorker,
+  useTriggerWorkerUpdate,
 } from "../api/hooks";
 import { StatusBadge } from "../components/StatusBadge";
 import { FormModal } from "../components/FormModal";
@@ -55,6 +56,7 @@ export function Workers() {
   const { data: workers, isLoading } = useWorkers();
   const updateWorker = useUpdateWorker();
   const deleteWorker = useDeleteWorker();
+  const triggerUpdate = useTriggerWorkerUpdate();
 
   // Install dialog (replaces old register modal + inline command panel)
   const [installOpen, setInstallOpen] = useState(false);
@@ -139,6 +141,34 @@ export function Workers() {
                   className="flex items-center gap-1 shrink-0 ml-2"
                   onClick={(e) => e.stopPropagation()}
                 >
+                  <button
+                    onClick={() =>
+                      triggerUpdate.mutate(w.id, {
+                        onSuccess: () => {
+                          addAlert({
+                            message: `Update command sent to "${w.name}" — worker will pull latest code and restart.`,
+                            severity: "success",
+                          });
+                        },
+                        onError: (err) => {
+                          addAlert({
+                            message: `Update failed: ${(err as Error).message}`,
+                            severity: "error",
+                          });
+                        },
+                      })
+                    }
+                    disabled={w.status === "offline" || triggerUpdate.isPending}
+                    className="p-1.5 text-gray-400 hover:text-indigo-400 hover:bg-gray-700 rounded transition-colors disabled:opacity-50"
+                    title="Update worker (git pull + restart)"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                      <path d="M3 3v5h5"/>
+                      <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                      <path d="M16 16h5v5"/>
+                    </svg>
+                  </button>
                   <button
                     onClick={() => setEditTarget(w)}
                     className="p-1.5 text-gray-400 hover:text-gray-100 hover:bg-gray-700 rounded transition-colors"

@@ -367,6 +367,28 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
             except Exception:
                 logger.exception("Failed to update instance_error for instance %s", instance_id)
 
+    elif msg_type == "update_complete":
+        payload = data.get("payload") or {}
+        success = payload.get("success", False)
+        worker_id = None
+        for wid, ws in manager.worker_connections.items():
+            if ws is websocket:
+                worker_id = wid
+                break
+        if success:
+            new_sha = payload.get("new_sha", "unknown")
+            logger.info("Worker %s update_complete: new SHA %s", worker_id, new_sha)
+        else:
+            error = payload.get("error", "unknown error")
+            logger.warning("Worker %s update_complete: FAILED — %s", worker_id, error)
+        await manager.broadcast_to_dashboards({
+            "type": "worker_update_complete",
+            "worker_id": worker_id,
+            "success": success,
+            "new_sha": payload.get("new_sha"),
+            "error": payload.get("error"),
+        })
+
     elif msg_type in ("equity_sample", "trade_sample"):
         container = get_container()
         sink = getattr(container, "live_sample_sink", None)

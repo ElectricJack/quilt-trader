@@ -234,6 +234,33 @@ async def get_worker(worker_id: str, db: AsyncSession = Depends(get_db)):
     return _to_response(worker)
 
 
+@router.post("/{worker_id}/update")
+async def trigger_worker_update(worker_id: str, db: AsyncSession = Depends(get_db)):
+    """Send an update_worker command over the worker's WebSocket connection.
+
+    The worker will git-pull, reinstall deps, then exit cleanly so systemd
+    (Restart=always) restarts it with the new code.
+    """
+    from coordinator.api.websocket import manager as ws_manager
+
+    worker = (await db.execute(
+        select(Worker).where(Worker.id == worker_id)
+    )).scalar_one_or_none()
+    if worker is None:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    ws = ws_manager.worker_connections.get(worker_id)
+    if ws is None:
+        raise HTTPException(status_code=502, detail="Worker is offline")
+
+    try:
+        await ws.send_json({"type": "update_worker"})
+    except Exception:
+        raise HTTPException(status_code=502, detail="Failed to send update command to worker")
+
+    return {"status": "update_command_sent", "worker_id": worker_id}
+
+
 @router.patch("/{worker_id}")
 async def update_worker(
     worker_id: str, body: WorkerUpdate, db: AsyncSession = Depends(get_db)

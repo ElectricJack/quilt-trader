@@ -307,6 +307,12 @@ export const api = {
   regenerateWorkerInstallToken(id: string): Promise<Worker> {
     return request<Worker>(`/api/workers/${id}/regenerate-token`, { method: "POST" });
   },
+  triggerWorkerUpdate(id: string): Promise<{ status: string; worker_id: string }> {
+    return request<{ status: string; worker_id: string }>(
+      `/api/workers/${encodeURIComponent(id)}/update`,
+      { method: "POST" },
+    );
+  },
 
   // Algorithms
   listAlgorithms(): Promise<Algorithm[]> {
