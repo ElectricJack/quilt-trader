@@ -192,8 +192,9 @@ def build_key_metrics(
     benchmark_daily_df: Optional[pd.DataFrame],
     initial_cash: float,
     risk_free_rate: float = 0.04,
+    trades: Optional[list] = None,
 ) -> dict:
-    strat = compute_all(_with_return(daily_df), trades=[], initial_cash=initial_cash, risk_free_rate=risk_free_rate)
+    strat = compute_all(_with_return(daily_df), trades=trades or [], initial_cash=initial_cash, risk_free_rate=risk_free_rate)
     strat_returns = _returns_from_pv(daily_df)
     bench: dict = {}
     bench_returns: Optional[pd.Series] = None
@@ -270,7 +271,15 @@ async def finalize_run(
             (bench_daily_df.set_index("timestamp")["portfolio_value"] if bench_daily_df is not None else None),
         )
         r.rolling_metrics = build_rolling_metrics(strat_returns, bench_returns)
-        r.key_metrics = build_key_metrics(daily_df, bench_daily_df, initial_cash=r.initial_cash)
+        # Load trades from parquet so trade_count/win_rate are computed
+        trades_path = run_dir / "trades.parquet"
+        trades_list: list = []
+        if trades_path.exists():
+            trades_df = pd.read_parquet(trades_path)
+            trades_list = trades_df.to_dict(orient="records")
+        r.key_metrics = build_key_metrics(
+            daily_df, bench_daily_df, initial_cash=r.initial_cash, trades=trades_list,
+        )
         # Top-10 drawdowns
         from coordinator.services.backtest_metrics_qs import top_n_drawdowns
         r.drawdown_periods = top_n_drawdowns(_with_return(daily_df), n=10)
