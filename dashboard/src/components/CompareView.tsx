@@ -20,6 +20,7 @@ import {
   type UTCTimestamp,
   type LogicalRange,
   type Range,
+  type MouseEventParams,
 } from "lightweight-charts";
 import { useMarketDataSource } from "../api/hooks";
 import type { MarketDataBar } from "../types";
@@ -325,6 +326,63 @@ function syncTimeScales(charts: IChartApi[]): () => void {
   };
 }
 
+/**
+ * Wire crosshair movement between stacked chart instances so hovering over one
+ * chart shows a synchronized vertical (time) crosshair on all other charts.
+ *
+ * Each `seriesRefs[j]` is the primary series for `charts[j]` — required by the
+ * lightweight-charts `setCrosshairPosition` API to identify which chart panel
+ * the crosshair belongs to.  We pass `NaN` as the price value so only the
+ * vertical time line appears on the target charts (their Y axes are independent
+ * anyway).
+ *
+ * Returns a cleanup function that unsubscribes all handlers.
+ */
+function syncCrosshairs(
+  charts: IChartApi[],
+  seriesRefs: (AnySeries | null)[],
+): () => void {
+  if (charts.length < 2) return () => {};
+  let isSyncing = false;
+  const cleanups: (() => void)[] = [];
+
+  charts.forEach((src, i) => {
+    const handler = (param: MouseEventParams) => {
+      if (isSyncing) return;
+      isSyncing = true;
+      charts.forEach((dst, j) => {
+        if (i === j) return;
+        const series = seriesRefs[j];
+        if (!series) return;
+        if (param.time !== undefined) {
+          try {
+            dst.setCrosshairPosition(NaN, param.time, series);
+          } catch {
+            // Chart may not have data at this time — safe to ignore
+          }
+        } else {
+          try {
+            dst.clearCrosshairPosition();
+          } catch {
+            // ignore
+          }
+        }
+      });
+      isSyncing = false;
+    };
+    src.subscribeCrosshairMove(handler);
+    cleanups.push(() => {
+      try {
+        src.unsubscribeCrosshairMove(handler);
+      } catch {
+        // already removed
+      }
+    });
+  });
+
+  return () => cleanups.forEach((fn) => fn());
+}
+
 /** Base chart options shared by all sub-charts. */
 const CHART_OPTIONS = {
   autoSize: true,
@@ -477,13 +535,16 @@ function OverlayChart({ loaded, chartType }: SubChartProps) {
 // ─── StackedCharts ────────────────────────────────────────────────────────────
 
 function StackedCharts({ loaded, chartType }: SubChartProps) {
-  // Collect chart instances from each row so we can wire cross-chart time sync.
+  // Collect chart instances and their primary series from each row so we can
+  // wire cross-chart time sync and crosshair sync.
   const chartsRef = useRef<(IChartApi | null)[]>([]);
+  const seriesRef = useRef<(AnySeries | null)[]>([]);
 
-  // Called by each StackedRow when its chart is created or destroyed.
+  // Called by each StackedRow when its chart/series is created or destroyed.
   const onChartReady = useCallback(
-    (index: number, chart: IChartApi | null) => {
+    (index: number, chart: IChartApi | null, series: AnySeries | null) => {
       chartsRef.current[index] = chart;
+      seriesRef.current[index] = series;
     },
     []
   );
@@ -521,10 +582,16 @@ function StackedCharts({ loaded, chartType }: SubChartProps) {
     // the initial alignment to see empty rows for some charts.
     const timerId = setTimeout(applyUnionRange, 100);
 
-    const cleanup = syncTimeScales(live);
+    const liveSeries = seriesRef.current.filter((_s, idx) =>
+      chartsRef.current[idx] != null
+    );
+
+    const cleanupTimeScales = syncTimeScales(live);
+    const cleanupCrosshairs = syncCrosshairs(live, liveSeries);
     return () => {
       clearTimeout(timerId);
-      cleanup();
+      cleanupTimeScales();
+      cleanupCrosshairs();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncVersion, loaded]);
@@ -537,8 +604,8 @@ function StackedCharts({ loaded, chartType }: SubChartProps) {
           loaded={l}
           colorIdx={i}
           chartType={chartType}
-          onChartReady={(c) => {
-            onChartReady(i, c);
+          onChartReady={(c, s) => {
+            onChartReady(i, c, s);
             bumpSync();
           }}
         />
@@ -556,7 +623,7 @@ function StackedRow({
   loaded: LoadedSeries;
   colorIdx: number;
   chartType: ChartType;
-  onChartReady: (chart: IChartApi | null) => void;
+  onChartReady: (chart: IChartApi | null, series: AnySeries | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [chart, setChart] = useState<IChartApi | null>(null);
@@ -573,13 +640,13 @@ function StackedRow({
     });
     setChart(c);
     didFitRef.current = false;
-    onChartReadyRef.current(c);
+    onChartReadyRef.current(c, null);
     return () => {
       c.remove();
       setChart(null);
       seriesRef.current = null;
       didFitRef.current = false;
-      onChartReadyRef.current(null);
+      onChartReadyRef.current(null, null);
     };
   }, []);
 
@@ -599,6 +666,8 @@ function StackedRow({
     const s = addSeries(chart, chartType, colorIdx, datasetLabel(loaded.dataset));
     setSeriesData(s, loaded.rows, chartType);
     seriesRef.current = s;
+    // Notify parent so the crosshair sync has an up-to-date series ref.
+    onChartReadyRef.current(chart, s);
 
     if (loaded.rows.length > 0 && !didFitRef.current) {
       chart.timeScale().fitContent();
