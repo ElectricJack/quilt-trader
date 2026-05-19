@@ -19,6 +19,7 @@ import {
   type Time,
   type UTCTimestamp,
   type LogicalRange,
+  type Range,
 } from "lightweight-charts";
 import { useMarketDataSource } from "../api/hooks";
 import type { MarketDataBar } from "../types";
@@ -279,8 +280,13 @@ function useChartViewportSync(chart: IChartApi | null) {
 
 /**
  * Wire an array of chart instances so that panning/zooming any one of them
- * immediately moves all the others to the same logical range.  Returns a
+ * immediately moves all the others to the same TIME range.  Returns a
  * cleanup function that unsubscribes everything.
+ *
+ * Uses `subscribeVisibleTimeRangeChange` (not logical-range) so that charts
+ * with different bar densities — e.g. Alpaca (50 bars) vs Coinbase (500 bars)
+ * over the same 12-hour window — show the same clock-time slice rather than
+ * the same bar-index slice.
  *
  * Uses a shared `isSyncing` flag (not React state) to prevent infinite loops:
  * when chart A fires, we apply to B, C… but skip re-applying to A.
@@ -288,30 +294,30 @@ function useChartViewportSync(chart: IChartApi | null) {
 function syncTimeScales(charts: IChartApi[]): () => void {
   if (charts.length < 2) return () => {};
   let isSyncing = false;
-  const handlers: Array<{ chart: IChartApi; handler: (range: LogicalRange | null) => void }> = [];
+  const handlers: Array<{ chart: IChartApi; handler: (range: Range<Time> | null) => void }> = [];
 
   charts.forEach((src, i) => {
-    const handler = (range: LogicalRange | null) => {
+    const handler = (range: Range<Time> | null) => {
       if (isSyncing || !range) return;
       isSyncing = true;
       charts.forEach((dst, j) => {
         if (i === j) return;
         try {
-          dst.timeScale().setVisibleLogicalRange(range);
+          dst.timeScale().setVisibleRange(range);
         } catch {
-          // chart may have been removed
+          // chart may have no data in this time range yet
         }
       });
       isSyncing = false;
     };
-    src.timeScale().subscribeVisibleLogicalRangeChange(handler);
+    src.timeScale().subscribeVisibleTimeRangeChange(handler);
     handlers.push({ chart: src, handler });
   });
 
   return () => {
     for (const { chart, handler } of handlers) {
       try {
-        chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+        chart.timeScale().unsubscribeVisibleTimeRangeChange(handler);
       } catch {
         // already removed
       }
