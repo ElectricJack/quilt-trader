@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
-import { useMarketData } from "../api/hooks";
 import type { MarketDataBar } from "../types";
 import type { ColumnDef } from "./DataTable";
 import { DataTable } from "./DataTable";
 import { PriceChart, type ChartType } from "./PriceChart";
+import { usePagedMarketData } from "../hooks/usePagedMarketData";
 
 // ─── Format helpers ────────────────────────────────────────────────────────────
 
@@ -102,15 +102,28 @@ export function DatasetPreviewModal({
   symbol,
   timeframe,
 }: DatasetPreviewModalProps) {
-  const { data, isLoading } = useMarketData(
+  const {
+    bars: pagedBars,
+    loading: isLoading,
+    fetchingMore,
+    loadEarlier,
+  } = usePagedMarketData(
     open ? provider : null,
     open ? symbol : null,
-    open ? timeframe : null
+    open ? timeframe : null,
   );
 
   const [chartType, setChartType] = useState<ChartType>("bars");
 
-  const bars = data?.data ?? [];
+  // Convert ParsedBar back to MarketDataBar shape for the DataTable and stats.
+  const bars: MarketDataBar[] = pagedBars.map((b) => ({
+    timestamp: new Date(b.time * 1000).toISOString(),
+    open: b.open,
+    high: b.high,
+    low: b.low,
+    close: b.close,
+    volume: b.volume,
+  }));
 
   const stats = useMemo(() => {
     if (bars.length === 0) return null;
@@ -230,6 +243,8 @@ export function DatasetPreviewModal({
                     chartType={chartType}
                     liveBroker={provider?.endsWith("_live") ? provider.slice(0, -"_live".length) : undefined}
                     liveSymbol={symbol ?? undefined}
+                    loadEarlier={loadEarlier}
+                    fetchingMore={fetchingMore}
                   />
                 </div>
               )}

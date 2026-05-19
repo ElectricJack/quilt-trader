@@ -725,6 +725,18 @@ export const api = {
     );
   },
 
+  /** Fetch dataset metadata: total bar count and earliest/latest timestamps. */
+  getMarketDataMeta(
+    symbol: string,
+    opts: { source?: string; provider?: string; timeframe?: string }
+  ): Promise<{ total_bars: number; first_timestamp: string | null; last_timestamp: string | null }> {
+    const qs = new URLSearchParams();
+    if (opts.source) qs.set("source", opts.source);
+    if (opts.provider) qs.set("provider", opts.provider);
+    if (opts.timeframe) qs.set("timeframe", opts.timeframe);
+    return request(`/api/data/market/${encodeURIComponent(symbol)}/meta?${qs}`);
+  },
+
   /** Windowed market data fetch — supports start/end filters and a row limit. */
   getMarketDataPaged(
     symbol: string,

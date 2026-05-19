@@ -7,6 +7,7 @@ import {
   type LineData,
   type CandlestickData,
   type LogicalRange,
+  type Range,
   type Time,
 } from "lightweight-charts";
 import type { MarketDataBar } from "../types";
@@ -32,9 +33,18 @@ interface PriceChartProps {
    * from the provider string before passing (e.g. "coinbase", not "coinbase_live"). */
   liveBroker?: string;
   liveSymbol?: string;
+  /**
+   * Called when the user pans close to the left edge of loaded data.
+   * Receives the ISO-8601 timestamp of the earliest loaded bar.
+   * Use this to trigger a fetch for older bars.
+   */
+  loadEarlier?: (beforeTimestamp: string) => void;
+  /** When true, shows a subtle "loading older data…" indicator at the top of
+   * the chart. */
+  fetchingMore?: boolean;
 }
 
-export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker, liveSymbol }: PriceChartProps) {
+export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker, liveSymbol, loadEarlier, fetchingMore = false }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Line"> | ISeriesApi<"Candlestick"> | null>(null);
@@ -114,6 +124,11 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
     };
   }, [height, chartType]);
 
+  // Track whether we have ever fitted the chart for this bars dataset.
+  // We only fitContent on the very first load; subsequent bar merges (paging)
+  // preserve the user's current pan position.
+  const didFitRef = useRef(false);
+
   // Update series data when bars prop or chart type changes.
   useEffect(() => {
     const series = seriesRef.current;
@@ -141,6 +156,14 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
     for (const r of rows) seen.set(r.time, r);
     const deduped = Array.from(seen.values()).sort((a, b) => a.time - b.time);
 
+    // Save the current visible time range so we can restore it after setData
+    // (setData resets the viewport). Only save if we've already fitted once —
+    // i.e. the user may have panned.
+    const chart = chartRef.current;
+    const currentRange = didFitRef.current
+      ? chart?.timeScale().getVisibleRange() ?? null
+      : null;
+
     if (chartType === "bars") {
       const data: CandlestickData<Time>[] = deduped.map((r) => ({
         time: r.time as Time,
@@ -158,12 +181,23 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
       (series as ISeriesApi<"Line">).setData(data);
     }
 
-    if (deduped.length > 0 && chartRef.current) {
+    if (deduped.length > 0 && chart) {
       if (restorePendingRef.current && savedRangeRef.current) {
-        chartRef.current.timeScale().setVisibleLogicalRange(savedRangeRef.current);
+        // Restoring after a chartType switch — use logical range.
+        chart.timeScale().setVisibleLogicalRange(savedRangeRef.current);
         restorePendingRef.current = false;
-      } else {
-        chartRef.current.timeScale().fitContent();
+        didFitRef.current = true;
+      } else if (currentRange) {
+        // Preserve the user's pan position after a page merge.
+        try {
+          chart.timeScale().setVisibleRange(currentRange);
+        } catch {
+          // If the new data doesn't cover the saved range, fall through.
+        }
+      } else if (!didFitRef.current) {
+        // First load — fit everything into view.
+        chart.timeScale().fitContent();
+        didFitRef.current = true;
       }
     }
 
@@ -173,6 +207,46 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
       liveCandleRef.current = { ...last };
     }
   }, [bars, chartType]);
+
+  // Reset the fit flag when the chart instance is recreated (chartType switch)
+  // so that the first data load after a switch calls fitContent.
+  useEffect(() => {
+    didFitRef.current = false;
+  }, [chartType]);
+
+  // ── Edge-detection: trigger loadEarlier when nearing the left edge ────────
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !loadEarlier || bars.length === 0) return;
+
+    const firstBarTime = Math.floor(
+      new Date(bars[0].timestamp).getTime() / 1000
+    );
+    const lastBarTime = Math.floor(
+      new Date(bars[bars.length - 1].timestamp).getTime() / 1000
+    );
+    const loadedSpan = lastBarTime - firstBarTime;
+
+    const handler = (range: Range<Time> | null) => {
+      if (!range) return;
+      const from = range.from as number;
+      // Trigger when the left edge of the viewport is within 10% of the
+      // loaded span from the earliest bar.
+      const threshold = firstBarTime + loadedSpan * 0.1;
+      if (from <= threshold) {
+        loadEarlier(bars[0].timestamp);
+      }
+    };
+
+    chart.timeScale().subscribeVisibleTimeRangeChange(handler);
+    return () => {
+      try {
+        chart.timeScale().unsubscribeVisibleTimeRangeChange(handler);
+      } catch {
+        // ignore if chart already removed
+      }
+    };
+  }, [bars, loadEarlier]);
 
   // Subscribe to live ticks when liveBroker + liveSymbol are provided.
   useEffect(() => {
@@ -239,10 +313,18 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
   }, [liveBroker, liveSymbol, chartType]);
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full rounded-lg overflow-hidden border border-gray-800"
-      style={{ height }}
-    />
+    <div className="relative w-full">
+      {fetchingMore && (
+        <div className="absolute top-1 left-2 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded bg-gray-900/80 border border-gray-700 text-[10px] text-gray-400 pointer-events-none">
+          <span className="inline-block w-2 h-2 border border-gray-400 border-t-transparent rounded-full animate-spin" />
+          Loading older data…
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className="w-full rounded-lg overflow-hidden border border-gray-800"
+        style={{ height }}
+      />
+    </div>
   );
 }

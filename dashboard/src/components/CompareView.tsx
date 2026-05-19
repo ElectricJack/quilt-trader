@@ -22,8 +22,7 @@ import {
   type Range,
   type MouseEventParams,
 } from "lightweight-charts";
-import { useMarketDataSource } from "../api/hooks";
-import type { MarketDataBar } from "../types";
+import { usePagedMarketData, type ParsedBar } from "../hooks/usePagedMarketData";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,27 +110,15 @@ interface NormalizedRow {
   low: number;
 }
 
-/** Convert API bars → sorted, deduped OHLC rows. */
-function barsToRows(bars: MarketDataBar[] | undefined): NormalizedRow[] {
-  if (!bars) return [];
-  const rows: NormalizedRow[] = [];
-  for (const b of bars) {
-    const t = Math.floor(new Date(b.timestamp).getTime() / 1000);
-    if (!Number.isFinite(t) || !Number.isFinite(b.close)) continue;
-    rows.push({
-      time: t as UTCTimestamp,
-      value: b.close,
-      open: Number.isFinite(b.open) ? b.open : b.close,
-      high: Number.isFinite(b.high) ? b.high : b.close,
-      low: Number.isFinite(b.low) ? b.low : b.close,
-    });
-  }
-  rows.sort((a, b) => (a.time as number) - (b.time as number));
-  const seen = new Map<number, NormalizedRow>();
-  for (const r of rows) seen.set(r.time as number, r);
-  return Array.from(seen.values()).sort(
-    (a, b) => (a.time as number) - (b.time as number)
-  );
+/** Convert ParsedBar array → NormalizedRow array (already sorted + deduped by the hook). */
+function parsedBarsToRows(bars: ParsedBar[]): NormalizedRow[] {
+  return bars.map((b) => ({
+    time: b.time as UTCTimestamp,
+    value: b.close,
+    open: b.open,
+    high: b.high,
+    low: b.low,
+  }));
 }
 
 /** Pretty label for a dataset. */
@@ -159,13 +146,15 @@ interface LoadedSeries {
   dataset: CompareDataset;
   rows: NormalizedRow[];
   isLoading: boolean;
+  fetchingMore: boolean;
+  loadEarlier: (beforeTimestamp: string) => void;
   error: unknown;
 }
 
 /**
- * Load up to 8 datasets in parallel. Calling useMarketDataSource in a fixed
- * loop violates the rules-of-hooks if the array length changes, so we use a
- * fixed cap and ignore slots beyond datasets.length.
+ * Load up to 8 datasets in parallel using the paged market-data hook.
+ * Calling hooks in a fixed loop violates rules-of-hooks if the array length
+ * changes, so we use a fixed cap (MAX_DATASETS) and null-pad shorter arrays.
  */
 const MAX_DATASETS = 8;
 
@@ -176,46 +165,14 @@ function useLoadedSeries(datasets: CompareDataset[]): LoadedSeries[] {
   }
   // Pre-allocate fixed hook calls (rules of hooks: must be unconditional).
   /* eslint-disable react-hooks/rules-of-hooks */
-  const q0 = useMarketDataSource(
-    padded[0]?.provider ?? null,
-    padded[0]?.symbol ?? null,
-    padded[0]?.timeframe ?? null
-  );
-  const q1 = useMarketDataSource(
-    padded[1]?.provider ?? null,
-    padded[1]?.symbol ?? null,
-    padded[1]?.timeframe ?? null
-  );
-  const q2 = useMarketDataSource(
-    padded[2]?.provider ?? null,
-    padded[2]?.symbol ?? null,
-    padded[2]?.timeframe ?? null
-  );
-  const q3 = useMarketDataSource(
-    padded[3]?.provider ?? null,
-    padded[3]?.symbol ?? null,
-    padded[3]?.timeframe ?? null
-  );
-  const q4 = useMarketDataSource(
-    padded[4]?.provider ?? null,
-    padded[4]?.symbol ?? null,
-    padded[4]?.timeframe ?? null
-  );
-  const q5 = useMarketDataSource(
-    padded[5]?.provider ?? null,
-    padded[5]?.symbol ?? null,
-    padded[5]?.timeframe ?? null
-  );
-  const q6 = useMarketDataSource(
-    padded[6]?.provider ?? null,
-    padded[6]?.symbol ?? null,
-    padded[6]?.timeframe ?? null
-  );
-  const q7 = useMarketDataSource(
-    padded[7]?.provider ?? null,
-    padded[7]?.symbol ?? null,
-    padded[7]?.timeframe ?? null
-  );
+  const q0 = usePagedMarketData(padded[0]?.provider ?? null, padded[0]?.symbol ?? null, padded[0]?.timeframe ?? null);
+  const q1 = usePagedMarketData(padded[1]?.provider ?? null, padded[1]?.symbol ?? null, padded[1]?.timeframe ?? null);
+  const q2 = usePagedMarketData(padded[2]?.provider ?? null, padded[2]?.symbol ?? null, padded[2]?.timeframe ?? null);
+  const q3 = usePagedMarketData(padded[3]?.provider ?? null, padded[3]?.symbol ?? null, padded[3]?.timeframe ?? null);
+  const q4 = usePagedMarketData(padded[4]?.provider ?? null, padded[4]?.symbol ?? null, padded[4]?.timeframe ?? null);
+  const q5 = usePagedMarketData(padded[5]?.provider ?? null, padded[5]?.symbol ?? null, padded[5]?.timeframe ?? null);
+  const q6 = usePagedMarketData(padded[6]?.provider ?? null, padded[6]?.symbol ?? null, padded[6]?.timeframe ?? null);
+  const q7 = usePagedMarketData(padded[7]?.provider ?? null, padded[7]?.symbol ?? null, padded[7]?.timeframe ?? null);
   /* eslint-enable react-hooks/rules-of-hooks */
   const queries = [q0, q1, q2, q3, q4, q5, q6, q7];
 
@@ -223,9 +180,11 @@ function useLoadedSeries(datasets: CompareDataset[]): LoadedSeries[] {
     const q = queries[i];
     return {
       dataset: d,
-      rows: barsToRows(q.data?.data),
-      isLoading: q.isLoading,
-      error: q.error,
+      rows: parsedBarsToRows(q.bars),
+      isLoading: q.loading,
+      fetchingMore: q.fetchingMore,
+      loadEarlier: q.loadEarlier,
+      error: null,
     };
   });
 }
@@ -508,26 +467,79 @@ function OverlayChart({ loaded, chartType }: SubChartProps) {
 
     const hasData = loaded.some((l) => l.rows.length > 0);
 
+    // Preserve viewport when re-rendering due to a paging merge.
+    const currentRange = didFitRef.current
+      ? chart.timeScale().getVisibleRange() ?? null
+      : null;
+
     loaded.forEach((l, i) => {
       const s = addSeries(chart, chartType, i, datasetLabel(l.dataset));
       setSeriesData(s, l.rows, chartType);
       seriesRefs.current.push(s);
     });
 
-    // Only call fitContent once on the initial data load, not on every toggle.
-    if (hasData && !didFitRef.current) {
-      chart.timeScale().fitContent();
-      didFitRef.current = true;
+    if (hasData) {
+      if (currentRange) {
+        try {
+          chart.timeScale().setVisibleRange(currentRange);
+        } catch {
+          // fall through
+        }
+      } else if (!didFitRef.current) {
+        // Only call fitContent once on the initial data load.
+        chart.timeScale().fitContent();
+        didFitRef.current = true;
+      }
     }
   }, [chart, loaded, chartType]);
+
+  // Edge-detection for all datasets: when the viewport approaches the left
+  // edge of any dataset's loaded bars, trigger that dataset's loadEarlier.
+  useEffect(() => {
+    if (!chart || loaded.length === 0) return;
+
+    const handler = (range: Range<Time> | null) => {
+      if (!range) return;
+      const from = range.from as number;
+      for (const l of loaded) {
+        if (l.rows.length === 0) continue;
+        const firstBarTime = l.rows[0].time as number;
+        const lastBarTime = l.rows[l.rows.length - 1].time as number;
+        const span = lastBarTime - firstBarTime;
+        const threshold = firstBarTime + span * 0.1;
+        if (from <= threshold) {
+          l.loadEarlier(new Date(firstBarTime * 1000).toISOString());
+        }
+      }
+    };
+
+    chart.timeScale().subscribeVisibleTimeRangeChange(handler);
+    return () => {
+      try {
+        chart.timeScale().unsubscribeVisibleTimeRangeChange(handler);
+      } catch {
+        // ignore if chart already removed
+      }
+    };
+  }, [chart, loaded]);
+
+  const anyFetchingMore = loaded.some((l) => l.fetchingMore);
 
   return (
     <div className="flex flex-col flex-1 min-h-0 space-y-2">
       <Legend loaded={loaded} chartType={chartType} />
-      <div
-        ref={containerRef}
-        className="flex-1 min-h-0 w-full rounded-lg border border-gray-800"
-      />
+      <div className="relative flex-1 min-h-0">
+        {anyFetchingMore && (
+          <div className="absolute top-1 left-2 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded bg-gray-900/80 border border-gray-700 text-[10px] text-gray-400 pointer-events-none">
+            <span className="inline-block w-2 h-2 border border-gray-400 border-t-transparent rounded-full animate-spin" />
+            Loading older data…
+          </div>
+        )}
+        <div
+          ref={containerRef}
+          className="absolute inset-0 rounded-lg border border-gray-800"
+        />
+      </div>
     </div>
   );
 }
@@ -672,23 +684,68 @@ function StackedRow({
       seriesRef.current = null;
     }
     const s = addSeries(chart, chartType, colorIdx, datasetLabel(loaded.dataset));
+
+    // Preserve the viewport when rows are updated (paging merge); only
+    // fitContent on the very first load.
+    const currentRange = didFitRef.current
+      ? chart.timeScale().getVisibleRange() ?? null
+      : null;
+
     setSeriesData(s, loaded.rows, chartType);
     seriesRef.current = s;
     // Notify parent so the crosshair sync has an up-to-date series ref.
     onChartReadyRef.current(chart, s);
 
-    if (loaded.rows.length > 0 && !didFitRef.current) {
-      chart.timeScale().fitContent();
-      didFitRef.current = true;
+    if (loaded.rows.length > 0) {
+      if (currentRange) {
+        try {
+          chart.timeScale().setVisibleRange(currentRange);
+        } catch {
+          // fall through — new data may not cover saved range yet
+        }
+      } else if (!didFitRef.current) {
+        chart.timeScale().fitContent();
+        didFitRef.current = true;
+      }
     }
   }, [chart, loaded, colorIdx, chartType]);
+
+  // Edge-detection: fire loadEarlier when the user pans near the left edge.
+  useEffect(() => {
+    if (!chart || loaded.rows.length === 0) return;
+    const { loadEarlier } = loaded;
+    const firstRow = loaded.rows[0];
+    const lastRow = loaded.rows[loaded.rows.length - 1];
+    const firstBarTime = firstRow.time as number;
+    const lastBarTime = lastRow.time as number;
+    const loadedSpan = lastBarTime - firstBarTime;
+
+    const handler = (range: Range<Time> | null) => {
+      if (!range) return;
+      const from = range.from as number;
+      const threshold = firstBarTime + loadedSpan * 0.1;
+      if (from <= threshold) {
+        // Convert unix seconds back to ISO for the hook.
+        loadEarlier(new Date(firstBarTime * 1000).toISOString());
+      }
+    };
+
+    chart.timeScale().subscribeVisibleTimeRangeChange(handler);
+    return () => {
+      try {
+        chart.timeScale().unsubscribeVisibleTimeRangeChange(handler);
+      } catch {
+        // ignore if chart already removed
+      }
+    };
+  }, [chart, loaded]);
 
   const dc = DATASET_COLORS[colorIdx % DATASET_COLORS.length];
   const lineColor = SERIES_COLORS[colorIdx % SERIES_COLORS.length];
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div className="flex items-center gap-2 mb-1 text-xs font-mono text-gray-300 shrink-0">
+      <div className="relative flex items-center gap-2 mb-1 text-xs font-mono text-gray-300 shrink-0">
         {chartType === "candlestick" ? (
           <CandleDot upColor={dc.up} downColor={dc.down} />
         ) : (
@@ -698,6 +755,12 @@ function StackedRow({
           />
         )}
         {datasetLabel(loaded.dataset)}
+        {loaded.fetchingMore && (
+          <span className="ml-2 inline-flex items-center gap-1 text-gray-500">
+            <span className="inline-block w-2 h-2 border border-gray-500 border-t-transparent rounded-full animate-spin" />
+            loading older data…
+          </span>
+        )}
       </div>
       <div
         ref={containerRef}
@@ -861,6 +924,12 @@ function Legend({ loaded, chartType }: { loaded: LoadedSeries[]; chartType: Char
             )}
             <span>{datasetLabel(l.dataset)}</span>
             {l.isLoading && <span className="text-gray-500">(loading…)</span>}
+            {l.fetchingMore && (
+              <span className="inline-flex items-center gap-1 text-gray-500">
+                <span className="inline-block w-2 h-2 border border-gray-500 border-t-transparent rounded-full animate-spin" />
+                +more
+              </span>
+            )}
             {l.error ? (
               <span
                 className="text-red-400"
