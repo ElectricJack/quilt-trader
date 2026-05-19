@@ -562,11 +562,19 @@ function StackedCharts({ loaded, chartType }: SubChartProps) {
     const applyUnionRange = () => {
       const allTimes = loaded.flatMap((l) => l.rows.map((r) => r.time as number));
       if (allTimes.length > 0) {
-        const minTime = Math.min(...allTimes) as UTCTimestamp;
-        const maxTime = Math.max(...allTimes) as UTCTimestamp;
+        // Use a loop instead of Math.min/max spread to avoid stack overflow on
+        // large arrays (100k+ elements exceed the JS call stack limit).
+        let minTime = Infinity, maxTime = -Infinity;
+        for (const t of allTimes) {
+          if (t < minTime) minTime = t;
+          if (t > maxTime) maxTime = t;
+        }
         for (const c of live) {
           try {
-            c.timeScale().setVisibleRange({ from: minTime, to: maxTime });
+            c.timeScale().setVisibleRange({
+              from: minTime as UTCTimestamp,
+              to: maxTime as UTCTimestamp,
+            });
           } catch {
             // ignore if chart has no data yet
           }

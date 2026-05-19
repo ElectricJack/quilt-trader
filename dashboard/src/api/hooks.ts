@@ -772,20 +772,28 @@ export function useLiveSubStorageEstimate(
   });
 }
 
-/** Fetch market data, allowing `source` (provider or live source like `alpaca_live`). */
+/** Fetch market data, allowing `source` (provider or live source like `alpaca_live`).
+ *
+ * Defaults to `limit=5000` (most-recent bars) to prevent loading hundreds of
+ * thousands of rows for high-frequency timeframes.  Pass an explicit `limit` to
+ * override; set `limit` to a large number (e.g. 0 never sent, so omit) if you
+ * want uncapped data.
+ */
 export function useMarketDataSource(
   source: string | null,
   symbol: string | null,
   timeframe: string | null,
-  bars?: number
+  bars?: number,
+  limit = 5000
 ) {
   return useQuery({
-    queryKey: ["market-data-source", source, symbol, timeframe, bars ?? null] as const,
+    queryKey: ["market-data-source", source, symbol, timeframe, bars ?? null, limit] as const,
     queryFn: () =>
       api.getMarketDataWithSource(symbol!, {
         source: source!,
         timeframe: timeframe!,
         ...(bars !== undefined ? { bars } : {}),
+        limit,
       }),
     enabled: !!source && !!symbol && !!timeframe,
     staleTime: 30_000,

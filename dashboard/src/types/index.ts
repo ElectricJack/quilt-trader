@@ -393,6 +393,10 @@ export interface MarketDataBar {
 
 export interface MarketDataResponse {
   data: MarketDataBar[];
+  /** Total bars available in the dataset (before limit/windowing). */
+  total?: number;
+  /** True when the response was truncated to the requested limit. */
+  truncated?: boolean;
 }
 
 // ── Backtest Report ──

@@ -711,16 +711,41 @@ export const api = {
   },
   getMarketDataWithSource(
     symbol: string,
-    opts: { source?: string; provider?: string; timeframe?: string; bars?: number }
+    opts: { source?: string; provider?: string; timeframe?: string; bars?: number; limit?: number }
   ): Promise<MarketDataResponse> {
     const qs = new URLSearchParams();
     if (opts.source) qs.set("source", opts.source);
     if (opts.provider) qs.set("provider", opts.provider);
     if (opts.timeframe) qs.set("timeframe", opts.timeframe);
     if (opts.bars !== undefined) qs.set("bars", String(opts.bars));
+    if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
     const query = qs.toString();
     return request<MarketDataResponse>(
       `/api/data/market/${encodeURIComponent(symbol)}${query ? `?${query}` : ""}`
+    );
+  },
+
+  /** Windowed market data fetch — supports start/end filters and a row limit. */
+  getMarketDataPaged(
+    symbol: string,
+    opts: {
+      source?: string;
+      provider?: string;
+      timeframe?: string;
+      start?: string;
+      end?: string;
+      limit?: number;
+    }
+  ): Promise<MarketDataResponse> {
+    const qs = new URLSearchParams();
+    if (opts.source) qs.set("source", opts.source);
+    if (opts.provider) qs.set("provider", opts.provider);
+    if (opts.timeframe) qs.set("timeframe", opts.timeframe);
+    if (opts.start) qs.set("start", opts.start);
+    if (opts.end) qs.set("end", opts.end);
+    if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+    return request<MarketDataResponse>(
+      `/api/data/market/${encodeURIComponent(symbol)}?${qs}`
     );
   },
 
