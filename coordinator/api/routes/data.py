@@ -50,11 +50,17 @@ class DownloadRequest(BaseModel):
 
 
 @router.get("/market/{symbol}")
-async def get_market_data(symbol: str, timeframe: str = Query("1day"), provider: str = Query("polygon")):
+async def get_market_data(
+    symbol: str,
+    timeframe: str = Query("1day"),
+    provider: str = Query("polygon"),
+    source: Optional[str] = Query(None),
+):
+    resolved_provider = source or provider
     svc = get_data_service()
-    df = svc.load_market_data(provider, symbol, timeframe)
+    df = svc.load_market_data(resolved_provider, symbol, timeframe)
     if df is None:
-        raise HTTPException(status_code=404, detail=f"No data for {symbol}/{timeframe}")
+        raise HTTPException(status_code=404, detail=f"No data for {resolved_provider}/{symbol}/{timeframe}")
     return {"data": df.to_dict(orient="records")}
 
 
