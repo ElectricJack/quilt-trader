@@ -64,6 +64,11 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** `install_from_url` calls `pm.clone_repo` which fails with `fatal: destination path '...' already exists and is not an empty directory` whenever a previous install's on-disk package wasn't cleaned up. Common after DB migrations that drop algorithm rows without touching `data/packages/`, or after a partially-failed prior install.
 - **What's needed:** when the destination dir exists, detect that it's a valid git clone of the same repo and `git fetch origin && git reset --hard origin/<default-branch>` to bring it to the latest commit instead of cloning. If the dir exists but is NOT a clone of the expected repo, return a clear 409 with a message telling the user to remove it. Update `PackageManager.clone_repo` (or wrap it at the route layer).
 
+### Manifest `data:` block for custom data dependencies (scrapers, CSVs)
+- **Surfaced by:** backtest failure on alpha-picks-rebalancer (2026-05-19). The algo called `ctx.data("alpha-picks-scraper")` but the backtest runner couldn't find the file.
+- **Why deferred:** the immediate fix (smarter path resolution in `StandaloneDataProvider`) unblocks the user. The structural fix — declaring custom data deps in the manifest — requires design work on how scrapers + custom CSVs fit into the manifest schema alongside `assets:`.
+- **What's needed:** add a `data:` block to the manifest: `[{source: "alpha-picks-scraper", type: "scraper"}]`. The backtest runner pre-checks that all declared data sources exist before starting. The deploy flow ensures the scraper is registered and has run at least once. The system surfaces "missing data dependency" errors clearly instead of failing mid-backtest.
+
 ### Push updated `quilt.yaml` for `simple-ma-crossover` to upstream GitHub repo
 - **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
 - **Why deferred:** `data/packages/quilt-trader-test-algo/quilt.yaml` was updated locally to the new `assets:` format, but `data/packages/` is gitignored. A re-install from the upstream GitHub repo will revert to the old format.
