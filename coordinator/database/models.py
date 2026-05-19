@@ -46,7 +46,6 @@ class Account(Base):
     options_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     account_features: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     pdt_mode: Mapped[str] = mapped_column(String, nullable=False, default="off")
-    can_trade: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     locked_by: Mapped[Optional[str]] = mapped_column(String, ForeignKey("algorithm_instances.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
@@ -326,13 +325,16 @@ class AccountSnapshot(Base):
 
 class LiveSubscription(Base):
     __tablename__ = "live_subscriptions"
-    __table_args__ = (
-        UniqueConstraint("account_id", "symbol", name="uq_live_subscription_account_symbol"),
-    )
+    # No unique constraint: account_id can be NULL for provider-based subs,
+    # and SQLite has quirky NULL-in-unique behaviour. Uniqueness is enforced at
+    # the route level.
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
-    account_id: Mapped[str] = mapped_column(
-        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False,
+    account_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=True,
     )
+    # For provider-based subscriptions (no account). One of account_id or
+    # provider_type must be set; enforced at route level.
+    provider_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     broker: Mapped[str] = mapped_column(String, nullable=False)
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     asset_class: Mapped[str] = mapped_column(String, nullable=False, default="equities")
@@ -347,7 +349,7 @@ class LiveSubscription(Base):
         back_populates="subscription",
         cascade="all, delete-orphan",
     )
-    account: Mapped["Account"] = relationship()
+    account: Mapped[Optional["Account"]] = relationship()
 
 
 class SubscriptionConsumer(Base):
