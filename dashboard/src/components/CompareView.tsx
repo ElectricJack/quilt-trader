@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -18,7 +16,6 @@ import {
   type CandlestickData,
   type Time,
   type UTCTimestamp,
-  type LogicalRange,
   type Range,
   type MouseEventParams,
 } from "lightweight-charts";
@@ -39,21 +36,6 @@ export interface CompareDataset {
 
 export type CompareMode = "overlay" | "stacked";
 export type ChartType = "candlestick" | "line";
-
-interface Viewport {
-  /** Logical (index-based) range — preserved across chart re-mounts. */
-  logicalRange: LogicalRange | null;
-}
-
-interface ViewportCtxValue {
-  vp: Viewport;
-  setVisibleLogicalRange: (r: LogicalRange | null) => void;
-}
-
-const ViewportCtx = createContext<ViewportCtxValue>({
-  vp: { logicalRange: null },
-  setVisibleLogicalRange: () => {},
-});
 
 // Distinct line colors for up to ~8 datasets (used in line mode and legend).
 const SERIES_COLORS = [
@@ -192,53 +174,6 @@ function useLoadedSeries(datasets: CompareDataset[]): LoadedSeries[] {
 // ─── Shared chart wiring ──────────────────────────────────────────────────────
 
 /**
- * Wire one IChartApi instance to the viewport context: on mount, restore the
- * shared logical range; on visible-range change, push back into the context.
- *
- * NOTE: This hook is used only by overlay mode. Stacked + diff sync modes use
- * direct cross-chart subscription via syncTimeScales() instead, so that time
- * axes stay in lock-step without going through React state.
- */
-function useChartViewportSync(chart: IChartApi | null) {
-  const { vp, setVisibleLogicalRange } = useContext(ViewportCtx);
-  // True while we are programmatically applying a range to this chart so we
-  // don't echo it back into the context and trigger another round-trip.
-  const applyingRef = useRef(false);
-
-  // Restore range when a NEW chart instance appears (not on every vp change —
-  // doing so fights the user while they are actively panning).
-  useEffect(() => {
-    if (!chart) return;
-    if (vp.logicalRange) {
-      applyingRef.current = true;
-      try {
-        chart.timeScale().setVisibleLogicalRange(vp.logicalRange);
-      } catch {
-        // Ignore if data not yet present
-      }
-      applyingRef.current = false;
-    }
-    // Intentionally not including vp.logicalRange — we only restore on chart
-    // mount (when the chart ref itself changes), not on every pan.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chart]);
-
-  // Subscribe to range changes → push to context.
-  useEffect(() => {
-    if (!chart) return;
-    const handler = () => {
-      if (applyingRef.current) return;
-      const r = chart.timeScale().getVisibleLogicalRange();
-      if (r) setVisibleLogicalRange(r);
-    };
-    chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
-    return () => {
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
-    };
-  }, [chart, setVisibleLogicalRange]);
-}
-
-/**
  * Wire an array of chart instances so that panning/zooming any one of them
  * immediately moves all the others to the same TIME range.  Returns a
  * cleanup function that unsubscribes everything.
@@ -248,18 +183,27 @@ function useChartViewportSync(chart: IChartApi | null) {
  * over the same 12-hour window — show the same clock-time slice rather than
  * the same bar-index slice.
  *
- * Uses a shared `isSyncing` flag (not React state) to prevent infinite loops:
- * when chart A fires, we apply to B, C… but skip re-applying to A.
+ * Uses an "active source" approach to prevent feedback loops: once chart A
+ * starts a pan gesture, ALL range-change events from other charts are ignored
+ * until 50 ms of silence. This handles the case where
+ * `subscribeVisibleTimeRangeChange` fires asynchronously (next microtask) after
+ * `setVisibleRange`, which would bypass a simple boolean flag.
  */
 function syncTimeScales(charts: IChartApi[]): () => void {
   if (charts.length < 2) return () => {};
-  let isSyncing = false;
-  const handlers: Array<{ chart: IChartApi; handler: (range: Range<Time> | null) => void }> = [];
 
-  charts.forEach((src, i) => {
+  let activeSource: number | null = null;
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const handlers = charts.map((src, i) => {
     const handler = (range: Range<Time> | null) => {
-      if (isSyncing || !range) return;
-      isSyncing = true;
+      if (!range) return;
+      // If a different chart is the active source, this event is an echo — ignore it.
+      if (activeSource !== null && activeSource !== i) return;
+
+      activeSource = i;
+      if (resetTimer) clearTimeout(resetTimer);
+
       charts.forEach((dst, j) => {
         if (i === j) return;
         try {
@@ -268,20 +212,23 @@ function syncTimeScales(charts: IChartApi[]): () => void {
           // chart may have no data in this time range yet
         }
       });
-      isSyncing = false;
+
+      // Release the active source after a short delay so async echoes are caught.
+      resetTimer = setTimeout(() => { activeSource = null; }, 50);
     };
     src.timeScale().subscribeVisibleTimeRangeChange(handler);
-    handlers.push({ chart: src, handler });
+    return handler;
   });
 
   return () => {
-    for (const { chart, handler } of handlers) {
+    if (resetTimer) clearTimeout(resetTimer);
+    charts.forEach((chart, i) => {
       try {
-        chart.timeScale().unsubscribeVisibleTimeRangeChange(handler);
+        chart.timeScale().unsubscribeVisibleTimeRangeChange(handlers[i]);
       } catch {
         // already removed
       }
-    }
+    });
   };
 }
 
@@ -295,6 +242,9 @@ function syncTimeScales(charts: IChartApi[]): () => void {
  * vertical time line appears on the target charts (their Y axes are independent
  * anyway).
  *
+ * Uses an "active source" approach (matching syncTimeScales) so that synthetic
+ * crosshair events emitted by target charts don't echo back to the source.
+ *
  * Returns a cleanup function that unsubscribes all handlers.
  */
 function syncCrosshairs(
@@ -302,13 +252,18 @@ function syncCrosshairs(
   seriesRefs: (AnySeries | null)[],
 ): () => void {
   if (charts.length < 2) return () => {};
-  let isSyncing = false;
-  const cleanups: (() => void)[] = [];
 
-  charts.forEach((src, i) => {
+  let activeSource: number | null = null;
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const handlers = charts.map((src, i) => {
     const handler = (param: MouseEventParams) => {
-      if (isSyncing) return;
-      isSyncing = true;
+      // If a different chart is the active source, this is an echo — ignore it.
+      if (activeSource !== null && activeSource !== i) return;
+
+      activeSource = i;
+      if (resetTimer) clearTimeout(resetTimer);
+
       charts.forEach((dst, j) => {
         if (i === j) return;
         const series = seriesRefs[j];
@@ -327,19 +282,24 @@ function syncCrosshairs(
           }
         }
       });
-      isSyncing = false;
+
+      // Release the active source after a short delay so async echoes are caught.
+      resetTimer = setTimeout(() => { activeSource = null; }, 50);
     };
     src.subscribeCrosshairMove(handler);
-    cleanups.push(() => {
+    return { src, handler };
+  });
+
+  return () => {
+    if (resetTimer) clearTimeout(resetTimer);
+    for (const { src, handler } of handlers) {
       try {
         src.unsubscribeCrosshairMove(handler);
       } catch {
         // already removed
       }
-    });
-  });
-
-  return () => cleanups.forEach((fn) => fn());
+    }
+  };
 }
 
 /** Base chart options shared by all sub-charts. */
@@ -457,8 +417,6 @@ function OverlayChart({ loaded, chartType, onChartReady }: OverlayChartProps) {
       onChartReadyRef.current?.(null);
     };
   }, []);
-
-  useChartViewportSync(chart);
 
   // (Re)build series whenever `loaded` or `chartType` changes.
   useEffect(() => {
@@ -582,59 +540,12 @@ function StackedCharts({ loaded, chartType, onChartsReady }: StackedChartsProps)
   const onChartsReadyRef = useRef(onChartsReady);
   useEffect(() => { onChartsReadyRef.current = onChartsReady; });
 
+  // Propagate chart refs to parent whenever the set of live charts changes so
+  // the parent-level syncTimeScales + syncCrosshairs can re-wire everything.
   useEffect(() => {
-    const live = chartsRef.current.filter((c): c is IChartApi => c != null);
-    if (live.length < 2) return;
-
-    // Helper: align all live charts to the union of their data extents.
-    const applyUnionRange = () => {
-      const allTimes = loaded.flatMap((l) => l.rows.map((r) => r.time as number));
-      if (allTimes.length > 0) {
-        // Use a loop instead of Math.min/max spread to avoid stack overflow on
-        // large arrays (100k+ elements exceed the JS call stack limit).
-        let minTime = Infinity, maxTime = -Infinity;
-        for (const t of allTimes) {
-          if (t < minTime) minTime = t;
-          if (t > maxTime) maxTime = t;
-        }
-        for (const c of live) {
-          try {
-            c.timeScale().setVisibleRange({
-              from: minTime as UTCTimestamp,
-              to: maxTime as UTCTimestamp,
-            });
-          } catch {
-            // ignore if chart has no data yet
-          }
-        }
-      }
-    };
-
-    // Align immediately (catches cases where data is already present).
-    applyUnionRange();
-
-    // Re-align after a short delay to catch any late data loads — the series
-    // data may arrive slightly after the chart instance is created, causing
-    // the initial alignment to see empty rows for some charts.
-    const timerId = setTimeout(applyUnionRange, 100);
-
-    const liveSeries = seriesRef.current.filter((_s, idx) =>
-      chartsRef.current[idx] != null
-    );
-
-    const cleanupTimeScales = syncTimeScales(live);
-    const cleanupCrosshairs = syncCrosshairs(live, liveSeries);
-
-    // Propagate current chart refs to parent.
     onChartsReadyRef.current?.([...chartsRef.current], [...seriesRef.current]);
-
-    return () => {
-      clearTimeout(timerId);
-      cleanupTimeScales();
-      cleanupCrosshairs();
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncVersion, loaded]);
+  }, [syncVersion]);
 
   return (
     <div className="flex flex-col h-full gap-1">
@@ -1033,21 +944,12 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
   const [showDiff, setShowDiff] = useState(false);
   const [chartType, setChartType] = useState<ChartType>("candlestick");
 
-  const [vp, setVp] = useState<Viewport>({ logicalRange: null });
-  const setVisibleLogicalRange = useCallback((r: LogicalRange | null) => {
-    setVp({ logicalRange: r });
-  }, []);
-
   const loaded = useLoadedSeries(datasets);
 
-  const ctxValue = useMemo(
-    () => ({ vp, setVisibleLogicalRange }),
-    [vp, setVisibleLogicalRange]
-  );
-
-  // ── Cross-component time sync for diff panel ──────────────────────────────
-  // We collect one "main" chart ref (from overlay or stacked) and the diff
-  // chart ref, then wire them together with syncTimeScales + syncCrosshairs.
+  // ── Single authoritative cross-chart sync ────────────────────────────────
+  // All time-scale and crosshair sync is wired HERE and nowhere else.
+  // Child components only collect chart refs and notify this parent via the
+  // onChartReady / onChartsReady callbacks below.
 
   // For overlay mode: the single overlay chart instance.
   const overlayChartRef = useRef<IChartApi | null>(null);
@@ -1061,33 +963,37 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
   const diffSeriesRef = useRef<AnySeries | null>(null);
 
   // Version counter bumped whenever any chart ref changes so the sync effect
-  // re-runs and re-wires all charts including the new diff chart.
-  const [diffSyncVersion, setDiffSyncVersion] = useState(0);
-  const bumpDiffSync = useCallback(() => setDiffSyncVersion((v) => v + 1), []);
+  // re-runs and re-wires all charts.
+  const [syncVersion, setSyncVersion] = useState(0);
+  const bumpSync = useCallback(() => setSyncVersion((v) => v + 1), []);
 
-  // Wire diff chart to main charts whenever any chart ref changes or
-  // showDiff toggles on/off.
+  // Wire ALL charts together whenever chart refs or mode changes.
+  // This is the ONE AND ONLY sync subscription — no child components set up
+  // their own syncTimeScales / syncCrosshairs calls.
   useEffect(() => {
-    if (!showDiff || !diffChartRef.current) return;
+    const allCharts: IChartApi[] = [];
+    const allSeries: (AnySeries | null)[] = [];
 
-    const mainCharts: IChartApi[] = [];
-    const mainSeries: (AnySeries | null)[] = [];
-
-    if (mode === "overlay" && overlayChartRef.current) {
-      mainCharts.push(overlayChartRef.current);
-      mainSeries.push(null); // overlay has no single primary series for crosshair
-    } else if (mode === "stacked") {
+    if (mode === "overlay") {
+      if (overlayChartRef.current) {
+        allCharts.push(overlayChartRef.current);
+        allSeries.push(null); // overlay has no single primary series for crosshair
+      }
+    } else {
+      // stacked mode
       for (let i = 0; i < stackedChartsRef.current.length; i++) {
         const c = stackedChartsRef.current[i];
         if (c) {
-          mainCharts.push(c);
-          mainSeries.push(stackedSeriesRef.current[i] ?? null);
+          allCharts.push(c);
+          allSeries.push(stackedSeriesRef.current[i] ?? null);
         }
       }
     }
 
-    const allCharts = [...mainCharts, diffChartRef.current];
-    const allSeries: (AnySeries | null)[] = [...mainSeries, diffSeriesRef.current];
+    if (showDiff && diffChartRef.current) {
+      allCharts.push(diffChartRef.current);
+      allSeries.push(diffSeriesRef.current);
+    }
 
     const cleanupTimeScales = syncTimeScales(allCharts);
     const cleanupCrosshairs = syncCrosshairs(allCharts, allSeries);
@@ -1097,7 +1003,7 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
       cleanupCrosshairs();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showDiff, mode, diffSyncVersion]);
+  }, [showDiff, mode, syncVersion]);
 
   if (datasets.length === 0) {
     return (
@@ -1110,65 +1016,63 @@ export function CompareView({ datasets, mode: modeProp, onModeChange }: CompareV
   const diffAvailable = datasets.length >= 2;
 
   return (
-    <ViewportCtx.Provider value={ctxValue}>
-      <div className="flex flex-col h-full gap-3">
-        <ModeBar
-          mode={mode}
-          setMode={setMode}
-          showDiff={showDiff}
-          setShowDiff={(d) => {
-            setShowDiff(d);
-            bumpDiffSync();
-          }}
-          diffAvailable={diffAvailable}
-          chartType={chartType}
-          setChartType={setChartType}
-        />
+    <div className="flex flex-col h-full gap-3">
+      <ModeBar
+        mode={mode}
+        setMode={setMode}
+        showDiff={showDiff}
+        setShowDiff={(d) => {
+          setShowDiff(d);
+          bumpSync();
+        }}
+        diffAvailable={diffAvailable}
+        chartType={chartType}
+        setChartType={setChartType}
+      />
 
-        {/* Chart area: flex column, main view + optional diff panel below.
-            Use calc-based explicit heights to avoid flex-chain collapse. */}
-        <div className="flex flex-col" style={{ height: "calc(100vh - 180px)" }}>
-          {/* Main view */}
-          <div style={{ height: showDiff && diffAvailable ? "70%" : "100%" }}>
-            {mode === "overlay" ? (
-              <OverlayChart
-                loaded={loaded}
-                chartType={chartType}
-                onChartReady={(chart) => {
-                  overlayChartRef.current = chart;
-                  bumpDiffSync();
-                }}
-              />
-            ) : (
-              <StackedCharts
-                loaded={loaded}
-                chartType={chartType}
-                onChartsReady={(charts, series) => {
-                  stackedChartsRef.current = charts;
-                  stackedSeriesRef.current = series;
-                  bumpDiffSync();
-                }}
-              />
-            )}
-          </div>
-
-          {/* Diff panel — 30% height, shown when showDiff is on */}
-          {showDiff && diffAvailable && (
-            <div style={{ height: "30%" }} className="border-t border-gray-700">
-              <DiffChart
-                loaded={loaded}
-                chartType={chartType}
-                onChartReady={(chart, series) => {
-                  diffChartRef.current = chart;
-                  diffSeriesRef.current = series;
-                  bumpDiffSync();
-                }}
-              />
-            </div>
+      {/* Chart area: flex column, main view + optional diff panel below.
+          Use calc-based explicit heights to avoid flex-chain collapse. */}
+      <div className="flex flex-col" style={{ height: "calc(100vh - 180px)" }}>
+        {/* Main view */}
+        <div style={{ height: showDiff && diffAvailable ? "70%" : "100%" }}>
+          {mode === "overlay" ? (
+            <OverlayChart
+              loaded={loaded}
+              chartType={chartType}
+              onChartReady={(chart) => {
+                overlayChartRef.current = chart;
+                bumpSync();
+              }}
+            />
+          ) : (
+            <StackedCharts
+              loaded={loaded}
+              chartType={chartType}
+              onChartsReady={(charts, series) => {
+                stackedChartsRef.current = charts;
+                stackedSeriesRef.current = series;
+                bumpSync();
+              }}
+            />
           )}
         </div>
+
+        {/* Diff panel — 30% height, shown when showDiff is on */}
+        {showDiff && diffAvailable && (
+          <div style={{ height: "30%" }} className="border-t border-gray-700">
+            <DiffChart
+              loaded={loaded}
+              chartType={chartType}
+              onChartReady={(chart, series) => {
+                diffChartRef.current = chart;
+                diffSeriesRef.current = series;
+                bumpSync();
+              }}
+            />
+          </div>
+        )}
       </div>
-    </ViewportCtx.Provider>
+    </div>
   );
 }
 
