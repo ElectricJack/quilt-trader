@@ -8,6 +8,7 @@ import click
 from sdk.cli.client import CoordinatorClient, CLIError
 from sdk.cli.config import resolve_coordinator_url
 from sdk.cli.output import print_json, print_table, fail
+from sdk.cli.resolve import _short_id, resolve_id
 
 
 def _client(ctx) -> CoordinatorClient:
@@ -20,6 +21,11 @@ def _run(coro):
         return asyncio.run(coro)
     except CLIError as e:
         fail(e.code, str(e))
+
+
+async def _resolve_account_id(ctx, name_or_id: str) -> str:
+    """Resolve an account name, short ID prefix, or full UUID to the actual ID."""
+    return await resolve_id(_client(ctx), name_or_id, "/api/accounts", "name", "account")
 
 
 @click.group("account")
@@ -41,6 +47,8 @@ def account_list(ctx):
     if ctx.obj.get("json_mode"):
         print_json(rows)
     else:
+        for r in rows:
+            r["id"] = _short_id(r.get("id", ""))
         print_table(
             rows,
             columns=["id", "name", "broker_type", "environment", "options_level", "locked_by"],
@@ -48,10 +56,11 @@ def account_list(ctx):
 
 
 @account_group.command("show")
-@click.argument("account_id")
+@click.argument("account")
 @click.pass_context
-def account_show(ctx, account_id):
-    """Show details for one account."""
+def account_show(ctx, account):
+    """Show details for one account (accepts name, short ID, or full UUID)."""
+    account_id = _run(_resolve_account_id(ctx, account))
     async def go():
         c = _client(ctx)
         try:
@@ -123,14 +132,15 @@ def account_create(
 
 
 @account_group.command("update")
-@click.argument("account_id")
+@click.argument("account")
 @click.option("--name", default=None, help="New display name.")
 @click.option("--api-key", default=None, help="Updated API key.")
 @click.option("--secret-key", default=None, help="Updated secret key.")
 @click.option("--access-token", default=None, help="Updated access token.")
 @click.pass_context
-def account_update(ctx, account_id, name, api_key, secret_key, access_token):
-    """Update an existing account's name or credentials."""
+def account_update(ctx, account, name, api_key, secret_key, access_token):
+    """Update an existing account's name or credentials (accepts name, short ID, or full UUID)."""
+    account_id = _run(_resolve_account_id(ctx, account))
     payload: dict = {}
     if name:
         payload["name"] = name
@@ -161,9 +171,9 @@ def account_update(ctx, account_id, name, api_key, secret_key, access_token):
 
 
 @account_group.command("unlock")
-@click.argument("account_id")
+@click.argument("account")
 @click.pass_context
-def account_unlock(ctx, account_id):
+def account_unlock(ctx, account):
     """Clear the locked_by field on an account (force-release from a stopped instance)."""
     # The accounts API does not expose a dedicated /unlock endpoint.
     # PATCH with locked_by is not in the AccountUpdate schema either — the backend
@@ -179,14 +189,14 @@ def account_unlock(ctx, account_id):
 
 
 @account_group.command("delete")
-@click.argument("account_id")
+@click.argument("account")
 @click.option("--yes", is_flag=True, help="Confirm deletion.")
 @click.pass_context
-def account_delete(ctx, account_id, yes):
-    """Delete an account and all its associated data."""
+def account_delete(ctx, account, yes):
+    """Delete an account and all its associated data (accepts name, short ID, or full UUID)."""
     if not yes:
         fail(2, "refusing to delete without --yes")
-
+    account_id = _run(_resolve_account_id(ctx, account))
     async def go():
         c = _client(ctx)
         try:

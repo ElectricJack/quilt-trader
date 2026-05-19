@@ -9,6 +9,7 @@ import click
 from sdk.cli.client import CoordinatorClient, CLIError
 from sdk.cli.config import resolve_coordinator_url
 from sdk.cli.output import print_json, print_table, fail
+from sdk.cli.resolve import _short_id, resolve_deployment_id
 
 
 def _client(ctx) -> CoordinatorClient:
@@ -51,15 +52,18 @@ def deployment_list(ctx, algorithm_id, worker_id, account_id, status):
     if ctx.obj.get("json_mode"):
         print_json(rows)
     else:
+        for r in rows:
+            r["id"] = _short_id(r.get("id", ""))
         print_table(rows, columns=["id", "algorithm_name", "account_name",
                                     "worker_name", "status", "active_run_id"])
 
 
 @deployment_group.command("show")
-@click.argument("deployment_id")
+@click.argument("deployment")
 @click.pass_context
-def deployment_show(ctx, deployment_id):
-    """Show one deployment."""
+def deployment_show(ctx, deployment):
+    """Show one deployment (accepts algorithm name, short ID, or full UUID)."""
+    deployment_id = _run(resolve_deployment_id(_client(ctx), deployment))
     async def go():
         c = _client(ctx)
         try:
@@ -103,10 +107,11 @@ def deployment_create(ctx, algorithm_id, account_id, worker_id, config_values):
 
 
 @deployment_group.command("start")
-@click.argument("deployment_id")
+@click.argument("deployment")
 @click.pass_context
-def deployment_start(ctx, deployment_id):
-    """Start a deployment."""
+def deployment_start(ctx, deployment):
+    """Start a deployment (accepts algorithm name, short ID, or full UUID)."""
+    deployment_id = _run(resolve_deployment_id(_client(ctx), deployment))
     async def go():
         c = _client(ctx)
         try:
@@ -121,10 +126,11 @@ def deployment_start(ctx, deployment_id):
 
 
 @deployment_group.command("stop")
-@click.argument("deployment_id")
+@click.argument("deployment")
 @click.pass_context
-def deployment_stop(ctx, deployment_id):
-    """Stop a deployment."""
+def deployment_stop(ctx, deployment):
+    """Stop a deployment (accepts algorithm name, short ID, or full UUID)."""
+    deployment_id = _run(resolve_deployment_id(_client(ctx), deployment))
     async def go():
         c = _client(ctx)
         try:
@@ -136,13 +142,14 @@ def deployment_stop(ctx, deployment_id):
 
 
 @deployment_group.command("delete")
-@click.argument("deployment_id")
+@click.argument("deployment")
 @click.option("--yes", is_flag=True)
 @click.pass_context
-def deployment_delete(ctx, deployment_id, yes):
-    """Delete a deployment."""
+def deployment_delete(ctx, deployment, yes):
+    """Delete a deployment (accepts algorithm name, short ID, or full UUID)."""
     if not yes:
         fail(2, "refusing to delete without --yes")
+    deployment_id = _run(resolve_deployment_id(_client(ctx), deployment))
     async def go():
         c = _client(ctx)
         try:
@@ -154,10 +161,11 @@ def deployment_delete(ctx, deployment_id, yes):
 
 
 @deployment_group.command("runs")
-@click.argument("deployment_id")
+@click.argument("deployment")
 @click.pass_context
-def deployment_runs(ctx, deployment_id):
-    """List runs for a deployment."""
+def deployment_runs(ctx, deployment):
+    """List runs for a deployment (accepts algorithm name, short ID, or full UUID)."""
+    deployment_id = _run(resolve_deployment_id(_client(ctx), deployment))
     async def go():
         c = _client(ctx)
         try:
@@ -173,11 +181,12 @@ def deployment_runs(ctx, deployment_id):
 
 
 @deployment_group.command("report")
-@click.argument("deployment_id")
+@click.argument("deployment")
 @click.option("--run", "run_id", default=None)
 @click.pass_context
-def deployment_report(ctx, deployment_id, run_id):
-    """Show the deployment report (KPIs / equity curve)."""
+def deployment_report(ctx, deployment, run_id):
+    """Show the deployment report (KPIs / equity curve) (accepts algorithm name, short ID, or full UUID)."""
+    deployment_id = _run(resolve_deployment_id(_client(ctx), deployment))
     params = {"run_id": run_id} if run_id else {}
     async def go():
         c = _client(ctx)
@@ -199,12 +208,13 @@ def deployment_report(ctx, deployment_id, run_id):
 
 
 @deployment_group.command("trades")
-@click.argument("deployment_id")
+@click.argument("deployment")
 @click.option("-n", "limit", default=100, type=int)
 @click.option("--run", "run_id", default=None)
 @click.pass_context
-def deployment_trades(ctx, deployment_id, limit, run_id):
-    """List trades for a deployment."""
+def deployment_trades(ctx, deployment, limit, run_id):
+    """List trades for a deployment (accepts algorithm name, short ID, or full UUID)."""
+    deployment_id = _run(resolve_deployment_id(_client(ctx), deployment))
     params = {"limit": limit}
     if run_id:
         params["run_id"] = run_id
@@ -224,15 +234,16 @@ def deployment_trades(ctx, deployment_id, limit, run_id):
 
 
 @deployment_group.command("activity")
-@click.argument("deployment_id")
+@click.argument("deployment")
 @click.option("--follow", "-f", is_flag=True, default=False)
 @click.option("--severity", default="info")
 @click.option("--kind", default="all", type=click.Choice(["all", "event", "log"]))
 @click.option("-n", "limit", default=100, type=int)
 @click.option("--no-history", is_flag=True, default=False)
 @click.pass_context
-def deployment_activity(ctx, deployment_id, follow, severity, kind, limit, no_history):
-    """Show or follow activity events for a deployment."""
+def deployment_activity(ctx, deployment, follow, severity, kind, limit, no_history):
+    """Show or follow activity events for a deployment (accepts algorithm name, short ID, or full UUID)."""
+    deployment_id = _run(resolve_deployment_id(_client(ctx), deployment))
     coord_url = resolve_coordinator_url(ctx.obj.get("coord_url"))
 
     if follow:
@@ -254,7 +265,7 @@ def deployment_activity(ctx, deployment_id, follow, severity, kind, limit, no_hi
         ))
         raise SystemExit(code)
 
-    # Non-follow path (unchanged from C5.1)
+    # Non-follow path
     params = {"limit": limit, "severity": severity, "kind": kind}
     async def go():
         c = _client(ctx)

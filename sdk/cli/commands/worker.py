@@ -8,6 +8,7 @@ import click
 from sdk.cli.client import CoordinatorClient, CLIError
 from sdk.cli.config import resolve_coordinator_url
 from sdk.cli.output import print_json, print_table, fail
+from sdk.cli.resolve import _short_id, resolve_id
 
 
 def _client(ctx) -> CoordinatorClient:
@@ -24,26 +25,7 @@ def _run(coro):
 
 async def _resolve_worker_id(ctx, name_or_id: str) -> str:
     """Resolve a worker name, short ID prefix, or full UUID to the actual ID."""
-    c = _client(ctx)
-    try:
-        workers = await c.get("/api/workers")
-    finally:
-        await c.aclose()
-    # Exact name match (case-insensitive)
-    for w in workers:
-        if w["name"].lower() == name_or_id.lower():
-            return w["id"]
-    # ID prefix match
-    matches = [w for w in workers if w["id"].startswith(name_or_id)]
-    if len(matches) == 1:
-        return matches[0]["id"]
-    if len(matches) > 1:
-        fail(2, f"Ambiguous ID prefix '{name_or_id}' — matches {len(matches)} workers. Use a longer prefix or the worker name.")
-    fail(2, f"No worker found matching '{name_or_id}'")
-
-
-def _short_id(uuid_str: str, length: int = 8) -> str:
-    return uuid_str[:length] if uuid_str else "—"
+    return await resolve_id(_client(ctx), name_or_id, "/api/workers", "name", "worker")
 
 
 @click.group("worker")
