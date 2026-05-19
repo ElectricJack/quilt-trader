@@ -149,10 +149,10 @@ class BacktestEngine:
                         pd.Timedelta(seconds=tf_duration).to_pytimedelta())
             ctx.set_sim_time(sim_time)
             # Update context with current account state for the algorithm's `ctx.positions/cash` reads
-            ctx_positions = self._positions_for_context(positions, bar)
+            ctx_positions = self._positions_for_context(positions, bar, ctx=ctx, sim_time=sim_time)
             ctx.update_account(
                 cash=cash,
-                account_value=cash + self._positions_market_value(positions, bar),
+                account_value=cash + self._positions_market_value(positions, bar, ctx=ctx, sim_time=sim_time),
                 buying_power=cash,
                 positions=ctx_positions,
             )
@@ -250,9 +250,9 @@ class BacktestEngine:
             pending = still_pending
 
             # ---- 3. Mark-to-market equity point ----
-            mtm_value = cash + self._positions_market_value(positions, bar)
+            mtm_value = cash + self._positions_market_value(positions, bar, ctx=ctx, sim_time=sim_time)
             observer.on_equity_point(
-                sim_time, mtm_value, cash, self._positions_snapshot(positions, bar),
+                sim_time, mtm_value, cash, self._positions_snapshot(positions, bar, ctx=ctx, sim_time=sim_time),
             )
 
             if progress is not None and bar_idx % 100 == 0:
@@ -265,7 +265,7 @@ class BacktestEngine:
             total_signals=all_signals_count,
             total_fills=len(all_fills),
             final_cash=cash,
-            final_portfolio_value=cash + self._positions_market_value(positions, clock.iloc[-1]),
+            final_portfolio_value=cash + self._positions_market_value(positions, clock.iloc[-1], ctx=ctx, sim_time=sim_time),
         ))
 
     # ---- Fill simulation ----
@@ -427,33 +427,46 @@ class BacktestEngine:
             del positions[key]
         return cash
 
-    def _positions_market_value(self, positions: dict, bar) -> float:
-        # v1 simplification: use the clock bar's close as the price proxy for ALL held positions.
-        # Multi-symbol with different clocks would need per-symbol lookup — out of scope for v1.
-        close = float(bar["close"])
-        return sum(ps.quantity * close for ps in positions.values())
+    def _lookup_symbol_close(self, sym: str, sim_time, ctx, fallback_bar) -> float:
+        """Get the most recent close price for a symbol from its own data series.
+        Falls back to the clock bar's close (which may be 0 for synthetic clocks)."""
+        if ctx is not None:
+            for (src, s, tf), df in ctx._bars.items():
+                if s == sym and not df.empty:
+                    ts_col = pd.to_datetime(df["timestamp"])
+                    if ts_col.dt.tz is not None:
+                        ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                    cutoff = pd.Timestamp(sim_time).tz_localize(None) if hasattr(sim_time, 'tzinfo') and sim_time.tzinfo else pd.Timestamp(sim_time)
+                    at_time = ts_col <= cutoff
+                    if at_time.any():
+                        return float(df.loc[at_time].iloc[-1]["close"])
+                    break
+        return float(fallback_bar["close"]) if fallback_bar is not None else 0.0
 
-    def _positions_snapshot(self, positions: dict, bar) -> list[dict]:
-        close = float(bar["close"])
+    def _positions_market_value(self, positions: dict, bar, ctx=None, sim_time=None) -> float:
+        total = 0.0
+        for (sym,), ps in positions.items():
+            price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            total += ps.quantity * price
+        return total
+
+    def _positions_snapshot(self, positions: dict, bar, ctx=None, sim_time=None) -> list[dict]:
         return [
             {"symbol": k[0], "quantity": ps.quantity, "avg_price": ps.avg_price,
-             "current_price": close, "market_value": ps.quantity * close,
+             "current_price": self._lookup_symbol_close(k[0], sim_time, ctx, bar),
+             "market_value": ps.quantity * self._lookup_symbol_close(k[0], sim_time, ctx, bar),
              "asset_type": ps.asset_type}
             for k, ps in positions.items()
         ]
 
-    def _positions_for_context(self, positions: dict, bar=None) -> dict:
-        """Convert internal state to sdk.models.Position dict the algorithm reads via ctx.positions.
-
-        The SDK's Position dataclass uses `avg_cost` and `current_price` (not `avg_price`).
-        We use the current bar's close as the current_price proxy. If no bar is provided
-        (edge case), we fall back to avg_price.
-        """
+    def _positions_for_context(self, positions: dict, bar=None, ctx=None, sim_time=None) -> dict:
+        """Convert internal state to sdk.models.Position dict the algorithm reads via ctx.positions."""
         from sdk.models import Position
-        close = float(bar["close"]) if bar is not None else None
         out: dict = {}
         for (sym,), ps in positions.items():
-            current_price = close if close is not None else ps.avg_price
+            current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            if current_price == 0.0:
+                current_price = ps.avg_price
             try:
                 out[sym] = Position(
                     symbol=sym,
