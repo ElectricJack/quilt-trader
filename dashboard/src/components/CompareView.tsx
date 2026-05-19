@@ -233,32 +233,40 @@ function useLoadedSeries(datasets: CompareDataset[]): LoadedSeries[] {
 /**
  * Wire one IChartApi instance to the viewport context: on mount, restore the
  * shared logical range; on visible-range change, push back into the context.
+ *
+ * NOTE: This hook is used only by single-chart modes (overlay, diff). Stacked
+ * mode uses direct cross-chart subscription via syncTimeScales() instead, so
+ * that time axes stay in lock-step without going through React state.
  */
 function useChartViewportSync(chart: IChartApi | null) {
   const { vp, setVisibleLogicalRange } = useContext(ViewportCtx);
-  const ignoreNextRef = useRef(false);
+  // True while we are programmatically applying a range to this chart so we
+  // don't echo it back into the context and trigger another round-trip.
+  const applyingRef = useRef(false);
 
-  // Restore range when chart appears.
+  // Restore range when a NEW chart instance appears (not on every vp change —
+  // doing so fights the user while they are actively panning).
   useEffect(() => {
     if (!chart) return;
     if (vp.logicalRange) {
-      ignoreNextRef.current = true;
+      applyingRef.current = true;
       try {
         chart.timeScale().setVisibleLogicalRange(vp.logicalRange);
       } catch {
         // Ignore if data not yet present
       }
+      applyingRef.current = false;
     }
-  }, [chart, vp.logicalRange]);
+    // Intentionally not including vp.logicalRange — we only restore on chart
+    // mount (when the chart ref itself changes), not on every pan.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chart]);
 
   // Subscribe to range changes → push to context.
   useEffect(() => {
     if (!chart) return;
     const handler = () => {
-      if (ignoreNextRef.current) {
-        ignoreNextRef.current = false;
-        return;
-      }
+      if (applyingRef.current) return;
       const r = chart.timeScale().getVisibleLogicalRange();
       if (r) setVisibleLogicalRange(r);
     };
@@ -267,6 +275,48 @@ function useChartViewportSync(chart: IChartApi | null) {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
     };
   }, [chart, setVisibleLogicalRange]);
+}
+
+/**
+ * Wire an array of chart instances so that panning/zooming any one of them
+ * immediately moves all the others to the same logical range.  Returns a
+ * cleanup function that unsubscribes everything.
+ *
+ * Uses a shared `isSyncing` flag (not React state) to prevent infinite loops:
+ * when chart A fires, we apply to B, C… but skip re-applying to A.
+ */
+function syncTimeScales(charts: IChartApi[]): () => void {
+  if (charts.length < 2) return () => {};
+  let isSyncing = false;
+  const handlers: Array<{ chart: IChartApi; handler: (range: LogicalRange | null) => void }> = [];
+
+  charts.forEach((src, i) => {
+    const handler = (range: LogicalRange | null) => {
+      if (isSyncing || !range) return;
+      isSyncing = true;
+      charts.forEach((dst, j) => {
+        if (i === j) return;
+        try {
+          dst.timeScale().setVisibleLogicalRange(range);
+        } catch {
+          // chart may have been removed
+        }
+      });
+      isSyncing = false;
+    };
+    src.timeScale().subscribeVisibleLogicalRangeChange(handler);
+    handlers.push({ chart: src, handler });
+  });
+
+  return () => {
+    for (const { chart, handler } of handlers) {
+      try {
+        chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+      } catch {
+        // already removed
+      }
+    }
+  };
 }
 
 /** Base chart options shared by all sub-charts. */
@@ -419,7 +469,7 @@ function OverlayChart({ loaded, chartType }: SubChartProps) {
       <Legend loaded={loaded} chartType={chartType} />
       <div
         ref={containerRef}
-        className="w-full rounded-lg overflow-hidden border border-gray-800"
+        className="w-full rounded-lg border border-gray-800"
         style={{ height: 420 }}
       />
     </div>
@@ -429,6 +479,46 @@ function OverlayChart({ loaded, chartType }: SubChartProps) {
 // ─── StackedCharts ────────────────────────────────────────────────────────────
 
 function StackedCharts({ loaded, chartType }: SubChartProps) {
+  // Collect chart instances from each row so we can wire cross-chart time sync.
+  const chartsRef = useRef<(IChartApi | null)[]>([]);
+
+  // Called by each StackedRow when its chart is created or destroyed.
+  const onChartReady = useCallback(
+    (index: number, chart: IChartApi | null) => {
+      chartsRef.current[index] = chart;
+    },
+    []
+  );
+
+  // Re-run sync wiring whenever the set of live charts changes.
+  // We track changes via a version counter that rows increment on mount/unmount.
+  const [syncVersion, setSyncVersion] = useState(0);
+  const bumpSync = useCallback(() => setSyncVersion((v) => v + 1), []);
+
+  useEffect(() => {
+    const live = chartsRef.current.filter((c): c is IChartApi => c != null);
+    if (live.length < 2) return;
+
+    // Align all charts to the union of their data extents before syncing, so
+    // they start showing the same time window even if data spans differ.
+    const allTimes = loaded.flatMap((l) => l.rows.map((r) => r.time as number));
+    if (allTimes.length > 0) {
+      const minTime = Math.min(...allTimes) as UTCTimestamp;
+      const maxTime = Math.max(...allTimes) as UTCTimestamp;
+      for (const c of live) {
+        try {
+          c.timeScale().setVisibleRange({ from: minTime, to: maxTime });
+        } catch {
+          // ignore if chart has no data yet
+        }
+      }
+    }
+
+    const cleanup = syncTimeScales(live);
+    return cleanup;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncVersion, loaded]);
+
   return (
     <div className="space-y-3">
       {loaded.map((l, i) => (
@@ -437,6 +527,10 @@ function StackedCharts({ loaded, chartType }: SubChartProps) {
           loaded={l}
           colorIdx={i}
           chartType={chartType}
+          onChartReady={(c) => {
+            onChartReady(i, c);
+            bumpSync();
+          }}
         />
       ))}
     </div>
@@ -447,15 +541,20 @@ function StackedRow({
   loaded,
   colorIdx,
   chartType,
+  onChartReady,
 }: {
   loaded: LoadedSeries;
   colorIdx: number;
   chartType: ChartType;
+  onChartReady: (chart: IChartApi | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [chart, setChart] = useState<IChartApi | null>(null);
   const seriesRef = useRef<AnySeries | null>(null);
   const didFitRef = useRef(false);
+  // Stable ref so the cleanup in useEffect can call the latest onChartReady.
+  const onChartReadyRef = useRef(onChartReady);
+  useEffect(() => { onChartReadyRef.current = onChartReady; });
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -466,6 +565,7 @@ function StackedRow({
     });
     setChart(c);
     didFitRef.current = false;
+    onChartReadyRef.current(c);
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) c.applyOptions({ width: entry.contentRect.width });
@@ -477,10 +577,12 @@ function StackedRow({
       setChart(null);
       seriesRef.current = null;
       didFitRef.current = false;
+      onChartReadyRef.current(null);
     };
   }, []);
 
-  useChartViewportSync(chart);
+  // No viewport context sync here — StackedCharts handles cross-chart sync
+  // directly via syncTimeScales() to avoid React render-cycle latency.
 
   useEffect(() => {
     if (!chart) return;
@@ -520,7 +622,7 @@ function StackedRow({
       </div>
       <div
         ref={containerRef}
-        className="w-full rounded-lg overflow-hidden border border-gray-800"
+        className="w-full rounded-lg border border-gray-800"
         style={{ height: 220 }}
       />
     </div>
@@ -644,7 +746,7 @@ function DiffChart({ loaded }: SubChartProps) {
       </div>
       <div
         ref={containerRef}
-        className="w-full rounded-lg overflow-hidden border border-gray-800"
+        className="w-full rounded-lg border border-gray-800"
         style={{ height: 360 }}
       />
     </div>
