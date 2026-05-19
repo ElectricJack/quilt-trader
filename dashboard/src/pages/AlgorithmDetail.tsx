@@ -11,6 +11,7 @@ import {
   useCreateInstance,
   useAccounts,
   useWorkers,
+  useParameterSets,
 } from "../api/hooks";
 import type { Deployment } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
@@ -115,6 +116,7 @@ export function AlgorithmDetail() {
   );
   const { data: accounts } = useAccounts();
   const { data: workers } = useWorkers();
+  const { data: parameterSets } = useParameterSets(id ?? "");
 
   const { mutateAsync: deleteAlgorithm } = useDeleteAlgorithm();
   const { mutateAsync: updateAlgorithm } = useUpdateAlgorithm();
@@ -127,6 +129,8 @@ export function AlgorithmDetail() {
   const [isUpdating, setIsUpdating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [backtestOpen, setBacktestOpen] = useState(false);
+  const [backtestPreloadSetId, setBacktestPreloadSetId] = useState<string | undefined>();
+  const [deploySetId, setDeploySetId] = useState<string>("");
 
   // ── Delete algorithm ───────────────────────────────────────────────────────
 
@@ -187,9 +191,11 @@ export function AlgorithmDetail() {
         account_id: data.account_id,
         worker_id: data.worker_id,
         config_values,
+        parameter_set_id: deploySetId || undefined,
       });
       addAlert({ message: "Instance created.", severity: "success" });
       setCreateOpen(false);
+      setDeploySetId("");
     } catch {
       addAlert({ message: "Failed to create instance.", severity: "error" });
     }
@@ -341,8 +347,7 @@ export function AlgorithmDetail() {
           }>) ?? []
         }
         onBacktest={(setId) => {
-          // We'll wire this properly in Phase 5
-          void setId;
+          setBacktestPreloadSetId(setId);
           setBacktestOpen(true);
         }}
         onDeploy={() => setCreateOpen(true)}
@@ -452,6 +457,27 @@ export function AlgorithmDetail() {
               </select>
             </FormField>
 
+            {(parameterSets ?? []).length > 0 && (
+              <FormField label="Load from parameter set">
+                <select
+                  value={deploySetId}
+                  onChange={(e) => {
+                    setDeploySetId(e.target.value);
+                    const set = parameterSets?.find((s) => s.id === e.target.value);
+                    if (set) {
+                      form.setValue("config_values", JSON.stringify(set.config_values, null, 2));
+                    }
+                  }}
+                  className="bg-gray-800 border border-gray-700 text-gray-100 rounded px-3 py-2 text-sm w-full"
+                >
+                  <option value="">— Select a parameter set —</option>
+                  {(parameterSets ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.id})</option>
+                  ))}
+                </select>
+              </FormField>
+            )}
+
             <FormField
               label="Config Values (JSON, optional)"
               error={form.formState.errors.config_values?.message}
@@ -470,9 +496,11 @@ export function AlgorithmDetail() {
       {/* Run Backtest modal */}
       <RunBacktestModal
         open={backtestOpen}
-        onClose={() => setBacktestOpen(false)}
+        onClose={() => { setBacktestOpen(false); setBacktestPreloadSetId(undefined); }}
         algorithmId={algorithm?.id ?? ""}
         manifestConfig={(algorithm?.config_schema?.parameters as Array<{ name: string; type: string; default?: unknown }>) ?? []}
+        parameterSets={parameterSets ?? []}
+        preloadSetId={backtestPreloadSetId}
       />
     </div>
   );

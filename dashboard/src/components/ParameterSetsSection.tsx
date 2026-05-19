@@ -9,6 +9,7 @@ import {
 import { api } from "../api/client";
 import { useUIStore } from "../stores/ui";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { BacktestAllModal } from "./BacktestAllModal";
 import type { ParameterSet } from "../types";
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -214,6 +215,7 @@ export function ParameterSetsSection({ algorithmId, manifestConfig, onBacktest, 
 
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [backtestAllOpen, setBacktestAllOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Export ────────────────────────────────────────────────────────────────
@@ -294,6 +296,14 @@ export function ParameterSetsSection({ algorithmId, manifestConfig, onBacktest, 
           >
             Export
           </button>
+          {parameterSets.length > 0 && (
+            <button
+              onClick={() => setBacktestAllOpen(true)}
+              className="px-3 py-1.5 rounded text-xs font-medium text-white bg-emerald-700 hover:bg-emerald-600 transition-colors"
+            >
+              Backtest All
+            </button>
+          )}
           <button
             onClick={() => setCreateOpen(true)}
             className="px-3 py-1.5 rounded text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
@@ -364,6 +374,14 @@ export function ParameterSetsSection({ algorithmId, manifestConfig, onBacktest, 
         confirmLabel="Delete"
         onConfirm={() => void handleDelete()}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      {/* Backtest All modal */}
+      <BacktestAllModal
+        open={backtestAllOpen}
+        onClose={() => setBacktestAllOpen(false)}
+        algorithmId={algorithmId}
+        parameterSets={parameterSets}
       />
     </section>
   );

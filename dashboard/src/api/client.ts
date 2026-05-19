@@ -164,6 +164,7 @@ export interface InstanceCreate {
   account_id: string;
   worker_id: string;
   config_values?: Record<string, unknown>;
+  parameter_set_id?: string;
 }
 
 export interface DeploymentUpdate {
@@ -983,6 +984,7 @@ export interface BacktestRunCreate {
   };
   benchmark_symbol?: string;
   benchmark_source?: string;
+  parameter_set_id?: string;
 }
 
 export interface BacktestRunRecord {

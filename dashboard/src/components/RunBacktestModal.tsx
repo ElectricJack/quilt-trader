@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCreateBacktestRun } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
@@ -22,9 +22,11 @@ interface Props {
   onClose: () => void;
   algorithmId: string;
   manifestConfig?: Array<{ name: string; type: string; default?: unknown }>;
+  parameterSets?: Array<{ id: string; name: string; config_values: Record<string, unknown> }>;
+  preloadSetId?: string;
 }
 
-export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = [] }: Props) {
+export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = [], parameterSets = [], preloadSetId }: Props) {
   const navigate = useNavigate();
   const addAlert = useUIStore((s) => s.addAlert);
   const create = useCreateBacktestRun();
@@ -50,6 +52,26 @@ export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = 
   const [configOverrides, setConfigOverrides] = useState<Record<string, unknown>>(
     Object.fromEntries(manifestConfig.map((p) => [p.name, p.default]))
   );
+  const [selectedSetId, setSelectedSetId] = useState<string>(preloadSetId ?? "");
+
+  // Auto-load preloadSetId when it changes
+  useEffect(() => {
+    if (preloadSetId) {
+      setSelectedSetId(preloadSetId);
+      const set = parameterSets.find((s) => s.id === preloadSetId);
+      if (set) {
+        setConfigOverrides((prev) => ({ ...prev, ...set.config_values }));
+      }
+    }
+  }, [preloadSetId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleLoadSet(setId: string) {
+    setSelectedSetId(setId);
+    const set = parameterSets.find((s) => s.id === setId);
+    if (set) {
+      setConfigOverrides({ ...configOverrides, ...set.config_values });
+    }
+  }
 
   if (!open) return null;
 
@@ -72,6 +94,7 @@ export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = 
         },
         benchmark_symbol: benchmarkSymbol || undefined,
         benchmark_source: benchmarkSource || undefined,
+        parameter_set_id: selectedSetId || undefined,
       });
       addAlert({ message: `Backtest queued: ${result.id.slice(0, 8)}…`, severity: "info" });
       onClose();
@@ -88,6 +111,24 @@ export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = 
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className="bg-gray-900 border border-gray-700 rounded-lg p-5 w-full max-w-2xl space-y-3">
         <h2 className="text-lg font-semibold">Run Backtest</h2>
+
+        {parameterSets.length > 0 && (
+          <label className="text-sm block">
+            Load from parameter set
+            <select
+              value={selectedSetId}
+              onChange={(e) => handleLoadSet(e.target.value)}
+              className="block w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mt-1"
+            >
+              <option value="">— Select a parameter set —</option>
+              {parameterSets.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.id})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <label className="text-sm">
