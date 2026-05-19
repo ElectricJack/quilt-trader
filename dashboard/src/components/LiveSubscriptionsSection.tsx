@@ -17,6 +17,7 @@ type AssetClass = "equities" | "crypto" | "options";
 const PROVIDER_OPTIONS = [
   { value: "provider:polygon", label: "Polygon.io" },
   { value: "provider:thetadata", label: "ThetaData" },
+  { value: "provider:coinbase", label: "Coinbase (free, crypto only)" },
 ] as const;
 
 function formatBytes(n: number | null | undefined): string {
@@ -39,6 +40,7 @@ function timeSince(iso: string | null): string {
 function providerLabel(type: string): string {
   if (type === "polygon") return "Polygon.io";
   if (type === "thetadata") return "ThetaData";
+  if (type === "coinbase") return "Coinbase";
   return type;
 }
 
@@ -245,7 +247,13 @@ export function LiveSubscriptionsSection() {
             <span>Source</span>
             <select
               value={sourceValue}
-              onChange={(e) => setSourceValue(e.target.value)}
+              onChange={(e) => {
+                setSourceValue(e.target.value);
+                // Coinbase only supports crypto — force the asset class.
+                if (e.target.value === "provider:coinbase") {
+                  setAssetClass("crypto");
+                }
+              }}
               className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100"
             >
               <option value="">— select source —</option>
@@ -272,7 +280,8 @@ export function LiveSubscriptionsSection() {
             <select
               value={assetClass}
               onChange={(e) => setAssetClass(e.target.value as AssetClass)}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100"
+              disabled={selectedProviderType === "coinbase"}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-100 disabled:opacity-50"
             >
               <option value="equities">equities</option>
               <option value="crypto">crypto</option>
