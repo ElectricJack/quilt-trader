@@ -291,9 +291,11 @@ async def create_sub(body: SubscriptionCreate, db: AsyncSession = Depends(get_db
                     account_id, broker_type, symbol_upper, body.asset_class,
                 )
             except Exception:  # noqa: BLE001
-                # Aggregator errors (credential issues, adapter not ready, etc.)
-                # should not prevent the subscription from being created in DB.
-                pass
+                import logging as _logging
+                _logging.getLogger(__name__).exception(
+                    "aggregator.start_subscription failed for %s/%s",
+                    broker_type, symbol_upper,
+                )
 
     from sqlalchemy.orm import selectinload
     sub = (await db.execute(
