@@ -1,17 +1,20 @@
 import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, RefreshCw } from "lucide-react";
 import { z } from "zod";
 import {
   useAlgorithm,
   useDeployments,
   useDeleteAlgorithm,
+  useUpdateAlgorithm,
+  useAlgorithmGitStatus,
   useCreateInstance,
   useAccounts,
   useWorkers,
 } from "../api/hooks";
 import type { Deployment } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
+import { GitStatusBadge } from "../components/GitStatusBadge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormModal } from "../components/FormModal";
 import { RunBacktestModal } from "../components/RunBacktestModal";
@@ -113,10 +116,14 @@ export function AlgorithmDetail() {
   const { data: workers } = useWorkers();
 
   const { mutateAsync: deleteAlgorithm } = useDeleteAlgorithm();
+  const { mutateAsync: updateAlgorithm } = useUpdateAlgorithm();
+  const { data: gitStatus } = useAlgorithmGitStatus(id ?? "");
   const { mutateAsync: createInstance, isPending: isCreating } =
     useCreateInstance(id ?? "");
 
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [backtestOpen, setBacktestOpen] = useState(false);
 
@@ -134,6 +141,25 @@ export function AlgorithmDetail() {
     } catch {
       addAlert({ message: "Failed to delete algorithm.", severity: "error" });
       setDeleteOpen(false);
+    }
+  }
+
+  // ── Update algorithm ────────────────────────────────────────────────────────
+
+  async function handleUpdate() {
+    if (!id) return;
+    setUpdateOpen(false);
+    setIsUpdating(true);
+    try {
+      await updateAlgorithm(id);
+      addAlert({
+        message: `Updated "${algorithm?.name}" to latest commit.`,
+        severity: "success",
+      });
+    } catch {
+      addAlert({ message: "Failed to update algorithm.", severity: "error" });
+    } finally {
+      setIsUpdating(false);
     }
   }
 
@@ -202,19 +228,35 @@ export function AlgorithmDetail() {
           <StatusBadge status={algorithm.install_status} />
         </div>
 
-        <button
-          onClick={() => setBacktestOpen(true)}
-          className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 shrink-0"
-        >
-          Run Backtest
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <GitStatusBadge algoId={id ?? ""} />
 
-        <button
-          onClick={() => setDeleteOpen(true)}
-          className="px-3 py-2 rounded text-sm font-medium text-red-400 bg-red-950 border border-red-900 hover:bg-red-900 hover:border-red-800 transition-colors shrink-0"
-        >
-          Delete Algorithm
-        </button>
+          <button
+            onClick={() => setUpdateOpen(true)}
+            disabled={isUpdating}
+            className="flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-white bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+            title="Pull latest from GitHub"
+          >
+            <RefreshCw
+              className={`w-4 h-4 ${isUpdating ? "animate-spin" : ""}`}
+            />
+            {isUpdating ? "Updating…" : "Update"}
+          </button>
+
+          <button
+            onClick={() => setBacktestOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 shrink-0"
+          >
+            Run Backtest
+          </button>
+
+          <button
+            onClick={() => setDeleteOpen(true)}
+            className="px-3 py-2 rounded text-sm font-medium text-red-400 bg-red-950 border border-red-900 hover:bg-red-900 hover:border-red-800 transition-colors shrink-0"
+          >
+            Delete Algorithm
+          </button>
+        </div>
       </div>
 
       {/* Details */}
@@ -320,6 +362,16 @@ export function AlgorithmDetail() {
           onRowClick={(dep) => navigate(`/deployments/${dep.id}`)}
         />
       </section>
+
+      {/* Update algorithm confirm */}
+      <ConfirmDialog
+        open={updateOpen}
+        title="Update Algorithm"
+        message={`Pull the latest version of "${algorithm.name}" from GitHub?${gitStatus?.commits_behind ? ` (${gitStatus.commits_behind} commit${gitStatus.commits_behind > 1 ? "s" : ""} behind)` : ""}`}
+        confirmLabel="Update"
+        onConfirm={handleUpdate}
+        onCancel={() => setUpdateOpen(false)}
+      />
 
       {/* Delete algorithm confirm */}
       <ConfirmDialog
