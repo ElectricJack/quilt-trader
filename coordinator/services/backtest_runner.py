@@ -195,11 +195,15 @@ class BacktestRunner:
             # Build context
             bars: dict[tuple, pd.DataFrame] = {}
             for dep in deps:
+                symbol = dep.get("symbol")
+                if not symbol:
+                    continue
                 source = dep.get("source") or "polygon"
-                df = _load_bar_series(self._ds, source, dep["symbol"], dep["timeframe"])
+                timeframe = dep.get("timeframe") or "1min"
+                df = _load_bar_series(self._ds, source, symbol, timeframe)
                 if df is None or getattr(df, "empty", False):
                     raise RuntimeError(
-                        f"Missing data for {dep['symbol']} {dep['timeframe']} {source}"
+                        f"Missing data for {symbol} {timeframe} {source}"
                     )
                 # Filter to the run's date range. Normalize tz on both sides
                 # because parquet timestamps are tz-naive and date_range_* are
@@ -213,7 +217,7 @@ class BacktestRunner:
                 except Exception:
                     # MagicMock path in tests — leave df as-is.
                     pass
-                bars[(source, dep["symbol"], dep["timeframe"])] = df
+                bars[(source, symbol, timeframe)] = df
 
             # Pick the smallest-timeframe series for the clock
             clock_key = self._smallest_timeframe_key(bars)
