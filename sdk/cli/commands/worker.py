@@ -22,6 +22,30 @@ def _run(coro):
         fail(e.code, str(e))
 
 
+async def _resolve_worker_id(ctx, name_or_id: str) -> str:
+    """Resolve a worker name, short ID prefix, or full UUID to the actual ID."""
+    c = _client(ctx)
+    try:
+        workers = await c.get("/api/workers")
+    finally:
+        await c.aclose()
+    # Exact name match (case-insensitive)
+    for w in workers:
+        if w["name"].lower() == name_or_id.lower():
+            return w["id"]
+    # ID prefix match
+    matches = [w for w in workers if w["id"].startswith(name_or_id)]
+    if len(matches) == 1:
+        return matches[0]["id"]
+    if len(matches) > 1:
+        fail(2, f"Ambiguous ID prefix '{name_or_id}' — matches {len(matches)} workers. Use a longer prefix or the worker name.")
+    fail(2, f"No worker found matching '{name_or_id}'")
+
+
+def _short_id(uuid_str: str, length: int = 8) -> str:
+    return uuid_str[:length] if uuid_str else "—"
+
+
 @click.group("worker")
 def worker_group() -> None:
     """Manage registered workers."""
@@ -41,6 +65,8 @@ def worker_list(ctx):
     if ctx.obj.get("json_mode"):
         print_json(rows)
     else:
+        for r in rows:
+            r["id"] = _short_id(r.get("id", ""))
         print_table(
             rows,
             columns=["id", "name", "status", "tailscale_ip", "last_heartbeat", "install_status"],
@@ -48,10 +74,11 @@ def worker_list(ctx):
 
 
 @worker_group.command("show")
-@click.argument("worker_id")
+@click.argument("worker")
 @click.pass_context
-def worker_show(ctx, worker_id):
-    """Show details for one worker."""
+def worker_show(ctx, worker):
+    """Show details for one worker (accepts name, short ID, or full UUID)."""
+    worker_id = _run(_resolve_worker_id(ctx, worker))
     async def go():
         c = _client(ctx)
         try:
@@ -88,15 +115,16 @@ def worker_add(ctx, name, tailscale_ip, max_algorithms):
     if ctx.obj.get("json_mode"):
         print_json(body)
     else:
-        click.echo(f"created worker: {body.get('id')} ({body.get('name')})")
+        click.echo(f"created worker: {_short_id(body.get('id', ''))} ({body.get('name')})")
         click.echo(f"install_token: {body.get('install_token')}")
 
 
 @worker_group.command("install-command")
-@click.argument("worker_id")
+@click.argument("worker")
 @click.pass_context
-def worker_install_command(ctx, worker_id):
-    """Print the worker install one-liner."""
+def worker_install_command(ctx, worker):
+    """Print the worker install one-liner (accepts name, short ID, or full UUID)."""
+    worker_id = _run(_resolve_worker_id(ctx, worker))
     import httpx as _hx
     url = resolve_coordinator_url(ctx.obj.get("coord_url"))
 
@@ -116,10 +144,11 @@ def worker_install_command(ctx, worker_id):
 
 
 @worker_group.command("regenerate-token")
-@click.argument("worker_id")
+@click.argument("worker")
 @click.pass_context
-def worker_regenerate_token(ctx, worker_id):
-    """Issue a fresh install token for a worker (resets status to pending)."""
+def worker_regenerate_token(ctx, worker):
+    """Issue a fresh install token for a worker (accepts name, short ID, or full UUID)."""
+    worker_id = _run(_resolve_worker_id(ctx, worker))
     async def go():
         c = _client(ctx)
         try:
@@ -134,29 +163,30 @@ def worker_regenerate_token(ctx, worker_id):
 
 
 @worker_group.command("update")
-@click.argument("worker_id")
+@click.argument("worker")
 @click.pass_context
-def worker_update(ctx, worker_id):
-    """Send an update command to a worker (git pull + restart)."""
+def worker_update(ctx, worker):
+    """Send an update command to a worker — git pull + restart (accepts name, short ID, or full UUID)."""
+    worker_id = _run(_resolve_worker_id(ctx, worker))
     async def go():
         c = _client(ctx)
         try:
             return await c.post(f"/api/workers/{worker_id}/update")
         finally:
             await c.aclose()
-    body = _run(go())
-    click.echo(f"Update command sent to worker {worker_id}. The worker will pull latest code and restart.")
+    _run(go())
+    click.echo(f"Update command sent to worker. It will pull latest code and restart.")
 
 
 @worker_group.command("delete")
-@click.argument("worker_id")
+@click.argument("worker")
 @click.option("--yes", is_flag=True, help="Confirm deletion.")
 @click.pass_context
-def worker_delete(ctx, worker_id, yes):
-    """Delete a worker registration."""
+def worker_delete(ctx, worker, yes):
+    """Delete a worker registration (accepts name, short ID, or full UUID)."""
     if not yes:
         fail(2, "refusing to delete without --yes")
-
+    worker_id = _run(_resolve_worker_id(ctx, worker))
     async def go():
         c = _client(ctx)
         try:
