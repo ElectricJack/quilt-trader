@@ -31,6 +31,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -174,6 +175,7 @@ class LiveFeedAggregator:
         market_dir: str = "data/market",
         flush_interval_s: float = 5.0,
         now_fn: NowFn = _default_now,
+        ws_manager=None,
     ) -> None:
         self._sf = session_factory
         self._data_service = data_service or DataService(
@@ -194,6 +196,9 @@ class LiveFeedAggregator:
         self._bar_subscribers: dict[tuple[str, str, str], set[Callable]] = {}
         self._event_subscribers: dict[tuple[str, str], set[Callable]] = {}
         self._coord_worker_id: Optional[str] = None
+        self._ws_manager = ws_manager
+        # Throttle: track last WS dispatch time per "broker:symbol" key (monotonic seconds).
+        self._last_ws_dispatch: dict[str, float] = {}
 
     @staticmethod
     def _default_adapter_factory(broker_type: str, environment: str, credentials: dict):
@@ -548,6 +553,27 @@ class LiveFeedAggregator:
                 asyncio.run_coroutine_threadsafe(
                     self._dispatch_event(broker, symbol, tick), self._loop
                 )
+                # Forward live tick to any dashboard WS clients watching this symbol.
+                # Throttle to at most 1 dispatch per 100ms per symbol to avoid flooding.
+                if self._ws_manager is not None:
+                    now_mono = time.monotonic()
+                    throttle_key = f"{broker}:{symbol}"
+                    last = self._last_ws_dispatch.get(throttle_key, 0.0)
+                    if now_mono - last >= 0.1:
+                        self._last_ws_dispatch[throttle_key] = now_mono
+                        ts = tick.get("timestamp")
+                        ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                        asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.send_live_tick(broker, symbol, {
+                                "type": "live_tick",
+                                "broker": broker,
+                                "symbol": symbol,
+                                "price": price,
+                                "size": size,
+                                "timestamp": ts_str,
+                            }),
+                            self._loop,
+                        )
         return _on_trade
 
     def _make_on_quote(self, broker: str) -> Callable:

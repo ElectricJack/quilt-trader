@@ -67,6 +67,11 @@ class ConnectionManager:
         for ws in disconnected:
             await self.disconnect_dashboard(ws)
 
+    async def send_live_tick(self, broker: str, symbol: str, tick: dict) -> None:
+        """Forward a live tick to all dashboard clients subscribed to live_data:{broker}:{symbol}."""
+        target = f"live_data:{broker}:{symbol}"
+        await self.broadcast_to_target(target, tick)
+
 
 manager = ConnectionManager()
 

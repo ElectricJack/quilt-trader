@@ -149,8 +149,13 @@ def create_app(
 
         from coordinator.services.live_feed_manager import LiveFeedManager
         from coordinator.services.live_feed_aggregator import LiveFeedAggregator
+        from coordinator.api.websocket import manager as ws_manager_for_aggregator
         container.live_feed_manager = LiveFeedManager()
-        container.live_feed_aggregator = LiveFeedAggregator(session_factory, encryption=encryption)
+        container.live_feed_aggregator = LiveFeedAggregator(
+            session_factory,
+            encryption=encryption,
+            ws_manager=ws_manager_for_aggregator,
+        )
         await container.live_feed_aggregator.start()
 
         # Upsert a Worker row for the coordinator itself so that
