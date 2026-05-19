@@ -5,10 +5,14 @@ import {
   useSetDiscordToken,
   useSetPolygonKey,
   useSetThetaData,
+  useSetCoordinatorIp,
+  useSetTailscaleAuthkey,
   useDeleteGithubPat,
   useDeleteDiscordToken,
   useDeletePolygonKey,
   useDeleteThetaData,
+  useDeleteCoordinatorIp,
+  useDeleteTailscaleAuthkey,
 } from "../api/hooks";
 import { FormField } from "../components/FormField";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -43,6 +47,7 @@ interface SingleCredentialCardProps {
   label: string;
   isSet: boolean;
   inputLabel: string;
+  helpLink?: { href: string; label: string };
   onSave: (value: string) => Promise<void>;
   onDelete: () => Promise<void>;
   isSaving: boolean;
@@ -53,6 +58,7 @@ function SingleCredentialCard({
   label,
   isSet,
   inputLabel,
+  helpLink,
   onSave,
   onDelete,
   isSaving,
@@ -71,7 +77,19 @@ function SingleCredentialCard({
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-medium text-gray-200">{label}</span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-medium text-gray-200">{label}</span>
+          {helpLink && (
+            <a
+              href={helpLink.href}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-indigo-400 hover:underline"
+            >
+              {helpLink.label} ↗
+            </a>
+          )}
+        </div>
         <StatusBadge isSet={isSet} />
       </div>
 
@@ -119,6 +137,120 @@ function SingleCredentialCard({
           >
             {isSaving ? "Saving…" : "Save"}
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Visible Value Card (non-secret, shows current value) ────────────────────
+
+interface VisibleValueCardProps {
+  label: string;
+  value: string | null;
+  inputLabel: string;
+  placeholder?: string;
+  help?: string;
+  onSave: (value: string) => Promise<void>;
+  onDelete: () => Promise<void>;
+  isSaving: boolean;
+  isDeleting: boolean;
+}
+
+function VisibleValueCard({
+  label,
+  value,
+  inputLabel,
+  placeholder,
+  help,
+  onSave,
+  onDelete,
+  isSaving,
+  isDeleting,
+}: VisibleValueCardProps) {
+  const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState(false);
+
+  const handleSave = async () => {
+    if (!draft.trim()) return;
+    await onSave(draft.trim());
+    setDraft("");
+    setEditing(false);
+  };
+
+  const isSet = !!value;
+  const showEditor = editing || !isSet;
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-medium text-gray-200">{label}</span>
+        <StatusBadge isSet={isSet} />
+      </div>
+
+      {help && <p className="text-xs text-gray-500 mb-3">{help}</p>}
+
+      {isSet && !showEditor && (
+        <div className="flex items-center gap-3">
+          <code className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 font-mono break-all">
+            {value}
+          </code>
+          <button
+            className={SAVE_BTN_CLS}
+            onClick={() => {
+              setDraft(value ?? "");
+              setEditing(true);
+            }}
+          >
+            Edit
+          </button>
+          <button
+            className={CLEAR_BTN_CLS}
+            onClick={() => void onDelete()}
+            disabled={isDeleting}
+          >
+            {isDeleting ? "Clearing…" : "Clear"}
+          </button>
+        </div>
+      )}
+
+      {showEditor && (
+        <div className="flex items-end gap-3">
+          <FormField label={inputLabel} className="flex-1">
+            <input
+              type="text"
+              className={INPUT_CLS}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleSave();
+                if (e.key === "Escape") {
+                  setEditing(false);
+                  setDraft("");
+                }
+              }}
+              placeholder={placeholder}
+              autoComplete="off"
+            />
+          </FormField>
+          <button
+            className={SAVE_BTN_CLS}
+            onClick={() => void handleSave()}
+            disabled={isSaving || !draft.trim()}
+          >
+            {isSaving ? "Saving…" : "Save"}
+          </button>
+          {editing && (
+            <button
+              className="text-sm text-gray-400 hover:text-gray-200 px-2"
+              onClick={() => {
+                setEditing(false);
+                setDraft("");
+              }}
+            >
+              Cancel
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -235,11 +367,15 @@ export function Settings() {
   const setDiscordToken = useSetDiscordToken();
   const setPolygonKey = useSetPolygonKey();
   const setThetaData = useSetThetaData();
+  const setCoordinatorIp = useSetCoordinatorIp();
+  const setTailscaleAuthkey = useSetTailscaleAuthkey();
 
   const deleteGithubPat = useDeleteGithubPat();
   const deleteDiscordToken = useDeleteDiscordToken();
   const deletePolygonKey = useDeletePolygonKey();
   const deleteThetaData = useDeleteThetaData();
+  const deleteCoordinatorIp = useDeleteCoordinatorIp();
+  const deleteTailscaleAuthkey = useDeleteTailscaleAuthkey();
 
   return (
     <div className="space-y-4">
@@ -327,6 +463,46 @@ export function Settings() {
             }}
             isSaving={setThetaData.isPending}
             isDeleting={deleteThetaData.isPending}
+          />
+
+          <h2 className="text-lg font-semibold text-gray-200 pt-4">Worker Install</h2>
+
+          <VisibleValueCard
+            label="Coordinator Tailscale IP"
+            value={settings?.coordinator_ip ?? null}
+            inputLabel="Coordinator's Tailscale IP"
+            placeholder="100.x.y.z"
+            help="The coordinator's Tailscale IP (copy/paste from the Tailscale admin console). The worker install command targets http://<ip>:8000."
+            onSave={async (value) => {
+              await setCoordinatorIp.mutateAsync(value);
+              addAlert({ message: "Coordinator IP saved.", severity: "success" });
+            }}
+            onDelete={async () => {
+              await deleteCoordinatorIp.mutateAsync();
+              addAlert({ message: "Coordinator IP cleared.", severity: "success" });
+            }}
+            isSaving={setCoordinatorIp.isPending}
+            isDeleting={deleteCoordinatorIp.isPending}
+          />
+
+          <SingleCredentialCard
+            label="Tailscale Auth Key"
+            isSet={settings?.tailscale_authkey_set ?? false}
+            inputLabel="Reusable Tailscale auth key (tskey-…)"
+            helpLink={{
+              href: "https://login.tailscale.com/admin/settings/keys",
+              label: "Generate in Tailscale admin",
+            }}
+            onSave={async (value) => {
+              await setTailscaleAuthkey.mutateAsync(value);
+              addAlert({ message: "Tailscale auth key saved.", severity: "success" });
+            }}
+            onDelete={async () => {
+              await deleteTailscaleAuthkey.mutateAsync();
+              addAlert({ message: "Tailscale auth key cleared.", severity: "success" });
+            }}
+            isSaving={setTailscaleAuthkey.isPending}
+            isDeleting={deleteTailscaleAuthkey.isPending}
           />
         </div>
       )}

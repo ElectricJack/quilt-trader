@@ -7,6 +7,7 @@ import {
   useWorker,
 } from "../api/hooks";
 import { useWorkerConnectedEvent } from "../hooks/useWorkerConnectedEvent";
+import { copyToClipboard } from "../lib/clipboard";
 
 type Step = "form" | "waiting" | "connected";
 
@@ -18,7 +19,6 @@ interface Props {
 export function WorkerInstallDialog({ open, onClose }: Props) {
   const [step, setStep] = useState<Step>("form");
   const [name, setName] = useState("");
-  const [maxAlgos, setMaxAlgos] = useState(2);
   const [workerId, setWorkerId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -63,18 +63,13 @@ export function WorkerInstallDialog({ open, onClose }: Props) {
   function reset() {
     setStep("form");
     setName("");
-    setMaxAlgos(2);
     setWorkerId(null);
     setCopied(false);
   }
 
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
-    const created = await createWorker.mutateAsync({
-      name,
-      max_algorithms: maxAlgos,
-      tailscale_ip: null,
-    } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+    const created = await createWorker.mutateAsync({ name });
     setWorkerId(created.id);
     setStep("waiting");
   }
@@ -82,11 +77,11 @@ export function WorkerInstallDialog({ open, onClose }: Props) {
   async function handleCopy() {
     if (!command) return;
     try {
-      await navigator.clipboard.writeText(command);
+      await copyToClipboard(command);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore clipboard errors
+    } catch (err) {
+      console.error("clipboard copy failed", err);
     }
   }
 
@@ -98,7 +93,7 @@ export function WorkerInstallDialog({ open, onClose }: Props) {
         {step === "form" && (
           <form onSubmit={(e) => void handleRegister(e)}>
             <h2 className="text-lg font-semibold text-gray-100 mb-3">Add Worker</h2>
-            <label className="block mb-2 text-sm text-gray-300">
+            <label className="block mb-4 text-sm text-gray-300">
               Name
               <input
                 value={name}
@@ -108,16 +103,13 @@ export function WorkerInstallDialog({ open, onClose }: Props) {
                 placeholder="e.g. worker-1"
               />
             </label>
-            <label className="block mb-4 text-sm text-gray-300">
-              Max algorithms
-              <input
-                type="number"
-                value={maxAlgos}
-                onChange={(e) => setMaxAlgos(Number(e.target.value))}
-                min={1}
-                className="block w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mt-1 text-gray-100"
-              />
-            </label>
+            {createWorker.isError && (
+              <p className="mb-3 text-sm text-red-400">
+                {createWorker.error instanceof Error
+                  ? createWorker.error.message
+                  : "Failed to register worker"}
+              </p>
+            )}
             <div className="flex justify-end gap-2">
               <button
                 type="button"

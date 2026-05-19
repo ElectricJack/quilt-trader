@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Copy, Check, RefreshCw, AlertTriangle } from "lucide-react";
 import { useWorkerInstallCommand, useRegenerateWorkerInstallToken } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
+import { copyToClipboard } from "../lib/clipboard";
 
 interface Props {
   workerId: string;
@@ -17,10 +18,11 @@ export function WorkerInstallCommand({ workerId, workerName }: Props) {
   async function handleCopy() {
     if (!command) return;
     try {
-      await navigator.clipboard.writeText(command);
+      await copyToClipboard(command);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
+    } catch (err) {
+      console.error("clipboard copy failed", err);
       addAlert({ message: "Could not copy to clipboard.", severity: "error" });
     }
   }

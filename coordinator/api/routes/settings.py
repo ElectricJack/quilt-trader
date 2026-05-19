@@ -42,12 +42,14 @@ async def _delete_setting(db: AsyncSession, key: str) -> None:
 
 
 async def _settings_status(db: AsyncSession) -> dict:
-    keys = ["github_pat", "discord_bot_token", "polygon_api_key", "theta_data_username"]
+    keys = ["github_pat", "discord_bot_token", "polygon_api_key", "theta_data_username", "tailscale_authkey"]
     result = {}
     for key in keys:
         val = await _get_setting(db, key)
         result[f"{key}_set"] = val is not None
     result["theta_data_set"] = result.pop("theta_data_username_set")
+    # Visible (non-secret) settings: return the actual value.
+    result["coordinator_ip"] = await _get_setting(db, "coordinator_ip")
     return result
 
 
@@ -108,4 +110,32 @@ async def delete_polygon_key(db: AsyncSession = Depends(get_db)):
 async def delete_theta_data(db: AsyncSession = Depends(get_db)):
     await _delete_setting(db, "theta_data_username")
     await _delete_setting(db, "theta_data_password")
+    return await _settings_status(db)
+
+
+@router.put("/coordinator-ip")
+async def set_coordinator_ip(body: SingleValueBody, db: AsyncSession = Depends(get_db)):
+    # Stored plaintext — this is the coordinator's Tailscale IP that the Pi uses to reach it.
+    # The full URL is constructed at use-time (http://<ip>:8000).
+    await _set_setting(db, "coordinator_ip", body.value.strip())
+    return await _settings_status(db)
+
+
+@router.delete("/coordinator-ip")
+async def delete_coordinator_ip(db: AsyncSession = Depends(get_db)):
+    await _delete_setting(db, "coordinator_ip")
+    return await _settings_status(db)
+
+
+@router.put("/tailscale-authkey")
+async def set_tailscale_authkey(body: SingleValueBody, db: AsyncSession = Depends(get_db)):
+    container = get_container()
+    encrypted = container.encryption.encrypt(body.value)
+    await _set_setting(db, "tailscale_authkey", encrypted)
+    return await _settings_status(db)
+
+
+@router.delete("/tailscale-authkey")
+async def delete_tailscale_authkey(db: AsyncSession = Depends(get_db)):
+    await _delete_setting(db, "tailscale_authkey")
     return await _settings_status(db)
