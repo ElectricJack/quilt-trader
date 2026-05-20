@@ -222,6 +222,70 @@ async def cancel_download(download_id: str):
     return {"status": "cancelled"}
 
 
+@router.post("/downloads/{download_id}/retry")
+async def retry_download(download_id: str):
+    """Retry a failed download using ensure_coverage to skip already-fetched data."""
+    from datetime import date as date_type
+    from coordinator.services.coverage_utils import ensure_coverage
+
+    mgr = get_download_manager()
+    dl = await mgr.get_download(download_id)
+    if dl is None:
+        raise HTTPException(status_code=404, detail="Download not found")
+    if dl["status"] not in ("failed", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Download is {dl['status']}, not failed/cancelled")
+
+    # Extract the original download parameters
+    symbols = dl.get("symbols") or []
+    provider = dl.get("provider", "polygon")
+    timeframe = dl.get("timeframe", "1min")
+    start = dl.get("date_range_start")  # may be string or date
+    end = dl.get("date_range_end")
+
+    if not symbols or not start or not end:
+        raise HTTPException(status_code=422, detail="Original download is missing required fields for retry")
+
+    # Parse dates
+    if isinstance(start, str):
+        start = date_type.fromisoformat(start[:10])
+    elif hasattr(start, 'date'):
+        start = start.date()
+    if isinstance(end, str):
+        end = date_type.fromisoformat(end[:10])
+    elif hasattr(end, 'date'):
+        end = end.date()
+
+    # Use ensure_coverage for each symbol — skips what's already on disk
+    coverage = get_coverage_index()
+    if coverage is None:
+        raise HTTPException(status_code=503, detail="Coverage index not initialized")
+
+    new_download_ids = []
+    skipped_symbols = []
+    for symbol in symbols:
+        dl_ids = await ensure_coverage(
+            provider, symbol, start, end,
+            mgr, coverage, timeframe=timeframe,
+        )
+        if dl_ids:
+            new_download_ids.extend(dl_ids)
+        else:
+            skipped_symbols.append(symbol)
+
+    return {
+        "original_download_id": download_id,
+        "new_download_ids": new_download_ids,
+        "new_download_count": len(new_download_ids),
+        "skipped_symbols": skipped_symbols,
+        "skipped_count": len(skipped_symbols),
+        "message": (
+            f"Retried {len(symbols)} symbol(s): "
+            f"{len(new_download_ids)} new download(s), "
+            f"{len(skipped_symbols)} already complete"
+        ),
+    }
+
+
 # ─── Coverage endpoints ───────────────────────────────────────────────────────
 
 @router.get("/coverage")

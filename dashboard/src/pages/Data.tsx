@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { z } from "zod";
-import { Trash2, Play, Eye, X } from "lucide-react";
+import { Trash2, Play, Eye, X, RotateCcw } from "lucide-react";
 import {
   useAvailableData,
   useDownloads,
@@ -8,6 +8,7 @@ import {
   useCancelDownload,
   useDeleteDownload,
   useClearDownloads,
+  useRetryDownload,
   useScrapers,
   useInstallScraper,
   useDeleteScraper,
@@ -118,7 +119,9 @@ const ACTIVE_STATUSES = new Set(["pending", "running"]);
 // ─── History columns ──────────────────────────────────────────────────────────
 
 function makeHistoryColumns(
-  setRowToDelete: (row: MarketDataDownload | null) => void
+  setRowToDelete: (row: MarketDataDownload | null) => void,
+  onRetry: (id: string) => void,
+  isRetrying: boolean,
 ): ColumnDef<MarketDataDownload, unknown>[] {
   return [
     {
@@ -176,16 +179,31 @@ function makeHistoryColumns(
       id: "actions",
       header: "",
       cell: ({ row }) => (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setRowToDelete(row.original);
-          }}
-          title="Delete row"
-          className="p-1 text-gray-400 hover:text-red-400 transition-colors"
-        >
-          <Trash2 size={14} />
-        </button>
+        <div className="flex items-center gap-1">
+          {(row.original.status === "failed" || row.original.status === "cancelled") && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRetry(row.original.id);
+              }}
+              disabled={isRetrying}
+              title="Retry download (skips already-fetched data)"
+              className="p-1 text-gray-400 hover:text-indigo-400 disabled:opacity-50 transition-colors"
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setRowToDelete(row.original);
+            }}
+            title="Delete row"
+            className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
       ),
     },
   ];
@@ -351,6 +369,7 @@ export function Data() {
   const { mutate: cancelDownload, isPending: isCancelling } = useCancelDownload();
   const deleteDownload = useDeleteDownload();
   const clearDownloads = useClearDownloads();
+  const retryDownload = useRetryDownload();
   const { data: scrapers = [], isLoading: scrapersLoading } = useScrapers();
   const { data: scraperSources = [], isLoading: sourcesLoading } = useDataSources("scraper");
   const installScraper = useInstallScraper();
@@ -420,7 +439,23 @@ export function Data() {
     }
   }
 
-  const historyColumns = useMemo(() => makeHistoryColumns(setRowToDelete), []);
+  async function handleRetry(id: string) {
+    try {
+      const result = await retryDownload.mutateAsync(id);
+      addAlert({ message: result.message, severity: "success" });
+    } catch (e) {
+      addAlert({
+        message: `Retry failed: ${(e as Error).message}`,
+        severity: "error",
+      });
+    }
+  }
+
+  const historyColumns = useMemo(
+    () => makeHistoryColumns(setRowToDelete, handleRetry, retryDownload.isPending),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [retryDownload.isPending],
+  );
 
   const activeDownloads = useMemo(
     () => (downloads ?? []).filter((d) => ACTIVE_STATUSES.has(d.status)),

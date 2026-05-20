@@ -545,6 +545,18 @@ export const api = {
       method: "POST",
     });
   },
+  retryDownload(downloadId: string): Promise<{
+    original_download_id: string;
+    new_download_ids: string[];
+    new_download_count: number;
+    skipped_symbols: string[];
+    skipped_count: number;
+    message: string;
+  }> {
+    return request(`/api/data/downloads/${encodeURIComponent(downloadId)}/retry`, {
+      method: "POST",
+    });
+  },
   deleteDownload(id: string): Promise<void> {
     return request<void>(`/api/data/downloads/${id}`, { method: "DELETE" });
   },

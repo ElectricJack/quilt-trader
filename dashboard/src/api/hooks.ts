@@ -440,6 +440,16 @@ export function useClearDownloads() {
   });
 }
 
+export function useRetryDownload() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (downloadId: string) => api.retryDownload(downloadId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.downloads() });
+    },
+  });
+}
+
 // ─── Backtests ────────────────────────────────────────────────────────────────
 
 export function useBacktests() {
