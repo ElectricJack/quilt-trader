@@ -47,7 +47,7 @@ class DownloadRequest(BaseModel):
     date_range_end: date
     provider: str = "polygon"
     data_type: str = "bars"
-    timeframe: str = "1day"
+    timeframe: str = "1min"
 
 
 @router.get("/market/{symbol}/meta")
