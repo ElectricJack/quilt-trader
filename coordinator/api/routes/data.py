@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from coordinator.api.dependencies import get_db
+from coordinator.api.dependencies import get_container, get_db
 from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import DataSource
 from coordinator.services.data_service import DataService
@@ -39,6 +39,15 @@ def get_download_manager() -> DownloadManager:
     if _download_manager is None:
         raise HTTPException(status_code=503, detail="Download manager not initialized")
     return _download_manager
+
+
+def get_coverage_index():
+    """Return the CoverageIndex from the service container, or None if not yet initialized."""
+    try:
+        container = get_container()
+        return container.coverage_index
+    except AssertionError:
+        return None
 
 
 class DownloadRequest(BaseModel):
@@ -211,3 +220,64 @@ async def cancel_download(download_id: str):
     if not cancelled:
         raise HTTPException(status_code=404, detail="Download not found or already completed")
     return {"status": "cancelled"}
+
+
+# ─── Coverage endpoints ───────────────────────────────────────────────────────
+
+@router.get("/coverage")
+async def get_coverage():
+    """Return coverage ranges for all assets on disk, grouped by provider."""
+    svc = get_data_service()
+    coverage = get_coverage_index()
+
+    available = svc.list_available_market_data()
+
+    # Deduplicate to one entry per (provider, symbol) — collect unique timeframes on disk.
+    seen: dict[str, dict] = {}
+    for item in available:
+        provider = item["provider"]
+        symbol = item["symbol"]
+        key = f"{provider}/{symbol}"
+        if key not in seen:
+            ranges = coverage.get_ranges(provider, symbol) if coverage else []
+            seen[key] = {
+                "provider": provider,
+                "symbol": symbol,
+                "ranges": [{"start": str(s), "end": str(e)} for s, e in ranges],
+                "timeframes_on_disk": [],
+            }
+        seen[key]["timeframes_on_disk"].append(item["timeframe"])
+
+    # Group by provider
+    grouped: dict[str, list] = {}
+    for v in seen.values():
+        grouped.setdefault(v["provider"], []).append(v)
+
+    return {"providers": grouped}
+
+
+class FillGapsRequest(BaseModel):
+    provider: str
+    symbol: str
+    start: date
+    end: date
+    timeframe: str = "1min"
+
+
+@router.post("/fill-gaps")
+async def fill_gaps(body: FillGapsRequest):
+    """Download only what's missing for a given asset + date range."""
+    from coordinator.services.coverage_utils import ensure_coverage
+
+    coverage = get_coverage_index()
+    if coverage is None:
+        raise HTTPException(status_code=503, detail="Coverage index not initialized")
+
+    mgr = get_download_manager()
+    dl_ids = await ensure_coverage(
+        body.provider, body.symbol,
+        body.start, body.end,
+        mgr, coverage,
+        timeframe=body.timeframe,
+    )
+    return {"download_ids": dl_ids, "gap_count": len(dl_ids)}
