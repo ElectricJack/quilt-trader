@@ -13,6 +13,8 @@ import {
   useDeleteScraper,
   useRunScraper,
   useDataSources,
+  useCoverage,
+  useFillGaps,
 } from "../api/hooks";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
@@ -21,6 +23,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { DatasetPreviewModal } from "../components/DatasetPreviewModal";
 import { CustomDataPreviewModal } from "../components/CustomDataPreviewModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { CoverageTimeline } from "../components/CoverageTimeline";
 import { LiveSubscriptionsSection } from "../components/LiveSubscriptionsSection";
 import {
   CompareView,
@@ -30,7 +33,7 @@ import {
   type CompareMode,
 } from "../components/CompareView";
 import { useUIStore } from "../stores/ui";
-import type { MarketDataDownload, AvailableMarketData } from "../types";
+import type { MarketDataDownload } from "../types";
 import type { DataSourceRow } from "../api/client";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -341,6 +344,8 @@ export function Data() {
   const clearSelection = useCallback(() => setSelected([]), []);
 
   const { data: available, isLoading: availableLoading } = useAvailableData();
+  const { data: coverageData, isLoading: coverageLoading } = useCoverage();
+  const fillGapsMutation = useFillGaps();
   const { data: downloads, isLoading: downloadsLoading, refetch } = useDownloads();
   const { mutateAsync: createDownload, isPending: isCreating } = useCreateDownload();
   const { mutate: cancelDownload, isPending: isCancelling } = useCancelDownload();
@@ -352,6 +357,20 @@ export function Data() {
   const deleteScraper = useDeleteScraper();
   const runScraper = useRunScraper();
   const addAlert = useUIStore((s) => s.addAlert);
+
+  // Track which provider groups are expanded.
+  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
+  const toggleProvider = useCallback((provider: string) => {
+    setExpandedProviders((prev) => {
+      const next = new Set(prev);
+      if (next.has(provider)) {
+        next.delete(provider);
+      } else {
+        next.add(provider);
+      }
+      return next;
+    });
+  }, []);
 
   // Index sources by scraper name so we can join with the scraper list cleanly.
   const sourceBySrc = useMemo(() => {
@@ -420,25 +439,9 @@ export function Data() {
     return () => clearInterval(id);
   }, [activeDownloads.length, refetch]);
 
-  const grouped = useMemo(() => {
-    const out: Record<string, AvailableMarketData[]> = {};
-    for (const item of available ?? []) {
-      (out[item.provider] ??= []).push(item);
-    }
-    for (const key of Object.keys(out)) {
-      out[key].sort(
-        (a, b) =>
-          a.symbol.localeCompare(b.symbol) || a.timeframe.localeCompare(b.timeframe)
-      );
-    }
-    return out;
-  }, [available]);
-
-  function formatSize(b: number): string {
-    if (b < 1024) return `${b} B`;
-    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-    return `${(b / 1024 / 1024).toFixed(2)} MB`;
-  }
+  // `available` is kept for the compare feature's `selected` state initialization;
+  // the Available Data section now uses `coverageData` from useCoverage().
+  void available;
 
   async function handleSubmit(values: DownloadFormValues) {
     setDownloadDefaults(values);
@@ -499,6 +502,31 @@ export function Data() {
           severity: "error",
         }),
     });
+  }
+
+  async function handleFillGaps(provider: string, symbol: string) {
+    const today = new Date().toISOString().slice(0, 10);
+    // Default: fill from 1 year ago to today.
+    const oneYearAgo = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
+    try {
+      const result = await fillGapsMutation.mutateAsync({
+        provider,
+        symbol,
+        start: oneYearAgo,
+        end: today,
+        timeframe: "1min",
+      });
+      if (result.gap_count === 0) {
+        addAlert({ message: `${symbol} (${provider}) is already fully covered.`, severity: "success" });
+      } else {
+        addAlert({
+          message: `Queued ${result.gap_count} download${result.gap_count === 1 ? "" : "s"} to fill gaps for ${symbol}.`,
+          severity: "success",
+        });
+      }
+    } catch (e) {
+      addAlert({ message: `Fill gaps failed: ${(e as Error).message}`, severity: "error" });
+    }
   }
 
   return (
@@ -668,7 +696,7 @@ export function Data() {
         </div>
       </section>
 
-      {/* Available Data */}
+      {/* Available Data — asset tree with coverage timeline */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-gray-400 uppercase">
@@ -697,69 +725,111 @@ export function Data() {
             </div>
           )}
         </div>
-        {availableLoading ? (
+
+        {/* Coverage-grouped asset tree */}
+        {coverageLoading || availableLoading ? (
           <p className="text-gray-400 text-sm">Loading…</p>
-        ) : Object.keys(grouped).length === 0 ? (
+        ) : !coverageData || Object.keys(coverageData.providers).length === 0 ? (
           <p className="text-gray-500 text-sm">No data sources available.</p>
         ) : (
-          <div className="space-y-4">
-            {Object.entries(grouped).map(([provider, items]) => (
-              <div
-                key={provider}
-                className="bg-gray-900 border border-gray-800 rounded p-4"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-lg font-semibold text-gray-200 capitalize">
-                    {provider}
-                  </h3>
-                  <span className="text-xs text-gray-500">
-                    {items.length} dataset{items.length !== 1 ? "s" : ""}
-                  </span>
+          <div className="space-y-2">
+            {Object.entries(coverageData.providers).map(([provider, assets]) => {
+              const isExpanded = expandedProviders.has(provider);
+              return (
+                <div key={provider} className="bg-gray-900 border border-gray-800 rounded">
+                  {/* Provider header */}
+                  <button
+                    onClick={() => toggleProvider(provider)}
+                    className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-800/50 transition-colors rounded"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">{isExpanded ? "▾" : "▸"}</span>
+                      <span className="font-semibold text-gray-200 capitalize">{provider}</span>
+                    </div>
+                    <span className="text-xs text-gray-500">
+                      {assets.length} asset{assets.length !== 1 ? "s" : ""}
+                    </span>
+                  </button>
+
+                  {/* Asset rows (collapsible) */}
+                  {isExpanded && (
+                    <div className="border-t border-gray-800 divide-y divide-gray-800/50">
+                      {assets.map((asset) => {
+                        const defaultTf = asset.timeframes_on_disk.includes("1min")
+                          ? "1min"
+                          : asset.timeframes_on_disk[0] ?? "1min";
+                        const ds: CompareDataset = {
+                          provider: asset.provider,
+                          symbol: asset.symbol,
+                          timeframe: defaultTf,
+                        };
+                        const isSelected = selectedKeys.has(selectionKey(ds));
+                        return (
+                          <div
+                            key={asset.symbol}
+                            className="px-4 py-2.5 flex items-center gap-3"
+                          >
+                            {/* Compare checkbox */}
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelected(ds)}
+                              className="accent-indigo-500 shrink-0"
+                              title="Select for compare"
+                            />
+
+                            {/* Symbol name */}
+                            <button
+                              onClick={() =>
+                                setPreview({
+                                  provider: asset.provider,
+                                  symbol: asset.symbol,
+                                  timeframe: defaultTf,
+                                })
+                              }
+                              className="text-sm font-mono font-semibold text-gray-200 hover:text-white w-16 text-left shrink-0"
+                            >
+                              {asset.symbol}
+                            </button>
+
+                            {/* Timeline bar */}
+                            <div className="flex-1 min-w-0">
+                              {asset.ranges.length > 0 ? (
+                                <CoverageTimeline ranges={asset.ranges} />
+                              ) : (
+                                <span className="text-xs text-gray-600">no coverage data</span>
+                              )}
+                            </div>
+
+                            {/* Timeframes on disk */}
+                            <div className="hidden sm:flex gap-1 shrink-0">
+                              {asset.timeframes_on_disk.map((tf) => (
+                                <span
+                                  key={tf}
+                                  className="text-[10px] font-mono text-gray-500 bg-gray-800 px-1 py-0.5 rounded"
+                                >
+                                  {tf}
+                                </span>
+                              ))}
+                            </div>
+
+                            {/* Fill gaps button */}
+                            <button
+                              onClick={() => handleFillGaps(asset.provider, asset.symbol)}
+                              disabled={fillGapsMutation.isPending}
+                              className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50 shrink-0 transition-colors"
+                              title="Fill gaps"
+                            >
+                              Fill gaps
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {items.map((it) => {
-                    const ds: CompareDataset = {
-                      provider: it.provider,
-                      symbol: it.symbol,
-                      timeframe: it.timeframe,
-                    };
-                    const isSelected = selectedKeys.has(selectionKey(ds));
-                    return (
-                      <div
-                        key={`${it.symbol}-${it.timeframe}`}
-                        className={`flex items-center gap-1.5 bg-gray-800 border rounded px-2 py-1 text-xs font-mono text-gray-300 transition-colors ${
-                          isSelected
-                            ? "border-indigo-500 bg-indigo-900/30"
-                            : "border-gray-700 hover:border-indigo-600"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelected(ds)}
-                          className="accent-indigo-500"
-                          title="Select for compare"
-                        />
-                        <button
-                          onClick={() =>
-                            setPreview({
-                              provider: it.provider,
-                              symbol: it.symbol,
-                              timeframe: it.timeframe,
-                            })
-                          }
-                          title={`${formatSize(it.size_bytes)} · ${it.file_path}`}
-                          className="text-left hover:text-white cursor-pointer"
-                        >
-                          <strong>{it.symbol}</strong>
-                          <span className="text-gray-500 ml-1">{it.timeframe}</span>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>

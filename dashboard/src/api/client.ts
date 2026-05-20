@@ -186,6 +186,35 @@ export interface DownloadCreate {
   timeframe: string;
 }
 
+export interface CoverageRange {
+  start: string;
+  end: string;
+}
+
+export interface CoverageAsset {
+  provider: string;
+  symbol: string;
+  ranges: CoverageRange[];
+  timeframes_on_disk: string[];
+}
+
+export interface CoverageResponse {
+  providers: Record<string, CoverageAsset[]>;
+}
+
+export interface FillGapsRequest {
+  provider: string;
+  symbol: string;
+  start: string;
+  end: string;
+  timeframe?: string;
+}
+
+export interface FillGapsResponse {
+  download_ids: string[];
+  gap_count: number;
+}
+
 export interface EventParams {
   event_type?: string;
   severity?: string;
@@ -527,6 +556,15 @@ export const api = {
     return request<MarketDataResponse>(
       `/api/data/market/${encodeURIComponent(symbol)}?provider=${encodeURIComponent(provider)}&timeframe=${encodeURIComponent(timeframe)}`
     );
+  },
+  getCoverage(): Promise<CoverageResponse> {
+    return request<CoverageResponse>("/api/data/coverage");
+  },
+  fillGaps(body: FillGapsRequest): Promise<FillGapsResponse> {
+    return request<FillGapsResponse>("/api/data/fill-gaps", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   },
 
   // Events

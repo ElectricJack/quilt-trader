@@ -16,6 +16,7 @@ import type {
   CashFlowCreate,
   DownloadCreate,
   EventParams,
+  FillGapsRequest,
 } from "./client";
 
 // ─── Query Keys ────────────────────────────────────────────────────────────────
@@ -471,6 +472,27 @@ export function useAvailableData() {
   return useQuery({
     queryKey: keys.availableData(),
     queryFn: api.listAvailableData,
+  });
+}
+
+// ─── Coverage ─────────────────────────────────────────────────────────────────
+
+export function useCoverage() {
+  return useQuery({
+    queryKey: ["data", "coverage"] as const,
+    queryFn: api.getCoverage,
+    staleTime: 30_000,
+  });
+}
+
+export function useFillGaps() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: FillGapsRequest) => api.fillGaps(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["data", "coverage"] });
+      void qc.invalidateQueries({ queryKey: keys.downloads() });
+    },
   });
 }
 
