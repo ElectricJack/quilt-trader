@@ -29,7 +29,7 @@ async def test_runner_creates_row_and_advances_status(test_app, db_session):
 
     # Mock everything that's NOT the runner itself.
     with patch("coordinator.services.backtest_runner._load_manifest") as load_manifest, \
-         patch("coordinator.services.backtest_runner._has_coverage", return_value=True) as has_cov, \
+         patch("coordinator.services.coverage_utils.ensure_coverage", new_callable=AsyncMock, return_value=[]) as mock_ensure, \
          patch("coordinator.services.backtest_runner._load_bar_series") as load_bars, \
          patch("coordinator.services.backtest_runner._load_algorithm_class") as load_class, \
          patch("coordinator.services.backtest_runner.BacktestEngine") as mock_engine_cls:
@@ -50,10 +50,12 @@ async def test_runner_creates_row_and_advances_status(test_app, db_session):
         load_class.return_value = MagicMock  # returns the class, instantiation happens inside runner
 
         container = get_container()
+        mock_coverage_index = MagicMock()
         runner = BacktestRunner(
             session_factory=container.session_factory,
             download_manager=MagicMock(),
             data_service=MagicMock(),
+            coverage_index=mock_coverage_index,
         )
         await runner.run(run.id)
 

@@ -208,12 +208,17 @@ def create_app(
             ws_manager=ws_manager_obj,
         )
 
+        from coordinator.services.coverage_index import CoverageIndex
+        coverage_index = CoverageIndex(data_svc)
+        container.coverage_index = coverage_index
+
         try:
             from coordinator.services.backtest_runner import BacktestRunner
             container.backtest_runner = BacktestRunner(
                 session_factory=session_factory,
                 download_manager=download_manager,
                 data_service=data_svc,
+                coverage_index=coverage_index,
             )
         except ImportError:
             logger.warning(

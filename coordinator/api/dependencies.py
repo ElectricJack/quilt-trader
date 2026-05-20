@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from coordinator.services.live_finalizer import LiveFinalizer
     from coordinator.services.tick_scheduler import TickScheduler
     from coordinator.services.lifecycle import LifecycleService
+    from coordinator.services.coverage_index import CoverageIndex
 
 
 class ServiceContainer:
@@ -37,6 +38,7 @@ class ServiceContainer:
         self.live_finalizer: Optional["LiveFinalizer"] = None
         self.tick_scheduler: Optional["TickScheduler"] = None
         self.lifecycle_service: Optional["LifecycleService"] = None
+        self.coverage_index: Optional["CoverageIndex"] = None
 
 
 _container: ServiceContainer | None = None

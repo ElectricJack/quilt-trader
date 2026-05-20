@@ -71,26 +71,6 @@ def _df_timestamps_naive(df: pd.DataFrame) -> pd.Series:
     return s
 
 
-def _has_coverage(data_service, source, symbol, timeframe, start, end) -> bool:
-    """Return True if cached market data covers [start, end] at date granularity.
-
-    Compares calendar dates rather than full timestamps because cached daily
-    bars are typically stamped at 00:00 while user-supplied date_range_end
-    may carry a time-of-day component (e.g. 16:00 ET). A datetime-precise
-    comparison would flip an otherwise-covered range to "not covered" and
-    trigger an unnecessary re-download on every run.
-    """
-    df = data_service.load_market_data(source, symbol, timeframe)
-    if df is None or df.empty:
-        return False
-    ts = _df_timestamps_naive(df)
-    cached_first = ts.min().date()
-    cached_last = ts.max().date()
-    requested_first = _to_naive_utc(start).date()
-    requested_last = _to_naive_utc(end).date()
-    return cached_first <= requested_first and cached_last >= requested_last
-
-
 def _load_bar_series(data_service, source, symbol, timeframe) -> pd.DataFrame:
     return data_service.load_market_data(source, symbol, timeframe)
 
@@ -119,10 +99,11 @@ class BacktestRunner:
     All state mutation flows through the DB; no result is returned to the caller.
     """
 
-    def __init__(self, session_factory, download_manager, data_service):
+    def __init__(self, session_factory, download_manager, data_service, coverage_index=None):
         self._sf = session_factory
         self._dm = download_manager
         self._ds = data_service
+        self._coverage_index = coverage_index
 
     async def run(self, run_id: str) -> None:
         from coordinator.database.models import Algorithm, BacktestRun
@@ -154,7 +135,9 @@ class BacktestRunner:
             # requirements.data_dependencies (legacy).
             deps = manifest.assets or manifest.requirements.data_dependencies or []
 
-            # Stage 1: data coverage
+            # Stage 1: data coverage — download only missing gaps
+            from coordinator.services.coverage_utils import ensure_coverage
+
             download_ids: list[str] = []
             for dep in deps:
                 symbol = dep.get("symbol")
@@ -162,25 +145,53 @@ class BacktestRunner:
                     continue
                 source = dep.get("source") or "polygon"
                 timeframe = dep.get("timeframe") or "1min"
-                if not _has_coverage(self._ds, source, symbol, timeframe,
-                                     date_range_start, date_range_end):
-                    msg = f"Downloading {symbol} {timeframe} from {source}"
+
+                if self._coverage_index is not None:
+                    msg = f"Checking coverage for {symbol} {timeframe} from {source}"
                     async with self._sf() as session:
                         r = (await session.execute(
                             select(BacktestRun).where(BacktestRun.id == run_id)
                         )).scalar_one()
                         r.progress_message = msg
                         await session.commit()
-                    dl = await self._dm.create_download(
-                        symbols=[symbol],
-                        date_range_start=date_range_start.date(),
-                        date_range_end=date_range_end.date(),
-                        provider=source,
+
+                    dl_ids = await ensure_coverage(
+                        source, symbol,
+                        date_range_start.date(), date_range_end.date(),
+                        self._dm, self._coverage_index,
                         timeframe=timeframe,
                     )
-                    download_ids.append(dl["id"])
-                    # Wait for completion
-                    await self._wait_for_download(dl["id"])
+                    for dl_id in dl_ids:
+                        download_ids.append(dl_id)
+                        await self._wait_for_download(dl_id)
+                else:
+                    # Fallback: no coverage index — download the full range if missing
+                    df = self._ds.load_market_data(source, symbol, timeframe)
+                    has_cov = False
+                    if df is not None and not df.empty and "timestamp" in df.columns:
+                        ts = _df_timestamps_naive(df)
+                        cached_first = ts.min().date()
+                        cached_last = ts.max().date()
+                        requested_first = _to_naive_utc(date_range_start).date()
+                        requested_last = _to_naive_utc(date_range_end).date()
+                        has_cov = cached_first <= requested_first and cached_last >= requested_last
+                    if not has_cov:
+                        msg = f"Downloading {symbol} {timeframe} from {source}"
+                        async with self._sf() as session:
+                            r = (await session.execute(
+                                select(BacktestRun).where(BacktestRun.id == run_id)
+                            )).scalar_one()
+                            r.progress_message = msg
+                            await session.commit()
+                        dl = await self._dm.create_download(
+                            symbols=[symbol],
+                            date_range_start=date_range_start.date(),
+                            date_range_end=date_range_end.date(),
+                            provider=source,
+                            timeframe=timeframe,
+                        )
+                        download_ids.append(dl["id"])
+                        await self._wait_for_download(dl["id"])
 
             # Stage 2: run engine
             async with self._sf() as session:
