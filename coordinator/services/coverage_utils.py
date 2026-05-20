@@ -28,8 +28,19 @@ async def ensure_coverage(
     Invalidates the coverage cache after submitting so the next call re-scans disk.
     """
     gaps = coverage_index.get_gaps(provider, symbol, start, end)
-    download_ids: list[str] = []
+    if not gaps:
+        return []
 
+    # Live data providers can't be downloaded — their data comes from the
+    # streaming aggregator. Only historical providers (polygon, etc.) support
+    # the DownloadManager.
+    available_providers = set(download_manager._providers.keys()) if hasattr(download_manager, "_providers") else set()
+    if provider not in available_providers:
+        # Can't download — return empty. The UI should show gaps as
+        # "live data only, no historical download available".
+        return []
+
+    download_ids: list[str] = []
     for gap_start, gap_end in gaps:
         dl_start = gap_start - timedelta(days=1)
         dl_end = gap_end + timedelta(days=1)
