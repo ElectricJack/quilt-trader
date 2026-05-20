@@ -1,3 +1,6 @@
+import os
+import tempfile
+
 import pandas as pd
 import pytest
 
@@ -44,3 +47,77 @@ def test_aggregate_passthroughs_1min():
     df = _fixture_1min_bars()
     out = DataService.aggregate_bars(df, "1min")
     pd.testing.assert_frame_equal(out.reset_index(drop=True), df.reset_index(drop=True))
+
+
+# ─── load_market_data derivation tests ───────────────────────────────────────
+
+
+def _write_1min_parquet(tmpdir: str) -> DataService:
+    """Write a 1-min parquet file and return a DataService pointing at tmpdir."""
+    svc = DataService(market_data_dir=tmpdir, custom_data_dir=os.path.join(tmpdir, "custom"))
+    df = _fixture_1min_bars()
+    path = svc.market_data_path("polygon", "SPY", "1min")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    df.to_parquet(path, index=False)
+    return svc
+
+
+def test_load_market_data_exact_file_returned():
+    """Requesting 1min when only 1min.parquet exists returns the file directly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        svc = _write_1min_parquet(tmpdir)
+        df = svc.load_market_data("polygon", "SPY", "1min")
+        assert df is not None
+        assert len(df) == 6
+
+
+def test_load_market_data_5min_derived_from_1min():
+    """Requesting 5min when only 1min.parquet exists returns aggregated bars."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        svc = _write_1min_parquet(tmpdir)
+        df = svc.load_market_data("polygon", "SPY", "5min")
+        assert df is not None
+        # 6 1-min bars → 2 5-min buckets (14:30-bucket + 14:35-bucket)
+        assert len(df) == 2
+
+
+def test_load_market_data_native_5min_file_preferred():
+    """If a native 5min.parquet exists, it's returned instead of deriving from 1min."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        svc = _write_1min_parquet(tmpdir)
+        # Write a fake native 5min file with a distinctive shape
+        native_df = pd.DataFrame([{"timestamp": pd.Timestamp("2026-05-18 14:30:00", tz="UTC"),
+                                    "open": 999.0, "high": 999.0, "low": 999.0,
+                                    "close": 999.0, "volume": 42}])
+        path_5min = svc.market_data_path("polygon", "SPY", "5min")
+        native_df.to_parquet(path_5min, index=False)
+
+        result = svc.load_market_data("polygon", "SPY", "5min")
+        assert result is not None
+        assert result.iloc[0]["open"] == 999.0  # native file, not derived
+
+
+def test_load_market_data_missing_returns_none():
+    """Requesting a symbol that doesn't exist returns None."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        svc = DataService(market_data_dir=tmpdir, custom_data_dir=tmpdir)
+        assert svc.load_market_data("polygon", "MISSING", "1min") is None
+
+
+def test_load_market_data_1hour_alias_derived():
+    """Timeframe alias '1hour' derives from 1min just like '1h'."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        svc = _write_1min_parquet(tmpdir)
+        df = svc.load_market_data("polygon", "SPY", "1hour")
+        # All 6 bars fall within a single hour bucket
+        assert df is not None
+        assert len(df) == 1
+
+
+def test_load_market_data_1day_alias_derived():
+    """Timeframe alias '1day' derives from 1min."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        svc = _write_1min_parquet(tmpdir)
+        df = svc.load_market_data("polygon", "SPY", "1day")
+        assert df is not None
+        assert len(df) == 1

@@ -31,11 +31,37 @@ class DataService:
         df.to_parquet(path, index=False)
         return path
 
+    # Aliases for timeframes that can be derived from 1-min data.
+    _DERIVABLE = {"5min", "15min", "1h", "1hour", "1d", "1day"}
+
+    # Map caller-supplied timeframe strings to the keys aggregate_bars understands.
+    _TF_ALIAS: dict[str, str] = {
+        "5min": "5min",
+        "15min": "15min",
+        "1h": "1h",
+        "1hour": "1h",
+        "1d": "1d",
+        "1day": "1d",
+    }
+
     def load_market_data(self, provider: str, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+        # Try the exact file first (backwards-compat + native bars preferred).
         path = self.market_data_path(provider, symbol, timeframe)
-        if not os.path.exists(path):
-            return None
-        return pd.read_parquet(path)
+        if os.path.exists(path):
+            return pd.read_parquet(path)
+
+        # Derive from 1-min when the exact file is absent and the timeframe is aggregatable.
+        if timeframe in self._DERIVABLE:
+            one_min_path = self.market_data_path(provider, symbol, "1min")
+            if os.path.exists(one_min_path):
+                df_1min = pd.read_parquet(one_min_path)
+                agg_key = self._TF_ALIAS.get(timeframe, timeframe)
+                try:
+                    return self.aggregate_bars(df_1min, agg_key)
+                except ValueError:
+                    pass
+
+        return None
 
     def latest_market_data_timestamp(
         self, provider: str, symbol: str, timeframe: str
