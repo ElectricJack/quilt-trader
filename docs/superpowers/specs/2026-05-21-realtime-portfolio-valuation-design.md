@@ -38,6 +38,10 @@ A `default_history_provider` setting in coordinator config/settings specifies wh
 
 The existing `DataService.load_market_data(source, symbol, timeframe)` loads from disk. The equity curve builder uses a "best available" source lookup — checking all providers on disk for a symbol and using whichever has coverage for the needed date range.
 
+**Account-triggered downloads use the same pipeline as manual downloads.** When a new account is added and the backfill discovers historically-held symbols, it creates download jobs through the existing download manager — the same path as `quilt data download`. These downloads appear in the data tab, are tracked in the `MarketDataDownload` table, and land in the standard `data/market/{provider}/{symbol}/{timeframe}.parquet` structure. There is no separate storage for "account history" vs "manually downloaded" data — it's all the same data, just triggered automatically.
+
+**Intraday vs. historical data sources are decoupled.** During market hours, the PortfolioTracker (Section 4) uses live ticks from whatever subscriptions are active — these can come from any broker regardless of which provider supplies historical data. For example, an Alpaca account can use Alpaca live ticks for real-time valuation while Polygon supplies the historical daily closes. Intraday points are ephemeral (streamed to the dashboard, never stored). The daily close job writes the official end-of-day row using the default history provider's closing prices, keeping the materialized history clean and consistent for backtesting.
+
 ## Section 2: Position Ledger from Transactions
 
 When an account is added (or on first sync), the coordinator pulls full transaction history from the broker and builds a daily position ledger — a table that answers "what did this account hold on date X?"
