@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -92,6 +93,13 @@ async def handle_dashboard_message(websocket, data: dict) -> None:
         if target:
             manager.subscribe(websocket, target)
             await websocket.send_json({"type": "subscribed", "target": target})
+            container = get_container()
+            tracker = getattr(container, "portfolio_tracker", None)
+            if tracker and (target.startswith("account:") or target == "portfolio:summary"):
+                tracker.add_subscriber(target)
+                if target.startswith("account:"):
+                    acct_id = target.split(":", 1)[1]
+                    asyncio.create_task(_init_account_tracking(acct_id, tracker))
         return
 
     if msg_type == "unsubscribe":
@@ -99,6 +107,10 @@ async def handle_dashboard_message(websocket, data: dict) -> None:
         if target:
             manager.unsubscribe(websocket, target)
             await websocket.send_json({"type": "unsubscribed", "target": target})
+            container = get_container()
+            tracker = getattr(container, "portfolio_tracker", None)
+            if tracker and (target.startswith("account:") or target == "portfolio:summary"):
+                tracker.remove_subscriber(target)
         return
 
     if msg_type == "subscribe":
@@ -165,6 +177,42 @@ async def handle_dashboard_message(websocket, data: dict) -> None:
                 "instance_id": instance_id,
                 "error": "failed to reach worker",
             })
+
+
+async def _init_account_tracking(account_id: str, tracker) -> None:
+    """Load account positions from broker and register bar callbacks."""
+    from coordinator.database.models import Account
+    from sqlalchemy import select
+    container = get_container()
+    try:
+        async with container.session_factory() as session:
+            account = (await session.execute(
+                select(Account).where(Account.id == account_id)
+            )).scalar_one_or_none()
+            if not account:
+                return
+
+        import json as _json
+        creds = _json.loads(container.encryption.decrypt(account.credentials))
+        from worker.adapter_factory import make_broker_adapter
+        adapter = make_broker_adapter(account.broker_type, account.environment, creds)
+        positions = adapter.get_positions()
+        info = adapter.get_account_info()
+        tracker.set_account_state(account_id, {
+            "positions": positions,
+            "cash": info.get("cash", 0),
+        })
+        if account.show_in_overview:
+            tracker.mark_account_visible(account_id)
+
+        aggregator = getattr(container, "live_feed_aggregator", None)
+        if aggregator:
+            for symbol in positions:
+                async def _on_bar(bar, sym=symbol):
+                    await tracker.on_price_update(sym, float(bar.get("close", 0)))
+                aggregator.subscribe_bars(account.broker_type, symbol, "1min", _on_bar)
+    except Exception:
+        logger.exception("Failed to init tracking for account %s", account_id)
 
 
 @router.websocket("/ws/dashboard")

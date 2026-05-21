@@ -201,6 +201,10 @@ def create_app(
         )
         await container.live_feed_aggregator.start()
 
+        from coordinator.services.portfolio_tracker import PortfolioTracker
+        portfolio_tracker = PortfolioTracker(ws_manager=ws_manager_for_aggregator)
+        container.portfolio_tracker = portfolio_tracker
+
         # Upsert a Worker row for the coordinator itself so that
         # LiveFeedAggregator._emit_stream_event can write worker_activity rows
         # (WorkerActivity.worker_id is a non-nullable FK into workers).
