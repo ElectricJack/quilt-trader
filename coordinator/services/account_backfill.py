@@ -47,9 +47,12 @@ def replay_transactions(
 
         if txn_type == "fill":
             symbol = txn["symbol"]
-            side = txn["side"]
-            qty = txn["quantity"]
-            price = txn["price"]
+            side = txn.get("side")
+            qty = float(txn.get("quantity") or 0)
+            price = float(txn.get("price") or 0)
+
+            if not symbol or qty == 0:
+                continue
 
             if side == "buy":
                 pos = positions.get(symbol)
@@ -57,9 +60,10 @@ def replay_transactions(
                     positions[symbol] = {"quantity": qty, "avg_cost": price}
                 else:
                     total_qty = pos["quantity"] + qty
-                    pos["avg_cost"] = (
-                        (pos["avg_cost"] * pos["quantity"] + price * qty) / total_qty
-                    )
+                    if total_qty > 0:
+                        pos["avg_cost"] = (
+                            (pos["avg_cost"] * pos["quantity"] + price * qty) / total_qty
+                        )
                     pos["quantity"] = total_qty
                 cash -= qty * price
             elif side == "sell":

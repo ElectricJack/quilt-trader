@@ -55,6 +55,7 @@ class AccountLifecycleService:
         self._download_manager = download_manager
         self._ws_manager = ws_manager
         self._default_provider = default_provider
+        self._backfill_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # helpers
@@ -149,6 +150,10 @@ class AccountLifecycleService:
 
     async def initial_backfill(self, account_id: str) -> None:
         """Full backfill for a newly added account."""
+        async with self._backfill_lock:
+            await self._initial_backfill_inner(account_id)
+
+    async def _initial_backfill_inner(self, account_id: str) -> None:
         logger.info("Starting initial backfill for account %s", account_id)
         await self._push_progress(account_id, "Loading account...")
 
