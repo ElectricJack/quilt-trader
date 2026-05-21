@@ -69,6 +69,50 @@ class AccountLifecycleService:
         except Exception:
             logger.debug("Failed to push progress for %s", account_id, exc_info=True)
 
+    async def _fetch_prices_inline(
+        self, symbols: set[str], start: date, end: date, account_id: str,
+    ) -> None:
+        """Fetch daily bars directly from providers and save to disk."""
+        import os
+        import pandas as pd
+
+        provider = self._get_default_provider()
+        if provider is None:
+            logger.warning("No data provider available for inline price fetch")
+            return
+
+        for i, symbol in enumerate(sorted(symbols)):
+            path = self._data_service.market_data_path(self._default_provider, symbol, "1day")
+            if os.path.exists(path):
+                continue
+            try:
+                await self._push_progress(
+                    account_id,
+                    f"Downloading {symbol} ({i+1}/{len(symbols)})...",
+                )
+                bars = await provider.fetch_bars(symbol, "1day", start, end)
+                if bars:
+                    df = pd.DataFrame(bars)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    df.to_parquet(path, index=False)
+                    logger.info("Fetched %d bars for %s", len(bars), symbol)
+                else:
+                    logger.warning("No bars returned for %s", symbol)
+            except Exception:
+                logger.warning("Failed to download %s", symbol, exc_info=True)
+
+    def _get_default_provider(self):
+        """Get the default history provider from the download manager."""
+        if self._download_manager is None:
+            return None
+        providers = getattr(self._download_manager, "_providers", {})
+        provider = providers.get(self._default_provider)
+        if provider is None:
+            for name, p in providers.items():
+                if p is not None:
+                    return p
+        return provider
+
     def _make_adapter(self, account: Account):
         """Create a broker adapter from an Account row."""
         from worker.adapter_factory import make_broker_adapter
@@ -79,12 +123,22 @@ class AccountLifecycleService:
     @staticmethod
     def _normalize_transaction(txn) -> dict:
         """Convert a BrokerTransaction dataclass to a plain dict for replay."""
+        side = txn.side
+        qty = txn.quantity
+
+        if txn.type == "fill" and side not in ("buy", "sell"):
+            if qty is not None and qty < 0:
+                side = "sell"
+                qty = abs(qty)
+            else:
+                side = "buy"
+
         return {
             "type": txn.type,
             "timestamp": txn.timestamp.isoformat(),
             "symbol": txn.symbol,
-            "side": txn.side,
-            "quantity": txn.quantity,
+            "side": side,
+            "quantity": qty,
             "price": txn.price,
             "amount": txn.amount,
         }
@@ -147,32 +201,22 @@ class AccountLifecycleService:
             ledger, cash_by_date, start_date, end_date
         )
 
-        # 6. Collect all historically-held symbols
+        # 6. Collect all historically-held equity symbols (skip options/crypto)
         all_symbols: set[str] = set()
         for day_positions in filled_ledger.values():
-            all_symbols.update(day_positions.keys())
+            for sym in day_positions:
+                if len(sym) > 15 or "/" in sym:
+                    continue
+                all_symbols.add(sym)
 
-        # 7. Trigger download of missing price data
-        if all_symbols and self._download_manager is not None:
-            await self._push_progress(
-                account_id,
-                f"Downloading price data for {len(all_symbols)} symbol(s)...",
-            )
-            try:
-                await self._download_manager.create_download(
-                    symbols=sorted(all_symbols),
-                    date_range_start=start_date,
-                    date_range_end=end_date,
-                    provider=self._default_provider,
-                    timeframe="1day",
-                )
-            except Exception:
-                logger.warning(
-                    "Download request failed for backfill (provider may not be configured)",
-                    exc_info=True,
-                )
+        # 7. Fetch price data inline (don't queue — we need it now)
+        await self._push_progress(
+            account_id,
+            f"Downloading price data for {len(all_symbols)} symbol(s)...",
+        )
+        await self._fetch_prices_inline(all_symbols, start_date, end_date, account_id)
 
-        # 8. Load prices
+        # 8. Load prices from disk
         await self._push_progress(account_id, "Loading price data...")
         prices = await load_prices_for_symbols(
             symbols=sorted(all_symbols),
