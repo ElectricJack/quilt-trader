@@ -1,5 +1,6 @@
 import time
 from typing import Any, Optional
+import httpx
 import pandas as pd
 
 
@@ -8,7 +9,15 @@ class DataClient:
         self._base_url = base_url.rstrip("/")
         self._cache_ttl = cache_ttl
         self._http = http_client
+        self._own_http: Optional[httpx.AsyncClient] = None
         self._cache: dict[str, tuple[float, pd.DataFrame]] = {}
+
+    async def _ensure_http(self) -> Any:
+        if self._http is not None:
+            return self._http
+        if self._own_http is None:
+            self._own_http = httpx.AsyncClient(timeout=30.0)
+        return self._own_http
 
     def _get_cached(self, key: str) -> Optional[pd.DataFrame]:
         if key in self._cache:
@@ -33,7 +42,8 @@ class DataClient:
         params: dict = {"timeframe": timeframe, "bars": bars}
         if source is not None:
             params["source"] = source
-        response = await self._http.get(url, params=params)
+        http = await self._ensure_http()
+        response = await http.get(url, params=params)
         response.raise_for_status()
         data = response.json().get("data", [])
         df = pd.DataFrame(data)
@@ -46,7 +56,8 @@ class DataClient:
         cached = self._get_cached(cache_key)
         if cached is not None:
             return cached
-        response = await self._http.get(url)
+        http = await self._ensure_http()
+        response = await http.get(url)
         response.raise_for_status()
         data = response.json().get("data", [])
         df = pd.DataFrame(data)

@@ -96,7 +96,11 @@ class DataService:
     def load_custom_data(self, name: str, fmt: str) -> Optional[pd.DataFrame]:
         path = self.custom_data_path(name, fmt)
         if not os.path.exists(path):
-            return None
+            direct = os.path.join(self._custom_dir, name)
+            if os.path.exists(direct):
+                path = direct
+            else:
+                return None
         if fmt == "csv":
             return pd.read_csv(path)
         elif fmt == "json":

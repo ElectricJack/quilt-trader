@@ -120,6 +120,8 @@ class LiveInstanceRuntime:
             data_client=data_client,
             coordinator_client=agent,
             live_observer=observer,
+            buffer=buffer,
+            data_deps=data_deps,
         )
         return cls(
             instance_id=instance_id, run_id=run_id,

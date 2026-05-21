@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 import logging
 import pandas as pd
 from worker.broker_adapter import BrokerAdapter
@@ -16,12 +16,15 @@ class LiveTickContext:
         broker: BrokerAdapter,
         data_client: DataClient,
         buffer: Any = None,
+        custom_data: Optional[dict[str, pd.DataFrame]] = None,
     ) -> None:
         self._timestamp = timestamp
         self._mode = mode
         self._broker = broker
         self._data_client = data_client
         self._buffer = buffer
+        self._custom_data = custom_data or {}
+        self._price_cache: dict[str, float] = {}
 
     @property
     def timestamp(self) -> datetime:
@@ -48,19 +51,43 @@ class LiveTickContext:
         return self._broker.get_account_info()["buying_power"]
 
     def market_data(self, symbol: str, timeframe: str = "1min", bars: int = 100):
-        """Return bars from the rolling buffer (sync, fast). Falls back to the
-        coordinator HTTP endpoint if the symbol/timeframe isn't buffered, but
-        that path logs a warning because algorithm on_tick handlers are sync —
-        the async HTTP call can't be awaited inline."""
         if self._buffer is not None and self._buffer.has(symbol, timeframe):
             return self._buffer.get(symbol, timeframe, bars)
-        logger.warning(
-            "market_data(%s, %s) not in buffer; cannot fetch inline from "
-            "a sync on_tick handler. Declare this in the manifest's assets "
-            "so the rolling buffer is pre-populated.",
-            symbol, timeframe,
-        )
+
+        if symbol in self._price_cache:
+            return self._price_df(symbol)
+
+        positions = self._broker.get_positions()
+        pos = positions.get(symbol)
+        if pos and pos.get("current_price"):
+            self._price_cache[symbol] = float(pos["current_price"])
+            return self._price_df(symbol)
+
+        try:
+            from alpaca.data.requests import StockLatestTradeRequest
+            inner = getattr(self._broker, "_inner", self._broker)
+            inner._ensure_clients()
+            resp = inner._data_client.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=[symbol])
+            )
+            if symbol in resp:
+                self._price_cache[symbol] = float(resp[symbol].price)
+                return self._price_df(symbol)
+        except Exception:
+            logger.warning("Failed to fetch latest price for %s", symbol, exc_info=True)
+
         return None
 
-    async def data(self, source_name: str) -> pd.DataFrame:
-        return await self._data_client.get_custom_data(source_name)
+    def _price_df(self, symbol: str) -> pd.DataFrame:
+        price = self._price_cache[symbol]
+        return pd.DataFrame([{
+            "timestamp": self._timestamp,
+            "open": price, "high": price, "low": price,
+            "close": price, "volume": 0,
+        }])
+
+    def data(self, source_name: str) -> pd.DataFrame:
+        if source_name in self._custom_data:
+            return self._custom_data[source_name]
+        logger.warning("Custom data %r not pre-fetched; returning empty DataFrame", source_name)
+        return pd.DataFrame()

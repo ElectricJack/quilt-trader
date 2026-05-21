@@ -65,20 +65,44 @@ def test_tick_context_market_data_from_buffer(mock_broker, mock_data_client):
     buffer.get.assert_called_once_with("AAPL", "1min", 100)
 
 
-def test_tick_context_market_data_no_buffer_returns_none(mock_broker, mock_data_client):
-    """Without a buffer, market_data returns None (can't await from sync on_tick)."""
+def test_tick_context_market_data_no_buffer_falls_back_to_positions(mock_broker, mock_data_client):
+    """Without a buffer, market_data falls back to broker positions for price."""
     ctx = LiveTickContext(
         timestamp=datetime.now(timezone.utc), mode="live",
         broker=mock_broker, data_client=mock_data_client,
     )
     result = ctx.market_data("AAPL", timeframe="1min", bars=100)
+    assert isinstance(result, pd.DataFrame)
+    assert float(result["close"].iloc[-1]) == 155.0
+
+
+def test_tick_context_market_data_unknown_symbol_returns_none(mock_broker, mock_data_client):
+    """For unknown symbols not in positions, market_data returns None."""
+    ctx = LiveTickContext(
+        timestamp=datetime.now(timezone.utc), mode="live",
+        broker=mock_broker, data_client=mock_data_client,
+    )
+    result = ctx.market_data("UNKNOWN_XYZ", timeframe="1min", bars=100)
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_tick_context_custom_data(mock_broker, mock_data_client):
-    ctx = LiveTickContext(timestamp=datetime.now(timezone.utc), mode="live", broker=mock_broker, data_client=mock_data_client)
-    df = await ctx.data("alpha-picks")
+def test_tick_context_custom_data_from_cache(mock_broker, mock_data_client):
+    custom = {"alpha-picks": pd.DataFrame({"symbol": ["TSLA", "NVDA"], "score": [0.95, 0.88]})}
+    ctx = LiveTickContext(
+        timestamp=datetime.now(timezone.utc), mode="live",
+        broker=mock_broker, data_client=mock_data_client,
+        custom_data=custom,
+    )
+    df = ctx.data("alpha-picks")
     assert isinstance(df, pd.DataFrame)
     assert len(df) == 2
-    mock_data_client.get_custom_data.assert_called_once_with("alpha-picks")
+
+
+def test_tick_context_custom_data_missing_returns_empty(mock_broker, mock_data_client):
+    ctx = LiveTickContext(
+        timestamp=datetime.now(timezone.utc), mode="live",
+        broker=mock_broker, data_client=mock_data_client,
+    )
+    df = ctx.data("nonexistent")
+    assert isinstance(df, pd.DataFrame)
+    assert df.empty

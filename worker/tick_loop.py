@@ -32,19 +32,44 @@ class TickProcessor:
     def __init__(self, runner: AlgorithmRunner, broker: BrokerAdapter,
                  data_client: DataClient, coordinator_client: Any,
                  idle_threshold_seconds: int = 60,
-                 live_observer: Optional["LiveObserver"] = None) -> None:
+                 live_observer: Optional["LiveObserver"] = None,
+                 buffer: Any = None,
+                 data_deps: Optional[list[dict]] = None) -> None:
         self._runner = runner
         self._broker = broker
         self._data_client = data_client
         self._coordinator = coordinator_client
         self._idle_threshold_seconds = idle_threshold_seconds
         self._live_observer = live_observer
+        self._buffer = buffer
+        self._data_deps = data_deps or []
         self._silent_tick_count: int = 0
         self._last_active_tick_ts: Optional[datetime] = None
         self._last_idle_tick_emitted_ts: Optional[datetime] = None
 
+    async def _fetch_custom_data(self) -> dict:
+        result = {}
+        for dep in self._data_deps:
+            if dep.get("source") != "custom":
+                continue
+            fname = dep.get("file")
+            if not fname:
+                continue
+            try:
+                df = await self._data_client.get_custom_data(fname)
+                result[fname] = df
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning("Failed to fetch custom data %s", fname, exc_info=True)
+        return result
+
     async def process_tick(self, timestamp: datetime) -> TickResult:
-        ctx = LiveTickContext(timestamp=timestamp, mode="live", broker=self._broker, data_client=self._data_client)
+        custom_data = await self._fetch_custom_data()
+        ctx = LiveTickContext(
+            timestamp=timestamp, mode="live", broker=self._broker,
+            data_client=self._data_client, buffer=self._buffer,
+            custom_data=custom_data,
+        )
         signals = self._runner.tick(ctx)
         result = TickResult(timestamp=timestamp, signals_produced=len(signals))
 
