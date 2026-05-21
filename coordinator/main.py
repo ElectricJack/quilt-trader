@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
 
 from coordinator.database.connection import create_engine, create_session_factory
-from coordinator.database.models import Base, Setting
+from coordinator.database.models import Account, Base, Setting
 from coordinator.services.event_bus import EventBus
 from coordinator.services.encryption import EncryptionService
 from coordinator.api.dependencies import ServiceContainer, set_container
@@ -130,6 +130,49 @@ def create_app(
             logger.info("ThetaDataProvider wired into DownloadManager")
         else:
             logger.info("Theta credentials not configured; ThetaDataProvider will be unavailable.")
+
+        # Build Tradier provider from first Tradier account
+        tradier_provider = None
+        try:
+            from coordinator.services.data_providers.tradier import TradierProvider
+            async with session_factory() as _sess:
+                _tradier_acct = (await _sess.execute(
+                    select(Account).where(Account.broker_type == "tradier").limit(1)
+                )).scalar_one_or_none()
+                if _tradier_acct:
+                    import json as _json
+                    _creds = _json.loads(encryption.decrypt(_tradier_acct.credentials))
+                    tradier_provider = TradierProvider(
+                        access_token=_creds["access_token"],
+                        sandbox=(_tradier_acct.environment != "live"),
+                    )
+                    logger.info("Tradier data provider initialized from account %s", _tradier_acct.name)
+        except Exception:
+            logger.warning("Failed to initialize Tradier data provider", exc_info=True)
+
+        # Build Alpaca provider from first Alpaca account
+        alpaca_hist_provider = None
+        try:
+            from coordinator.services.data_providers.alpaca import AlpacaProvider
+            async with session_factory() as _sess:
+                _alpaca_acct = (await _sess.execute(
+                    select(Account).where(Account.broker_type == "alpaca").limit(1)
+                )).scalar_one_or_none()
+                if _alpaca_acct:
+                    import json as _json
+                    _creds = _json.loads(encryption.decrypt(_alpaca_acct.credentials))
+                    alpaca_hist_provider = AlpacaProvider(
+                        api_key=_creds["api_key"],
+                        secret_key=_creds["secret_key"],
+                    )
+                    logger.info("Alpaca data provider initialized from account %s", _alpaca_acct.name)
+        except Exception:
+            logger.warning("Failed to initialize Alpaca data provider", exc_info=True)
+
+        if tradier_provider is not None:
+            providers["tradier"] = tradier_provider
+        if alpaca_hist_provider is not None:
+            providers["alpaca"] = alpaca_hist_provider
 
         from coordinator.services.download_manager import DownloadManager
         download_manager = DownloadManager(

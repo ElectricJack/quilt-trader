@@ -33,6 +33,8 @@ class CoordinatorConfig(BaseSettings):
     # Worker install bootstrap script. Hosted publicly so a fresh Pi (not yet on Tailscale)
     # can fetch it; the script then installs Tailscale and pulls the worker package from
     # the coordinator over the private network.
+    default_history_provider: str = "tradier"
+
     worker_install_script_url: str = (
         "https://raw.githubusercontent.com/ElectricJack/quilt-trader/main/scripts/install-worker.sh"
     )
