@@ -197,55 +197,94 @@ class WorkerAgent:
             # Per-instance task: a slow algorithm doesn't block sibling instances.
             asyncio.create_task(runtime.on_tick_batch_entry(entry))
 
-    async def _handle_update_worker(self, _message: dict) -> None:
-        """Pull latest code from git, reinstall deps, then exit for systemd restart."""
-        logger.info("Received update_worker command — pulling latest code")
+    def _has_git(self, repo_root: str) -> bool:
+        git_dir = os.path.join(repo_root, ".git")
+        return os.path.isdir(git_dir)
 
-        # worker/ is a subdirectory of the repo root
+    def _try_git_pull(self, repo_root: str) -> tuple[bool, str]:
+        """Attempt git pull. Returns (success, sha_or_error)."""
+        result = subprocess.run(
+            ["git", "-C", repo_root, "pull", "origin", "main"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            return False, result.stderr.strip() or result.stdout.strip()
+        sha_result = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True,
+        )
+        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else "unknown"
+        return True, sha
+
+    async def _try_tarball_update(self, repo_root: str) -> tuple[bool, str]:
+        """Download fresh worker tarball from coordinator and extract over repo_root."""
+        import httpx
+        url = f"{self.coordinator_http_url}/api/workers/install/package.tar.gz"
+        params = {"token": self.worker_install_token}
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                tar_bytes = resp.content
+
+            import io, tarfile
+            with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+                tar.extractall(repo_root)
+            return True, "tarball"
+        except Exception as e:
+            return False, str(e)
+
+    async def _handle_update_worker(self, _message: dict) -> None:
+        """Update worker code, reinstall deps, then exit for systemd restart.
+
+        Tries git pull first (preserves history for git-clone installs).
+        Falls back to downloading a fresh tarball from the coordinator
+        (works for standard tarball-based installs).
+        """
+        logger.info("Received update_worker command")
+
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
         try:
-            # git pull
-            result = subprocess.run(
-                ["git", "-C", repo_root, "pull", "origin", "main"],
-                capture_output=True, text=True, timeout=60,
+            updated = False
+            method = "unknown"
+
+            if self._has_git(repo_root):
+                logger.info("Git repo detected — trying git pull")
+                ok, detail = self._try_git_pull(repo_root)
+                if ok:
+                    updated = True
+                    method = f"git (sha={detail})"
+                else:
+                    logger.warning("git pull failed: %s — falling back to tarball", detail)
+
+            if not updated:
+                logger.info("Downloading fresh tarball from coordinator")
+                ok, detail = await self._try_tarball_update(repo_root)
+                if ok:
+                    updated = True
+                    method = "tarball"
+                else:
+                    logger.error("Tarball update failed: %s", detail)
+                    await self.send_event("update_complete", "", payload={
+                        "success": False, "error": f"All update methods failed: {detail}",
+                    })
+                    return
+
+            # Reinstall package in case dependencies changed.
+            pip_result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-e", f"{repo_root}[worker]", "--quiet"],
+                capture_output=True, text=True, timeout=120,
             )
-            if result.returncode != 0:
-                error = result.stderr.strip() or result.stdout.strip()
-                logger.error("git pull failed: %s", error)
-                await self.send_event("update_complete", "", payload={
-                    "success": False, "error": f"git pull failed: {error}",
-                })
-                return
+            if pip_result.returncode != 0:
+                logger.warning("pip install failed: %s", pip_result.stderr)
 
-            # Get new SHA
-            sha_result = subprocess.run(
-                ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True,
-            )
-            new_sha = sha_result.stdout.strip() if sha_result.returncode == 0 else "unknown"
-
-            # pip install requirements if they exist
-            req_file = os.path.join(repo_root, "requirements.txt")
-            if os.path.exists(req_file):
-                pip_result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"],
-                    capture_output=True, text=True, timeout=120,
-                )
-                if pip_result.returncode != 0:
-                    logger.warning("pip install failed: %s", pip_result.stderr)
-
-            logger.info("Update complete — new SHA: %s. Exiting for systemd restart.", new_sha)
-
-            # Send success event before exiting
+            logger.info("Update complete via %s. Exiting for systemd restart.", method)
             await self.send_event("update_complete", "", payload={
-                "success": True, "new_sha": new_sha,
+                "success": True, "method": method,
             })
 
-            # Brief delay so the WS message has time to send
             await asyncio.sleep(0.5)
-
-            # Exit cleanly — systemd Restart=always will restart the process
             os._exit(0)
 
         except subprocess.TimeoutExpired:
