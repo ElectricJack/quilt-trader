@@ -3,6 +3,7 @@ import {
   createChart,
   ColorType,
   type IChartApi,
+  type ISeriesApi,
   type AreaData,
   type Time,
 } from "lightweight-charts";
@@ -24,6 +25,7 @@ const BAND_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#a855f7", "#ec4899"];
 export function StackedAreaChart({ bands, height = 200 }: StackedAreaChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Area">[]>([]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -61,6 +63,12 @@ export function StackedAreaChart({ bands, height = 200 }: StackedAreaChartProps)
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || bands.length === 0) return;
+
+    // Remove all previous series before adding new ones
+    for (const s of seriesRef.current) {
+      try { chart.removeSeries(s); } catch { /* ignore */ }
+    }
+    seriesRef.current = [];
 
     // Build a unified timeline
     const allTimestamps = new Set<number>();
@@ -108,6 +116,7 @@ export function StackedAreaChart({ bands, height = 200 }: StackedAreaChartProps)
         return { time: t as Time, value: cumulative };
       });
       series.setData(data);
+      seriesRef.current.push(series);
     });
 
     chart.timeScale().fitContent();

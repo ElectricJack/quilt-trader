@@ -41,18 +41,37 @@ async def portfolio_equity(
     range: RangeLiteral = Query("1m"),
     db: AsyncSession = Depends(get_db),
 ):
-    cutoff = _range_to_cutoff(range)
+    from coordinator.database.models import AccountEquityDaily
 
+    cutoff = _range_to_cutoff(range)
     accounts = await _visible_accounts(db)
 
     out = []
     for acct in accounts:
+        # Try materialized daily table first
+        eq_query = select(AccountEquityDaily).where(AccountEquityDaily.account_id == acct.id)
+        if cutoff is not None:
+            eq_query = eq_query.where(AccountEquityDaily.date >= cutoff.date())
+        eq_query = eq_query.order_by(AccountEquityDaily.date)
+        eq_rows = (await db.execute(eq_query)).scalars().all()
+
+        if eq_rows:
+            out.append({
+                "account_id": acct.id,
+                "account_name": acct.name,
+                "points": [
+                    {"timestamp": r.date.isoformat() + "T00:00:00Z", "value": r.total_value}
+                    for r in eq_rows
+                ],
+            })
+            continue
+
+        # Fallback to sparse snapshots for accounts not yet backfilled
         snap_query = select(AccountSnapshot).where(AccountSnapshot.account_id == acct.id)
         if cutoff is not None:
             snap_query = snap_query.where(AccountSnapshot.timestamp >= cutoff)
         snap_query = snap_query.order_by(AccountSnapshot.timestamp)
-        snap_result = await db.execute(snap_query)
-        snaps = snap_result.scalars().all()
+        snaps = (await db.execute(snap_query)).scalars().all()
 
         if not snaps:
             continue
