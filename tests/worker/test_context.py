@@ -37,7 +37,7 @@ def test_tick_context_positions(mock_broker, mock_data_client):
     ctx = LiveTickContext(timestamp=datetime.now(timezone.utc), mode="live", broker=mock_broker, data_client=mock_data_client)
     positions = ctx.positions
     assert "AAPL" in positions
-    assert positions["AAPL"]["quantity"] == 100
+    assert positions["AAPL"].quantity == 100
 
 
 def test_tick_context_account_values(mock_broker, mock_data_client):

@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any, Optional
 import logging
 import pandas as pd
+from sdk.models import Position
 from worker.broker_adapter import BrokerAdapter
 from worker.data_client import DataClient
 
@@ -36,7 +37,17 @@ class LiveTickContext:
 
     @property
     def positions(self) -> dict:
-        return self._broker.get_positions()
+        raw = self._broker.get_positions()
+        return {
+            sym: Position(
+                symbol=sym,
+                quantity=float(p.get("quantity", 0)),
+                avg_cost=float(p.get("avg_price", 0)),
+                current_price=float(p.get("current_price", 0)),
+                asset_type=p.get("asset_class", "equities"),
+            ) if isinstance(p, dict) else p
+            for sym, p in raw.items()
+        }
 
     @property
     def account_value(self) -> float:
