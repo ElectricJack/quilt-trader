@@ -17,6 +17,7 @@ from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     Account,
     AccountCashFlow,
+    AccountEquityDaily,
     AccountSnapshot,
     AlgorithmInstance,
     AlgorithmRun,
@@ -250,18 +251,13 @@ async def equity_curve(
     since: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Estimated portfolio-value curve over time.
+    """Portfolio-value curve over time.
 
     Strategy:
-      1. Anchor at the most recent AccountSnapshot (if any) and at every prior snapshot.
-      2. Between snapshots (or before the earliest snapshot), back-calculate by walking
-         AccountCashFlow events: deposits/dividends/interest increase value; withdrawals/fees
-         decrease value. Trades don't change total value at the moment they execute.
-      3. Between cash events, value is held flat — we don't have historical market data
-         for held positions, so intraday price drift is invisible to this curve.
+      1. Try the materialized account_equity_daily table first (daily granularity, accurate).
+      2. Fall back to the snapshot + cash-flow interpolation approach for accounts that
+         haven't been backfilled yet.
     """
-    from coordinator.database.models import AccountCashFlow, AccountSnapshot
-
     result = await db.execute(select(Account).where(Account.id == account_id))
     account = result.scalar_one_or_none()
     if account is None:
@@ -273,6 +269,33 @@ async def equity_curve(
             since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid 'since': {since}")
+
+    # --- Primary path: materialized daily equity table ---
+    mat_stmt = select(AccountEquityDaily).where(
+        AccountEquityDaily.account_id == account_id,
+    ).order_by(AccountEquityDaily.date)
+
+    if since_dt is not None:
+        mat_stmt = mat_stmt.where(AccountEquityDaily.date >= since_dt.date())
+
+    mat_rows = (await db.execute(mat_stmt)).scalars().all()
+
+    if mat_rows:
+        return {
+            "items": [
+                {
+                    "timestamp": r.date.isoformat() + "T00:00:00Z",
+                    "value": r.total_value,
+                    "positions_value": r.positions_value,
+                    "cash": r.cash,
+                    "estimated": r.estimated,
+                    "source": "estimated" if r.estimated else "materialized",
+                }
+                for r in mat_rows
+            ]
+        }
+
+    # --- Fallback: snapshot + cash-flow interpolation ---
     if since_dt is None:
         since_dt = datetime.now(timezone.utc) - timedelta(days=90)
 
