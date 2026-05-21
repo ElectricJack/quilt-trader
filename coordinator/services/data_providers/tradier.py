@@ -28,9 +28,11 @@ class TradierProvider:
         *,
         min_request_interval_s: float = 0.2,
     ) -> None:
+        import httpx
+
         self._token = access_token
         self._base_url = SANDBOX_BASE_URL if sandbox else LIVE_BASE_URL
-        self._http = http_client
+        self._http = http_client or httpx.AsyncClient(timeout=30.0)
         self._min_interval = min_request_interval_s
         self._last_request_ts: float = 0.0
 
