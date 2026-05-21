@@ -14,6 +14,7 @@ import {
   useAccountTrades,
   useAccountEquityCurve,
   useClosePosition,
+  useWebSocketTopic,
 } from "../api/hooks";
 import { OpenPositionModal } from "../components/OpenPositionModal";
 import type { CashFlow, AlgorithmInstance, TradeRow } from "../types";
@@ -147,7 +148,12 @@ export function AccountDetail() {
   const [chartRange, setChartRange] = useState<"30d" | "90d" | "1y" | "all">("90d");
   const [closeTarget, setCloseTarget] = useState<BrokerPosition | null>(null);
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [showActions, setShowActions] = useState(false);
   const closePos = useClosePosition(id ?? "");
+
+  const liveProgress = useWebSocketTopic<{ message: string }>(
+    id ? `account:${id}:setup_progress` : null
+  );
 
   // Round to start-of-day so the cache key is stable across renders within a day,
   // preventing the equity-curve query from refetching on every render.
@@ -536,29 +542,42 @@ export function AccountDetail() {
             <RefreshCw size={14} className={fetchingBrokerInfo ? "animate-spin" : ""} />
             Refresh
           </button>
-          <div className="flex items-stretch rounded overflow-hidden border border-indigo-700">
-            <select
-              value={syncRange}
-              onChange={(e) => setSyncRange(e.target.value as typeof syncRange)}
-              disabled={syncAccount.isPending}
-              title="How far back to sync"
-              className="bg-indigo-800/40 text-indigo-100 text-sm px-2 border-r border-indigo-700 focus:outline-none disabled:opacity-60"
-            >
-              <option value="incremental">Since last</option>
-              <option value="30d">Last 30 days</option>
-              <option value="90d">Last 90 days</option>
-              <option value="1y">Last 1 year</option>
-              <option value="all">All time</option>
-            </select>
+          <div className="relative">
             <button
-              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 transition-colors"
-              onClick={handleSync}
-              disabled={syncAccount.isPending}
-              title="Pull fills + cash flows from broker"
+              onClick={() => setShowActions(!showActions)}
+              className="px-3 py-1.5 text-sm border border-gray-600 rounded-md text-gray-200 hover:bg-gray-700 transition-colors"
             >
-              <RotateCw size={14} className={syncAccount.isPending ? "animate-spin" : ""} />
-              {syncAccount.isPending ? "Syncing…" : "Sync"}
+              Actions ▾
             </button>
+            {showActions && (
+              <div className="absolute right-0 mt-1 w-56 bg-gray-800 border border-gray-700 rounded-md shadow-lg z-10">
+                <div className="py-1">
+                  <div className="px-4 py-1.5 text-xs text-gray-500 uppercase tracking-wide border-b border-gray-700">
+                    Sync range
+                  </div>
+                  <select
+                    value={syncRange}
+                    onChange={(e) => setSyncRange(e.target.value as typeof syncRange)}
+                    disabled={syncAccount.isPending}
+                    className="w-full bg-gray-800 text-gray-200 text-sm px-4 py-2 border-b border-gray-700 focus:outline-none disabled:opacity-60"
+                  >
+                    <option value="incremental">Since last</option>
+                    <option value="30d">Last 30 days</option>
+                    <option value="90d">Last 90 days</option>
+                    <option value="1y">Last 1 year</option>
+                    <option value="all">All time</option>
+                  </select>
+                  <button
+                    onClick={() => { void handleSync(); setShowActions(false); }}
+                    disabled={syncAccount.isPending}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-gray-700 disabled:opacity-60 flex items-center gap-2 transition-colors"
+                  >
+                    <RotateCw size={14} className={syncAccount.isPending ? "animate-spin" : ""} />
+                    {syncAccount.isPending ? "Syncing…" : "Force Sync"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           {/* Open Position */}
           <button
@@ -602,6 +621,19 @@ export function AccountDetail() {
           </button>
         </div>
       </div>
+
+      {/* Backfill progress banner */}
+      {liveProgress && (
+        <div className="bg-blue-950 border-l-4 border-blue-400 p-4 rounded">
+          <div className="flex items-center gap-2">
+            <svg className="animate-spin h-4 w-4 text-blue-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            <p className="text-sm text-blue-300">{liveProgress.message}</p>
+          </div>
+        </div>
+      )}
 
       {/* Portfolio Value */}
       <div className="bg-gray-900 border border-gray-800 rounded p-5">

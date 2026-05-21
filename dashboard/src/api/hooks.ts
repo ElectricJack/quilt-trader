@@ -1182,11 +1182,13 @@ export function useWebSocketTopic<T = unknown>(topic: string | null): T | null {
 
     wsManager.send({ type: "subscribe", target: topic });
 
-    const msgType = topic.startsWith("account:")
-      ? "account_equity_update"
-      : topic === "portfolio:summary"
-        ? "portfolio_summary_update"
-        : topic;
+    const msgType = topic.startsWith("account:") && topic.endsWith(":setup_progress")
+      ? "setup_progress"
+      : topic.startsWith("account:")
+        ? "account_equity_update"
+        : topic === "portfolio:summary"
+          ? "portfolio_summary_update"
+          : topic;
 
     const unsub = wsManager.subscribe(msgType, (data: unknown) => {
       setLatest(data as T);
