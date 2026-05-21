@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   useQuery,
   useMutation,
@@ -713,7 +713,6 @@ export function usePortfolioKpis() {
     queryKey: ["portfolio", "kpis"] as const,
     queryFn: api.portfolioKpis,
     staleTime: 15_000,
-    refetchInterval: 30_000,
   });
 }
 
@@ -1171,4 +1170,33 @@ export function useDeploymentStatusSync(): void {
     });
     return off;
   }, [qc]);
+}
+
+// ─── WebSocket topic hook ──────────────────────────────────────────────────────
+
+export function useWebSocketTopic<T = unknown>(topic: string | null): T | null {
+  const [latest, setLatest] = useState<T | null>(null);
+
+  useEffect(() => {
+    if (!topic) return;
+
+    wsManager.send({ type: "subscribe", target: topic });
+
+    const msgType = topic.startsWith("account:")
+      ? "account_equity_update"
+      : topic === "portfolio:summary"
+        ? "portfolio_summary_update"
+        : topic;
+
+    const unsub = wsManager.subscribe(msgType, (data: unknown) => {
+      setLatest(data as T);
+    });
+
+    return () => {
+      unsub();
+      wsManager.send({ type: "unsubscribe", target: topic });
+    };
+  }, [topic]);
+
+  return latest;
 }

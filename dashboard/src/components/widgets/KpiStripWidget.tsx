@@ -1,5 +1,5 @@
 import { Widget } from "../Widget";
-import { usePortfolioKpis } from "../../api/hooks";
+import { usePortfolioKpis, useWebSocketTopic } from "../../api/hooks";
 
 function formatMoney(v: number, compact = false): string {
   return new Intl.NumberFormat("en-US", {
@@ -16,6 +16,9 @@ function pct(v: number): string {
 
 export function KpiStripWidget() {
   const { data, isLoading } = usePortfolioKpis();
+  const livePortfolio = useWebSocketTopic<{ total_equity: number }>("portfolio:summary");
+
+  const totalEquity = livePortfolio?.total_equity ?? data?.total_equity;
 
   const kpis: { label: string; value: string; sub: string; pos?: boolean; neg?: boolean }[] = [
     {
@@ -27,7 +30,7 @@ export function KpiStripWidget() {
     },
     {
       label: "Total Equity",
-      value: data ? formatMoney(data.total_equity, true) : "—",
+      value: totalEquity != null ? formatMoney(totalEquity, true) : "—",
       sub: "all accounts",
     },
     {
