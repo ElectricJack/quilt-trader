@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
@@ -339,6 +339,34 @@ class AccountCashFlow(Base):
     broker_txn_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     account: Mapped["Account"] = relationship(back_populates="cash_flows")
+
+
+class AccountPositionLedger(Base):
+    __tablename__ = "account_position_ledger"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    account_id: Mapped[str] = mapped_column(String, ForeignKey("accounts.id"), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    avg_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("account_id", "date", "symbol", name="uq_ledger_acct_date_sym"),
+    )
+
+
+class AccountEquityDaily(Base):
+    __tablename__ = "account_equity_daily"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    account_id: Mapped[str] = mapped_column(String, ForeignKey("accounts.id"), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    total_value: Mapped[float] = mapped_column(Float, nullable=False)
+    positions_value: Mapped[float] = mapped_column(Float, nullable=False)
+    cash: Mapped[float] = mapped_column(Float, nullable=False)
+    net_deposits_cumulative: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    estimated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    __table_args__ = (
+        UniqueConstraint("account_id", "date", name="uq_equity_daily_acct_date"),
+    )
 
 
 class AccountSnapshot(Base):
