@@ -75,12 +75,12 @@ class _WorkerOutbound:
                 ws = self._ws_manager.worker_connections.get(self.worker_id)
                 if ws is None:
                     logger.debug("Dropping batch for offline worker %s (%d ticks)",
-                                 self.worker_id, len(batch))
+                                self.worker_id, len(batch))
                     continue
                 try:
                     await ws.send_json({"type": "tick_batch", "ticks": batch})
                 except Exception:
-                    logger.exception("Failed to send tick_batch to worker %s", self.worker_id)
+                    logger.exception("Failed to send tick_batch to worker %s", self.worker_id[:8])
         except asyncio.CancelledError:
             return
 
@@ -175,11 +175,12 @@ class _InstanceContext:
         from coordinator.services.market_clock import is_market_open
         try:
             while True:
-                if is_market_open(self.asset_type, datetime.now(timezone.utc)):
+                now = datetime.now(timezone.utc)
+                if is_market_open(self.asset_type, now):
                     tick = {
                         "instance_id": self.instance_id,
                         "run_id": self.run_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": now.isoformat(),
                         "trigger_kind": "interval",
                         "trigger_meta": {"seconds": interval_s},
                         "data": {},
