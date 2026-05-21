@@ -116,6 +116,9 @@ async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db)
     )
     db.add(account)
     await db.flush()
+    lifecycle = getattr(container, "account_lifecycle", None)
+    if lifecycle:
+        asyncio.create_task(lifecycle.initial_backfill(str(account.id)))
     return _to_response(account)
 
 
@@ -587,6 +590,21 @@ async def sync_account(
         },
         "positions_count": len(positions),
     }
+
+
+@router.post("/{account_id}/backfill")
+async def trigger_backfill(account_id: str, db: AsyncSession = Depends(get_db)):
+    account = (await db.execute(
+        select(Account).where(Account.id == account_id)
+    )).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    container = get_container()
+    lifecycle = getattr(container, "account_lifecycle", None)
+    if not lifecycle:
+        raise HTTPException(status_code=503, detail="Lifecycle service not available")
+    asyncio.create_task(lifecycle.initial_backfill(account_id))
+    return {"ok": True, "message": "Backfill started"}
 
 
 @router.get("/{account_id}")
