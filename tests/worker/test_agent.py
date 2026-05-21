@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 import json
 from unittest.mock import AsyncMock
@@ -48,8 +49,15 @@ async def test_agent_sends_event():
 @pytest.mark.asyncio
 async def test_agent_sends_signal_request():
     ws = AsyncMock()
-    ws.recv.return_value = json.dumps({"type": "signal_approved", "approved": True})
     agent = WorkerAgent(worker_id="x", worker_name="test-pi", websocket=ws)
+
+    async def _simulate_response():
+        await asyncio.sleep(0.05)
+        await agent.router.dispatch({
+            "type": "signal_response", "instance_id": "inst-1", "approved": True,
+        })
+
+    asyncio.create_task(_simulate_response())
     result = await agent.request_signal_approval(instance_id="inst-1", signal={"legs": [{"symbol": "AAPL"}]})
     assert result["approved"] is True
     ws.send.assert_called_once()

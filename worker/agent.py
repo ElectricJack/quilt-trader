@@ -42,6 +42,7 @@ class WorkerAgent:
         self._data_client = data_client
         self.router = MessageRouter()
         self._running_instances: dict[str, Any] = {}
+        self._pending_signal_responses: dict[str, asyncio.Future] = {}
         self.register_handlers()
 
     async def _send(self, data: dict) -> None:
@@ -108,9 +109,16 @@ class WorkerAgent:
         })
 
     async def request_signal_approval(self, instance_id: str, signal: dict) -> dict:
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_signal_responses[instance_id] = fut
         await self._send({"type": "signal_request", "instance_id": instance_id, "signal": signal,
                          "timestamp": datetime.now(timezone.utc).isoformat()})
-        return await self._recv()
+        try:
+            return await asyncio.wait_for(fut, timeout=30.0)
+        except asyncio.TimeoutError:
+            return {"approved": False, "reason": "Signal approval timed out"}
+        finally:
+            self._pending_signal_responses.pop(instance_id, None)
 
     async def send_state_checkpoint(self, instance_id: str, state: dict) -> None:
         await self._send({"type": "state_checkpoint", "instance_id": instance_id, "state": state,
@@ -125,6 +133,7 @@ class WorkerAgent:
         self.router.register("stop_instance", self._handle_stop_instance)
         self.router.register("heartbeat_ack", self._handle_heartbeat_ack)
         self.router.register("tick_batch", self._handle_tick_batch)
+        self.router.register("signal_response", self._handle_signal_response)
         self.router.register("update_worker", self._handle_update_worker)
 
     async def _handle_start_instance(self, message: dict) -> None:
@@ -183,6 +192,14 @@ class WorkerAgent:
         await self.send_event("instance_stopped", instance_id)
         await self.send_activity_event(instance_id, "instance_stopped", severity="info")
         logger.info("Stopped instance %s", instance_id)
+
+    async def _handle_signal_response(self, message: dict) -> None:
+        instance_id = message.get("instance_id")
+        fut = self._pending_signal_responses.get(instance_id)
+        if fut is not None and not fut.done():
+            fut.set_result(message)
+        else:
+            logger.warning("Received signal_response for %s with no pending request", instance_id)
 
     async def _handle_heartbeat_ack(self, message: dict) -> None:
         pass  # No action needed
