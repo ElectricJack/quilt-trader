@@ -296,6 +296,27 @@ class TradierAdapter(BrokerAdapter):
             contracts=contracts, as_of=None,
         )
 
+    def get_latest_prices(self, symbols: list[str]) -> dict[str, float]:
+        if not symbols:
+            return {}
+        client = self._ensure_client()
+        try:
+            resp = client.get("/markets/quotes", params={"symbols": ",".join(symbols)})
+            resp.raise_for_status()
+            quotes = resp.json().get("quotes", {}).get("quote")
+            if quotes is None:
+                return {}
+            if isinstance(quotes, dict):
+                quotes = [quotes]
+            return {
+                q["symbol"]: float(q["last"])
+                for q in quotes
+                if q.get("symbol") and q.get("last") is not None
+            }
+        except Exception:
+            logger.warning("Failed to fetch Tradier quotes for %s", symbols, exc_info=True)
+            return {}
+
     def get_transactions(self, since: datetime) -> list[BrokerTransaction]:
         """Window the date range into 30-day slices since Tradier caps at limit=500 per call."""
         client = self._ensure_client()

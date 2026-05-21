@@ -202,6 +202,20 @@ class AlpacaAdapter(BrokerAdapter):
             params["page_token"] = last_id
         return out
 
+    def get_latest_prices(self, symbols: list[str]) -> dict[str, float]:
+        self._ensure_clients()
+        from alpaca.data.requests import StockLatestTradeRequest
+        if not symbols:
+            return {}
+        try:
+            resp = self._data_client.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=symbols)
+            )
+            return {sym: float(trade.price) for sym, trade in resp.items()}
+        except Exception:
+            logger.warning("Failed to fetch latest prices for %s", symbols, exc_info=True)
+            return {}
+
     # ---- Multi-leg orders (Spec A) ----
     def supports_multileg_orders(self, legs: list[MultilegLegSpec]) -> bool:
         if len(legs) < 2:

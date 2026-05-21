@@ -112,6 +112,10 @@ class BrokerAdapter(ABC):
         """Fetch broker activity since `since`. Default: not implemented."""
         return []
 
+    def get_latest_prices(self, symbols: list[str]) -> dict[str, float]:
+        """Fetch latest prices for a batch of symbols. Returns {symbol: price}."""
+        return {}
+
     # ---- Multi-leg orders (Spec A) ----
     def supports_multileg_orders(self, legs: list[MultilegLegSpec]) -> bool:
         """Whether this adapter can submit `legs` as a single atomic ticket."""

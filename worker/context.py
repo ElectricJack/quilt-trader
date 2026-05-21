@@ -74,18 +74,11 @@ class LiveTickContext:
             self._price_cache[symbol] = float(pos["current_price"])
             return self._price_df(symbol)
 
-        try:
-            from alpaca.data.requests import StockLatestTradeRequest
-            inner = getattr(self._broker, "_inner", self._broker)
-            inner._ensure_clients()
-            resp = inner._data_client.get_stock_latest_trade(
-                StockLatestTradeRequest(symbol_or_symbols=[symbol])
-            )
-            if symbol in resp:
-                self._price_cache[symbol] = float(resp[symbol].price)
-                return self._price_df(symbol)
-        except Exception:
-            logger.warning("Failed to fetch latest price for %s", symbol, exc_info=True)
+        inner = getattr(self._broker, "_inner", self._broker)
+        prices = inner.get_latest_prices([symbol])
+        if symbol in prices:
+            self._price_cache[symbol] = prices[symbol]
+            return self._price_df(symbol)
 
         return None
 
