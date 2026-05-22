@@ -61,7 +61,25 @@ export interface OptionsGroupRow {
   sortKey: string;
 }
 
-export type DisplayRow = AssetRow | OptionsGroupRow;
+export interface ProviderChild {
+  provider: string;
+  ranges: CoverageRange[];
+  timeframes: string[];
+}
+
+export interface MultiProviderGroupRow {
+  kind: "multi-provider";
+  symbol: string;
+  label: string;
+  provider: string;
+  ranges: CoverageRange[];
+  timeframes: string[];
+  children: ProviderChild[];
+  assetType: AssetType;
+  sortKey: string;
+}
+
+export type DisplayRow = AssetRow | OptionsGroupRow | MultiProviderGroupRow;
 
 export interface ProcessedCoverage {
   rows: DisplayRow[];
@@ -131,17 +149,42 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
   // 5. Build display rows
   const rows: DisplayRow[] = [];
 
-  // Non-options assets
+  // Non-options assets: group by symbol when multiple providers
+  const bySymbol = new Map<string, (CoverageAsset & { normalizedProvider: string })[]>();
   for (const asset of nonOptions) {
-    rows.push({
-      kind: "asset",
-      symbol: asset.symbol,
-      provider: asset.normalizedProvider,
-      ranges: asset.ranges,
-      timeframes: asset.timeframes_on_disk,
-      assetType: detectAssetType(asset.symbol),
-      sortKey: `${asset.symbol}\x00`,
-    });
+    const list = bySymbol.get(asset.symbol) ?? [];
+    list.push(asset);
+    bySymbol.set(asset.symbol, list);
+  }
+  for (const [symbol, assets] of bySymbol) {
+    if (assets.length === 1) {
+      rows.push({
+        kind: "asset",
+        symbol,
+        provider: assets[0].normalizedProvider,
+        ranges: assets[0].ranges,
+        timeframes: assets[0].timeframes_on_disk,
+        assetType: detectAssetType(symbol),
+        sortKey: `${symbol}\x00`,
+      });
+    } else {
+      const allRanges = assets.flatMap((a) => a.ranges);
+      const allTimeframes = [...new Set(assets.flatMap((a) => a.timeframes_on_disk))];
+      const children: ProviderChild[] = assets
+        .map((a) => ({ provider: a.normalizedProvider, ranges: a.ranges, timeframes: a.timeframes_on_disk }))
+        .sort((a, b) => a.provider.localeCompare(b.provider));
+      rows.push({
+        kind: "multi-provider",
+        symbol,
+        label: `${symbol} (${assets.length} sources)`,
+        provider: assets[0].normalizedProvider,
+        ranges: mergeRanges(allRanges),
+        timeframes: allTimeframes,
+        children,
+        assetType: detectAssetType(symbol),
+        sortKey: `${symbol}\x00`,
+      });
+    }
   }
 
   // Options groups

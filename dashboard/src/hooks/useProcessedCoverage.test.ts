@@ -39,6 +39,12 @@ const MOCK_COVERAGE: CoverageResponse = {
         ranges: [{ start: "2024-01-01", end: "2026-05-20" }],
         timeframes_on_disk: ["1min"],
       },
+      {
+        provider: "polygon",
+        symbol: "SPY",
+        ranges: [{ start: "2024-01-01", end: "2026-05-18" }],
+        timeframes_on_disk: ["1min"],
+      },
     ],
   },
 };
@@ -73,20 +79,30 @@ describe("processCoverage", () => {
     }
   });
 
-  it("deduplicates same symbol across base and _live provider into one row", () => {
-    const spyEquity = result.rows.filter(
-      (r) => r.kind === "asset" && r.symbol === "SPY"
+  it("groups same symbol from multiple providers into a multi-provider row", () => {
+    const spyRow = result.rows.find(
+      (r) => r.kind === "multi-provider" && r.symbol === "SPY"
     );
-    expect(spyEquity).toHaveLength(1);
-    const spy = spyEquity[0] as { timeframes: string[]; ranges: { start: string; end: string }[] };
-    expect(spy.timeframes).toContain("1day");
-    expect(spy.timeframes).toContain("1min");
-    expect(spy.ranges.length).toBeGreaterThanOrEqual(1);
+    expect(spyRow).toBeDefined();
+    if (spyRow?.kind === "multi-provider") {
+      expect(spyRow.children).toHaveLength(2);
+      expect(spyRow.label).toBe("SPY (2 sources)");
+      const providers = spyRow.children.map((c) => c.provider).sort();
+      expect(providers).toEqual(["polygon", "tradier"]);
+    }
+  });
+
+  it("keeps single-provider assets as plain rows", () => {
+    const aapl = result.rows.find((r) => r.kind === "asset" && r.symbol === "AAPL");
+    expect(aapl).toBeDefined();
+    expect(aapl!.kind).toBe("asset");
   });
 
   it("sorts rows alphabetically, options group after equity", () => {
     const labels = result.rows.map((r) =>
-      r.kind === "options-group" ? r.label : r.symbol
+      r.kind === "options-group" ? r.label
+        : r.kind === "multi-provider" ? r.symbol
+        : r.symbol
     );
     const aaplIdx = labels.indexOf("AAPL");
     const spyIdx = labels.findIndex((l) => l === "SPY");

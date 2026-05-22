@@ -149,6 +149,10 @@ export function AvailableDataTab() {
         for (const child of row.children) {
           rowLookup.set(`${child.provider}:${child.symbol}`, { provider: child.provider, timeframes: child.timeframes });
         }
+      } else if (row.kind === "multi-provider") {
+        for (const child of row.children) {
+          rowLookup.set(`${child.provider}:${row.symbol}`, { provider: child.provider, timeframes: child.timeframes });
+        }
       } else {
         rowLookup.set(`${row.provider}:${row.symbol}`, { provider: row.provider, timeframes: row.timeframes });
       }
@@ -202,13 +206,18 @@ export function AvailableDataTab() {
     const search = searchText.toLowerCase();
     return processed.rows.filter((row) => {
       if (!assetTypes.has(row.assetType)) return false;
-      if (!effectiveProviders.has(row.provider)) return false;
+      if (row.kind === "multi-provider") {
+        if (!row.children.some((c) => effectiveProviders.has(c.provider))) return false;
+      } else if (!effectiveProviders.has(row.provider)) return false;
       if (search) {
         if (row.kind === "options-group") {
           return (
             row.underlying.toLowerCase().includes(search) ||
             row.children.some((c) => c.symbol.toLowerCase().includes(search) || c.readableLabel.toLowerCase().includes(search))
           );
+        }
+        if (row.kind === "multi-provider") {
+          return row.symbol.toLowerCase().includes(search);
         }
         return row.symbol.toLowerCase().includes(search);
       }
@@ -343,6 +352,46 @@ export function AvailableDataTab() {
                               {child.readableLabel}
                             </span>
                             <InteractiveCoverageBar ranges={child.ranges} provider={child.provider} windowStart={effectiveStart} windowEnd={effectiveEnd} markerDate={markerDate} onClick={(date) => handleBarClick(child.provider, child.symbol, child.timeframes, date)} />
+                            <div className="hidden sm:flex gap-1 shrink-0">
+                              {child.timeframes.map((tf) => <span key={tf} className="text-[10px] font-mono text-gray-500 bg-gray-800 px-1 py-0.5 rounded">{tf}</span>)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            if (row.kind === "multi-provider") {
+              const isExpanded = expandedGroups.has(row.symbol);
+              const ds = makeCompareDataset(row.provider, row.symbol, row.timeframes);
+              const isSelected = selectedKeys.has(selectionKey(ds));
+              return (
+                <div key={`multi-${row.symbol}`}>
+                  <div className="flex items-center gap-3 px-3 py-2 bg-gray-900 hover:bg-gray-800/50 transition-colors rounded-sm">
+                    <input type="checkbox" checked={isSelected} onChange={() => toggleSelected(ds)} className="accent-indigo-500 shrink-0" />
+                    <button onClick={() => toggleGroup(row.symbol)} className="flex items-center gap-1.5 text-sm font-mono font-semibold text-gray-200 hover:text-white shrink-0 w-44 text-left">
+                      {isExpanded ? <ChevronDown size={12} className="text-gray-500" /> : <ChevronRight size={12} className="text-gray-500" />}
+                      {row.label}
+                    </button>
+                    <InteractiveCoverageBar ranges={row.ranges} provider={row.provider} windowStart={effectiveStart} windowEnd={effectiveEnd} markerDate={markerDate} onClick={(date) => handleBarClick(row.provider, row.symbol, row.timeframes, date)} />
+                    <div className="hidden sm:flex gap-1 shrink-0">
+                      {row.timeframes.map((tf) => <span key={tf} className="text-[10px] font-mono text-gray-500 bg-gray-800 px-1 py-0.5 rounded">{tf}</span>)}
+                    </div>
+                  </div>
+                  {isExpanded && (
+                    <div className="ml-6">
+                      {row.children.map((child) => {
+                        const childDs = makeCompareDataset(child.provider, row.symbol, child.timeframes);
+                        const childSelected = selectedKeys.has(selectionKey(childDs));
+                        return (
+                          <div key={child.provider} className="flex items-center gap-3 px-3 py-1.5 bg-gray-950 hover:bg-gray-900/50 transition-colors">
+                            <input type="checkbox" checked={childSelected} onChange={() => toggleSelected(childDs)} className="accent-indigo-500 shrink-0" />
+                            <span className="text-xs font-mono text-gray-400 w-44 truncate shrink-0 cursor-pointer hover:text-gray-200 capitalize" onClick={() => handleBarClick(child.provider, row.symbol, child.timeframes, effectiveStart)}>
+                              {child.provider}
+                            </span>
+                            <InteractiveCoverageBar ranges={child.ranges} provider={child.provider} windowStart={effectiveStart} windowEnd={effectiveEnd} markerDate={markerDate} onClick={(date) => handleBarClick(child.provider, row.symbol, child.timeframes, date)} />
                             <div className="hidden sm:flex gap-1 shrink-0">
                               {child.timeframes.map((tf) => <span key={tf} className="text-[10px] font-mono text-gray-500 bg-gray-800 px-1 py-0.5 rounded">{tf}</span>)}
                             </div>
