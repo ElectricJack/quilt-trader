@@ -259,6 +259,12 @@ def create_app(
         coverage_index = CoverageIndex(data_svc)
         container.coverage_index = coverage_index
 
+        def _on_download_complete(provider: str, symbols: list[str]) -> None:
+            for sym in symbols:
+                coverage_index.invalidate(provider, sym)
+
+        download_manager._on_download_complete = _on_download_complete
+
         try:
             from coordinator.services.backtest_runner import BacktestRunner
             container.backtest_runner = BacktestRunner(

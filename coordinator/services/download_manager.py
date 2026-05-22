@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
+from collections.abc import Callable
 from typing import Any, Optional
 
 import pandas as pd
@@ -19,10 +20,12 @@ class DownloadManager:
         session_factory: async_sessionmaker[AsyncSession],
         data_service: DataService,
         providers: dict[str, Any],
+        on_download_complete: Callable[[str, list[str]], None] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._data_service = data_service
         self._providers = providers
+        self._on_download_complete = on_download_complete
         self._active_tasks: dict[str, asyncio.Task] = {}
         # Serialize downloads: only one runs at a time so we don't fan out parallel
         # API requests and trip provider rate limits. Queued downloads wait inside
@@ -368,6 +371,12 @@ class DownloadManager:
             await session.commit()
 
         logger.info("Download %s finished: %s", download_id, final_status)
+
+        if self._on_download_complete and final_status in ("completed", "completed_with_errors"):
+            try:
+                self._on_download_complete(provider_name, symbols)
+            except Exception:
+                logger.exception("on_download_complete callback failed")
 
     @staticmethod
     def _to_dict(dl: MarketDataDownload) -> dict:
