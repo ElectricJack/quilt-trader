@@ -72,7 +72,19 @@ def replay_transactions(
             qty = float(txn.get("quantity") or 0)
             price = float(txn.get("price") or 0)
 
-            if not symbol or qty == 0:
+            if not symbol:
+                continue
+
+            # qty=0 sell = option expiration — close the entire position
+            if qty == 0 and side == "sell":
+                if symbol in positions:
+                    del positions[symbol]
+                # Snapshot and continue — no cash impact (expired worthless)
+                ledger[txn_date] = copy.deepcopy(positions)
+                cash_by_date[txn_date] = cash
+                continue
+
+            if qty == 0:
                 continue
 
             mult = _option_multiplier(symbol)
@@ -149,6 +161,13 @@ def forward_fill_ledger(
             if current in ledger:
                 last_positions = ledger[current]
                 last_cash = cash_by_date[current]
+            # Expire options that have passed their expiration date
+            expired = [
+                sym for sym in last_positions
+                if (_exp := _occ_expiration(sym)) is not None and _exp < current
+            ]
+            for sym in expired:
+                last_positions = {k: v for k, v in last_positions.items() if k != sym}
             filled_ledger[current] = copy.deepcopy(last_positions)
             filled_cash[current] = last_cash
         current += timedelta(days=1)

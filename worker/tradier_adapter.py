@@ -553,6 +553,24 @@ def _map_tradier_event(raw: dict) -> Optional[BrokerTransaction]:
     txn_id = _tradier_synthetic_id(raw, event_type)
     description = raw.get("description")
 
+    if event_type == "option" and "trade" not in raw:
+        # Option expiration event — close the position at $0
+        opt = raw.get("option") or {}
+        symbol = opt.get("symbol")
+        if symbol:
+            return BrokerTransaction(
+                broker_id=txn_id,
+                type="fill",
+                timestamp=ts,
+                symbol=symbol,
+                side="sell",
+                quantity=0,
+                price=0.0,
+                amount=0.0,
+                description=f"Option expiration: {symbol}",
+                raw=raw,
+            )
+
     if event_type in ("trade", "option"):
         trade = raw.get("trade") or {}
         qty = float(trade.get("quantity") or 0.0)
