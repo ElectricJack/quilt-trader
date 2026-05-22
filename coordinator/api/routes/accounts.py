@@ -577,6 +577,12 @@ async def sync_account(
 
     await db.flush()
 
+    # Trigger full backfill to rebuild equity curve with latest data
+    container = get_container()
+    lifecycle = getattr(container, "account_lifecycle", None)
+    if lifecycle:
+        asyncio.create_task(lifecycle.initial_backfill(account_id))
+
     return {
         "ok": True,
         "since": to_iso_utc(since_dt),

@@ -19,6 +19,22 @@ def _option_multiplier(symbol: str) -> int:
     return 100 if len(symbol) > 15 else 1
 
 
+def _occ_expiration(symbol: str) -> date | None:
+    """Parse expiration date from an OCC option symbol.
+
+    OCC format: SYMBOL + YYMMDD + C/P + strike*1000 (8 digits)
+    Example: SPY241008C00574000 → 2024-10-08
+    """
+    if len(symbol) <= 15:
+        return None
+    try:
+        tail = symbol[-15:]  # YYMMDDX00000000
+        yy, mm, dd = int(tail[0:2]), int(tail[2:4]), int(tail[4:6])
+        return date(2000 + yy, mm, dd)
+    except (ValueError, IndexError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # 1. replay_transactions
 # ---------------------------------------------------------------------------
@@ -87,6 +103,14 @@ def replay_transactions(
 
         elif txn_type in ("withdrawal", "fee"):
             cash -= txn["amount"]
+
+        # Remove expired options as of this date
+        expired = [
+            sym for sym in positions
+            if (_exp := _occ_expiration(sym)) is not None and _exp < txn_date
+        ]
+        for sym in expired:
+            del positions[sym]
 
         # Snapshot after processing this transaction
         ledger[txn_date] = copy.deepcopy(positions)
