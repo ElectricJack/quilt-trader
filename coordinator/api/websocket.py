@@ -179,40 +179,55 @@ async def handle_dashboard_message(websocket, data: dict) -> None:
             })
 
 
+_tracking_tasks: dict[str, asyncio.Task] = {}
+
+
 async def _init_account_tracking(account_id: str, tracker) -> None:
-    """Load account positions from broker and register bar callbacks."""
-    from coordinator.database.models import Account
-    from sqlalchemy import select
-    container = get_container()
-    try:
-        async with container.session_factory() as session:
-            account = (await session.execute(
-                select(Account).where(Account.id == account_id)
-            )).scalar_one_or_none()
-            if not account:
-                return
+    """Start a polling loop that refreshes broker values for this account."""
+    if account_id in _tracking_tasks:
+        return
 
-        import json as _json
-        creds = _json.loads(container.encryption.decrypt(account.credentials))
-        from worker.adapter_factory import make_broker_adapter
-        adapter = make_broker_adapter(account.broker_type, account.environment, creds)
-        positions = adapter.get_positions()
-        info = adapter.get_account_info()
-        tracker.set_account_state(account_id, {
-            "positions": positions,
-            "cash": info.get("cash", 0),
-        })
-        if account.show_in_overview:
-            tracker.mark_account_visible(account_id)
+    async def _poll_loop():
+        from coordinator.database.models import Account
+        from sqlalchemy import select
+        container = get_container()
+        try:
+            async with container.session_factory() as session:
+                account = (await session.execute(
+                    select(Account).where(Account.id == account_id)
+                )).scalar_one_or_none()
+                if not account:
+                    return
 
-        aggregator = getattr(container, "live_feed_aggregator", None)
-        if aggregator:
-            for symbol in positions:
-                async def _on_bar(bar, sym=symbol):
-                    await tracker.on_price_update(sym, float(bar.get("close", 0)))
-                aggregator.subscribe_bars(account.broker_type, symbol, "1min", _on_bar)
-    except Exception:
-        logger.exception("Failed to init tracking for account %s", account_id)
+            import json as _json
+            creds = _json.loads(container.encryption.decrypt(account.credentials))
+            from worker.adapter_factory import make_broker_adapter
+            adapter = make_broker_adapter(account.broker_type, account.environment, creds)
+
+            if account.show_in_overview:
+                tracker.mark_account_visible(account_id)
+
+            while f"account:{account_id}" in tracker._subscribers or "portfolio:summary" in tracker._subscribers:
+                try:
+                    positions = await asyncio.to_thread(adapter.get_positions)
+                    info = await asyncio.to_thread(adapter.get_account_info)
+                    tracker.set_account_state(account_id, {
+                        "positions": positions,
+                        "cash": info.get("cash", 0),
+                    })
+                    for sym, pos in positions.items():
+                        price = float(pos.get("current_price", 0))
+                        if price > 0:
+                            await tracker.on_price_update(sym, price)
+                except Exception:
+                    logger.debug("Polling failed for %s", account_id, exc_info=True)
+                await asyncio.sleep(15)
+        except Exception:
+            logger.exception("Account tracking init failed for %s", account_id)
+        finally:
+            _tracking_tasks.pop(account_id, None)
+
+    _tracking_tasks[account_id] = asyncio.create_task(_poll_loop())
 
 
 @router.websocket("/ws/dashboard")
