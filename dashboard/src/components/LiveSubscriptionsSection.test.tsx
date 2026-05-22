@@ -73,21 +73,22 @@ describe("LiveSubscriptionsSection", () => {
     expect(link).toHaveAttribute("href", "/accounts/acct-42");
   });
 
-  it("renders algorithm name as a link to /algorithms/<id>", () => {
+  it("groups subscriptions under account and shows symbol chip", () => {
     renderIt();
-    const link = screen.getByRole("link", { name: "Simple MA Crossover" });
-    expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute("href", "/algorithms/algo-99");
+    expect(screen.getByText("1 subscription")).toBeInTheDocument();
+    expect(screen.getByText("SPY")).toBeInTheDocument();
   });
 
-  it("renders subscription with asset_class and symbol badges", () => {
+  it("renders subscription with asset_class badge", () => {
     renderIt();
     expect(screen.getByText("SPY")).toBeInTheDocument();
     expect(screen.getByText("equities")).toBeInTheDocument();
   });
 
-  it("shows green 'last tick' badge for fresh subscription", () => {
+  it("shows green status dot for fresh subscription", () => {
     renderIt();
-    expect(screen.getByText(/last tick:/)).toBeInTheDocument();
+    const dot = screen.getByTitle(/last tick:/);
+    expect(dot).toBeInTheDocument();
+    expect(dot.className).toContain("bg-green-400");
   });
 });

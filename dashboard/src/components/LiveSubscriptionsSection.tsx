@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { useState, useMemo, useCallback } from "react";
+import { Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   useLiveSubscriptions,
@@ -9,11 +9,10 @@ import {
   useAccounts,
 } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
+import type { LiveSubscription } from "../api/client";
 
 type AssetClass = "equities" | "crypto" | "options";
 
-// Source selector values encode whether we're using an account or a provider.
-// Format: "account:<id>" or "provider:<type>".
 const PROVIDER_OPTIONS = [
   { value: "provider:polygon", label: "Polygon.io" },
   { value: "provider:thetadata", label: "ThetaData" },
@@ -36,12 +35,88 @@ function timeSince(iso: string | null): string {
   return `${Math.floor(ms / 3_600_000)}h ago`;
 }
 
-/** Human-readable label for a source value like "provider:polygon". */
 function providerLabel(type: string): string {
   if (type === "polygon") return "Polygon.io";
   if (type === "thetadata") return "ThetaData";
   if (type === "coinbase") return "Coinbase";
   return type;
+}
+
+interface SubGroup {
+  key: string;
+  label: string;
+  linkTo: string | null;
+  subs: LiveSubscription[];
+}
+
+function groupSubscriptions(subs: LiveSubscription[]): SubGroup[] {
+  const groups = new Map<string, SubGroup>();
+  for (const s of subs) {
+    let key: string;
+    let label: string;
+    let linkTo: string | null;
+    if (s.account_id) {
+      key = `account:${s.account_id}`;
+      label = s.account_name ?? s.account_id;
+      linkTo = `/accounts/${s.account_id}`;
+    } else {
+      const ptype = s.provider_type ?? s.broker;
+      key = `provider:${ptype}`;
+      label = providerLabel(ptype);
+      linkTo = null;
+    }
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, label, linkTo, subs: [] };
+      groups.set(key, group);
+    }
+    group.subs.push(s);
+  }
+  return Array.from(groups.values());
+}
+
+function SubscriptionChip({
+  sub,
+  onDelete,
+}: {
+  sub: LiveSubscription;
+  onDelete: (id: string, label: string) => void;
+}) {
+  const stale =
+    !sub.last_tick_at ||
+    Date.now() - new Date(sub.last_tick_at).getTime() > 60_000;
+
+  return (
+    <div className="inline-flex items-center gap-2 bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm">
+      <span className="font-mono font-medium text-gray-200">{sub.symbol}</span>
+      <span className="text-[10px] px-1 py-0.5 rounded border bg-gray-900 text-gray-400 border-gray-700">
+        {sub.asset_class}
+      </span>
+      {sub.tick_rate_per_min != null && (
+        <span className="text-[10px] text-gray-500">
+          {sub.tick_rate_per_min >= 1
+            ? `~${Math.round(sub.tick_rate_per_min)}/min`
+            : `~${Math.round(sub.tick_rate_per_min * 60)}/hr`}
+        </span>
+      )}
+      <span
+        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+          stale ? "bg-red-400" : "bg-green-400"
+        }`}
+        title={`last tick: ${timeSince(sub.last_tick_at)}`}
+      />
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete(sub.id, `${sub.symbol}`);
+        }}
+        className="text-gray-500 hover:text-red-400 transition-colors"
+        title="Unsubscribe"
+      >
+        <Trash2 size={12} />
+      </button>
+    </div>
+  );
 }
 
 export function LiveSubscriptionsSection() {
@@ -52,30 +127,40 @@ export function LiveSubscriptionsSection() {
   const addAlert = useUIStore((s) => s.addAlert);
 
   const [adding, setAdding] = useState(false);
-  // sourceValue is "account:<id>" or "provider:<type>" or ""
   const [sourceValue, setSourceValue] = useState<string>("");
   const [assetClass, setAssetClass] = useState<AssetClass>("equities");
   const [symbol, setSymbol] = useState("");
   const [retention, setRetention] = useState(168);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const trimmedSymbol = symbol.trim();
 
-  // Derive accountId / providerType from the compound selector value.
   const isProviderSource = sourceValue.startsWith("provider:");
-  const selectedAccountId = !isProviderSource && sourceValue.startsWith("account:")
-    ? sourceValue.slice("account:".length)
-    : null;
+  const selectedAccountId =
+    !isProviderSource && sourceValue.startsWith("account:")
+      ? sourceValue.slice("account:".length)
+      : null;
   const selectedProviderType = isProviderSource
     ? sourceValue.slice("provider:".length)
     : null;
 
-  // Storage estimate: pass broker string for provider, or account id for account.
   const estimateBroker = selectedProviderType ?? selectedAccountId ?? null;
   const { data: estimate } = useLiveSubStorageEstimate(
     adding && trimmedSymbol && estimateBroker ? estimateBroker : null,
     adding && trimmedSymbol ? trimmedSymbol : null,
-    retention
+    retention,
   );
+
+  const groups = useMemo(() => groupSubscriptions(subs), [subs]);
+
+  const toggleCollapsed = useCallback((key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   async function handleAdd() {
     if (!trimmedSymbol || !sourceValue) return;
@@ -101,10 +186,7 @@ export function LiveSubscriptionsSection() {
       } else {
         return;
       }
-      addAlert({
-        message: `Subscribed to ${label}.`,
-        severity: "success",
-      });
+      addAlert({ message: `Subscribed to ${label}.`, severity: "success" });
       setAdding(false);
       setSymbol("");
     } catch (e) {
@@ -121,8 +203,8 @@ export function LiveSubscriptionsSection() {
       if ("deleted" in after && after.deleted) {
         addAlert({ message: `Unsubscribed from ${label}.`, severity: "success" });
       } else {
-        const remaining = (after as { consumers: { consumer_type: string }[] }).consumers
-          .filter((c) => c.consumer_type === "algo").length;
+        const remaining = (after as { consumers: { consumer_type: string }[] })
+          .consumers.filter((c) => c.consumer_type === "algo").length;
         addAlert({
           message: `Unsubscribed from ${label}; ${remaining} algorithm consumer(s) still holding the feed.`,
           severity: "info",
@@ -159,81 +241,48 @@ export function LiveSubscriptionsSection() {
         <p className="text-gray-500 text-sm">No live subscriptions.</p>
       ) : (
         <div className="space-y-2">
-          {subs.map((s) => {
-            // Source label: account link or provider name.
-            const isAccountSub = s.account_id != null;
-            const label = isAccountSub
-              ? `${s.account_name ?? s.account_id}:${s.symbol}`
-              : `${providerLabel(s.provider_type ?? s.broker)}:${s.symbol}`;
-            const stale = !s.last_tick_at ||
-              (Date.now() - new Date(s.last_tick_at).getTime()) > 60_000;
+          {groups.map((group) => {
+            const isCollapsed = collapsed.has(group.key);
             return (
               <div
-                key={s.id}
-                className="bg-gray-900 border border-gray-800 rounded px-3 py-2"
+                key={group.key}
+                className="bg-gray-900 border border-gray-800 rounded"
               >
-                <div className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-3 flex-wrap min-w-0">
-                    {isAccountSub ? (
-                      <Link
-                        to={`/accounts/${s.account_id}`}
-                        className="text-indigo-400 font-mono hover:underline"
-                      >
-                        {s.account_name}
-                      </Link>
-                    ) : (
-                      <span className="text-indigo-400 font-mono">
-                        {providerLabel(s.provider_type ?? s.broker)}
-                      </span>
-                    )}
-                    <span className="font-mono text-gray-200">{s.symbol}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded border bg-gray-800 text-gray-400 border-gray-700">
-                      {s.asset_class}
-                    </span>
-                    {s.tick_rate_per_min != null && (
-                      <span className="text-xs text-gray-500">
-                        {s.tick_rate_per_min >= 1
-                          ? `~${Math.round(s.tick_rate_per_min)}/min`
-                          : `~${Math.round(s.tick_rate_per_min * 60)}/hr`}
-                      </span>
-                    )}
-                    <span
-                      className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                        stale
-                          ? "bg-red-900/40 text-red-300 border-red-800"
-                          : "bg-green-900/40 text-green-300 border-green-800"
-                      }`}
+                <button
+                  onClick={() => toggleCollapsed(group.key)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-800/50 transition-colors rounded"
+                >
+                  {isCollapsed ? (
+                    <ChevronRight size={14} className="text-gray-500 shrink-0" />
+                  ) : (
+                    <ChevronDown size={14} className="text-gray-500 shrink-0" />
+                  )}
+                  {group.linkTo ? (
+                    <Link
+                      to={group.linkTo}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-sm font-medium text-indigo-400 hover:underline"
                     >
-                      last tick: {timeSince(s.last_tick_at)}
+                      {group.label}
+                    </Link>
+                  ) : (
+                    <span className="text-sm font-medium text-indigo-400">
+                      {group.label}
                     </span>
-                  </div>
-                  <button
-                    onClick={() => handleDelete(s.id, label)}
-                    className="text-gray-400 hover:text-red-400 transition-colors"
-                    title="Unsubscribe"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-                {s.consumers.length > 0 && (
-                  <div className="mt-1.5 text-xs text-gray-500">
-                    Consumers:{" "}
-                    {s.consumers.map((c, i) => (
-                      <span key={c.id}>
-                        {i > 0 && ", "}
-                        {c.consumer_type === "manual"
-                          ? "manual"
-                          : c.algorithm_id && c.algorithm_name
-                          ? (
-                            <Link
-                              to={`/algorithms/${c.algorithm_id}`}
-                              className="text-indigo-400 hover:underline"
-                            >
-                              {c.algorithm_name}
-                            </Link>
-                          )
-                          : `algo: ${c.consumer_id?.slice(0, 8) ?? "?"}`}
-                      </span>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    {group.subs.length} subscription{group.subs.length !== 1 ? "s" : ""}
+                  </span>
+                </button>
+
+                {!isCollapsed && (
+                  <div className="px-3 pb-2.5 flex flex-wrap gap-1.5">
+                    {group.subs.map((s) => (
+                      <SubscriptionChip
+                        key={s.id}
+                        sub={s}
+                        onDelete={handleDelete}
+                      />
                     ))}
                   </div>
                 )}
@@ -251,7 +300,6 @@ export function LiveSubscriptionsSection() {
               value={sourceValue}
               onChange={(e) => {
                 setSourceValue(e.target.value);
-                // Coinbase only supports crypto — force the asset class.
                 if (e.target.value === "provider:coinbase") {
                   setAssetClass("crypto");
                 }
@@ -325,7 +373,11 @@ export function LiveSubscriptionsSection() {
             Add
           </button>
           <button
-            onClick={() => { setAdding(false); setSymbol(""); setSourceValue(""); }}
+            onClick={() => {
+              setAdding(false);
+              setSymbol("");
+              setSourceValue("");
+            }}
             className="px-3 py-1.5 rounded text-sm text-gray-300 bg-gray-700 hover:bg-gray-600 transition-colors"
           >
             Cancel

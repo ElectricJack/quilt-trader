@@ -6,7 +6,6 @@ import {
   Server,
   Database,
   FlaskConical,
-  Bell,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -17,11 +16,10 @@ import { useUIStore } from "../stores/ui";
 const NAV_ITEMS = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/accounts", label: "Accounts", icon: Wallet },
-  { to: "/algorithms", label: "Algorithms", icon: Bot },
-  { to: "/workers", label: "Workers", icon: Server },
   { to: "/data", label: "Data", icon: Database },
+  { to: "/workers", label: "Workers", icon: Server },
+  { to: "/algorithms", label: "Algorithms", icon: Bot },
   { to: "/backtests", label: "Backtests", icon: FlaskConical },
-  { to: "/notifications", label: "Notifications", icon: Bell },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
