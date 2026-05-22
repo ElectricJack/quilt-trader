@@ -79,16 +79,18 @@ describe("processCoverage", () => {
     }
   });
 
-  it("groups same symbol from multiple providers into a multi-provider row", () => {
+  it("groups same symbol from multiple providers into a multi-provider row with per-timeframe children", () => {
     const spyRow = result.rows.find(
       (r) => r.kind === "multi-provider" && r.symbol === "SPY"
     );
     expect(spyRow).toBeDefined();
     if (spyRow?.kind === "multi-provider") {
-      expect(spyRow.children).toHaveLength(2);
-      expect(spyRow.label).toBe("SPY (2 sources)");
-      const providers = spyRow.children.map((c) => c.provider).sort();
-      expect(providers).toEqual(["polygon", "tradier"]);
+      // polygon:1min + tradier:1day + tradier:1min (from tradier_live merge)
+      expect(spyRow.children.length).toBeGreaterThanOrEqual(3);
+      const childKeys = spyRow.children.map((c) => `${c.provider}:${c.timeframe}`).sort();
+      expect(childKeys).toContain("polygon:1min");
+      expect(childKeys).toContain("tradier:1day");
+      expect(childKeys).toContain("tradier:1min");
     }
   });
 

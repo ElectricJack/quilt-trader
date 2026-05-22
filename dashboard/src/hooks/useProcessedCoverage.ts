@@ -63,8 +63,8 @@ export interface OptionsGroupRow {
 
 export interface ProviderChild {
   provider: string;
+  timeframe: string;
   ranges: CoverageRange[];
-  timeframes: string[];
 }
 
 export interface MultiProviderGroupRow {
@@ -149,7 +149,24 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
   // 5. Build display rows
   const rows: DisplayRow[] = [];
 
-  // Non-options assets: group by symbol when multiple providers
+  // Non-options assets: group by symbol, split children by provider+timeframe
+  // Use allAssets (pre-dedup) so each original provider entry with its own
+  // timeframe becomes a separate child row.
+  const nonOptOriginals = allAssets.filter((a) => !parseOCC(a.symbol));
+  const childBySymbol = new Map<string, ProviderChild[]>();
+  for (const asset of nonOptOriginals) {
+    const list = childBySymbol.get(asset.symbol) ?? [];
+    for (const tf of asset.timeframes_on_disk) {
+      const existing = list.find((c) => c.provider === asset.normalizedProvider && c.timeframe === tf);
+      if (existing) {
+        existing.ranges = mergeRanges([...existing.ranges, ...asset.ranges]);
+      } else {
+        list.push({ provider: asset.normalizedProvider, timeframe: tf, ranges: [...asset.ranges] });
+      }
+    }
+    childBySymbol.set(asset.symbol, list);
+  }
+
   const bySymbol = new Map<string, (CoverageAsset & { normalizedProvider: string })[]>();
   for (const asset of nonOptions) {
     const list = bySymbol.get(asset.symbol) ?? [];
@@ -157,7 +174,9 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     bySymbol.set(asset.symbol, list);
   }
   for (const [symbol, assets] of bySymbol) {
-    if (assets.length === 1) {
+    const children = (childBySymbol.get(symbol) ?? [])
+      .sort((a, b) => a.provider.localeCompare(b.provider) || a.timeframe.localeCompare(b.timeframe));
+    if (children.length <= 1) {
       rows.push({
         kind: "asset",
         symbol,
@@ -170,13 +189,10 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     } else {
       const allRanges = assets.flatMap((a) => a.ranges);
       const allTimeframes = [...new Set(assets.flatMap((a) => a.timeframes_on_disk))];
-      const children: ProviderChild[] = assets
-        .map((a) => ({ provider: a.normalizedProvider, ranges: a.ranges, timeframes: a.timeframes_on_disk }))
-        .sort((a, b) => a.provider.localeCompare(b.provider));
       rows.push({
         kind: "multi-provider",
         symbol,
-        label: `${symbol} (${assets.length} sources)`,
+        label: `${symbol} (${children.length} datasets)`,
         provider: assets[0].normalizedProvider,
         ranges: mergeRanges(allRanges),
         timeframes: allTimeframes,

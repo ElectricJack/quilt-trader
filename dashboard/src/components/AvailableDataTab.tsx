@@ -151,7 +151,7 @@ export function AvailableDataTab() {
         }
       } else if (row.kind === "multi-provider") {
         for (const child of row.children) {
-          rowLookup.set(`${child.provider}:${row.symbol}`, { provider: child.provider, timeframes: child.timeframes });
+          rowLookup.set(`${child.provider}:${row.symbol}`, { provider: child.provider, timeframes: [child.timeframe] });
         }
       } else {
         rowLookup.set(`${row.provider}:${row.symbol}`, { provider: row.provider, timeframes: row.timeframes });
@@ -383,18 +383,15 @@ export function AvailableDataTab() {
                   {isExpanded && (
                     <div className="ml-6">
                       {row.children.map((child) => {
-                        const childDs = makeCompareDataset(child.provider, row.symbol, child.timeframes);
+                        const childDs: CompareDataset = { provider: child.provider, symbol: row.symbol, timeframe: child.timeframe };
                         const childSelected = selectedKeys.has(selectionKey(childDs));
                         return (
-                          <div key={child.provider} className="flex items-center gap-3 px-3 py-1.5 bg-gray-950 hover:bg-gray-900/50 transition-colors">
+                          <div key={`${child.provider}-${child.timeframe}`} className="flex items-center gap-3 px-3 py-1.5 bg-gray-950 hover:bg-gray-900/50 transition-colors">
                             <input type="checkbox" checked={childSelected} onChange={() => toggleSelected(childDs)} className="accent-indigo-500 shrink-0" />
-                            <span className="text-xs font-mono text-gray-400 w-44 truncate shrink-0 cursor-pointer hover:text-gray-200 capitalize" onClick={() => handleBarClick(child.provider, row.symbol, child.timeframes, effectiveStart)}>
-                              {child.provider}
+                            <span className="text-xs font-mono text-gray-400 w-44 truncate shrink-0 cursor-pointer hover:text-gray-200 capitalize" onClick={() => handleBarClick(child.provider, row.symbol, [child.timeframe], effectiveStart)}>
+                              {child.provider} · {child.timeframe}
                             </span>
-                            <InteractiveCoverageBar ranges={child.ranges} provider={child.provider} windowStart={effectiveStart} windowEnd={effectiveEnd} markerDate={markerDate} onClick={(date) => handleBarClick(child.provider, row.symbol, child.timeframes, date)} />
-                            <div className="hidden sm:flex gap-1 shrink-0">
-                              {child.timeframes.map((tf) => <span key={tf} className="text-[10px] font-mono text-gray-500 bg-gray-800 px-1 py-0.5 rounded">{tf}</span>)}
-                            </div>
+                            <InteractiveCoverageBar ranges={child.ranges} provider={child.provider} windowStart={effectiveStart} windowEnd={effectiveEnd} markerDate={markerDate} onClick={(date) => handleBarClick(child.provider, row.symbol, [child.timeframe], date)} />
                           </div>
                         );
                       })}
