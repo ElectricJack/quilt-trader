@@ -14,6 +14,11 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def _option_multiplier(symbol: str) -> int:
+    """Return the contract multiplier for a symbol. US equity options (OCC format) = 100."""
+    return 100 if len(symbol) > 15 else 1
+
+
 # ---------------------------------------------------------------------------
 # 1. replay_transactions
 # ---------------------------------------------------------------------------
@@ -54,6 +59,8 @@ def replay_transactions(
             if not symbol or qty == 0:
                 continue
 
+            mult = _option_multiplier(symbol)
+
             if side == "buy":
                 pos = positions.get(symbol)
                 if pos is None:
@@ -65,12 +72,12 @@ def replay_transactions(
                             (pos["avg_cost"] * pos["quantity"] + price * qty) / total_qty
                         )
                     pos["quantity"] = total_qty
-                cash -= qty * price
+                cash -= qty * price * mult
             elif side == "sell":
                 pos = positions.get(symbol)
                 if pos is not None:
                     pos["quantity"] -= qty
-                    cash += qty * price
+                    cash += qty * price * mult
                     # Remove near-zero positions
                     if abs(pos["quantity"]) < 0.001:
                         del positions[symbol]
@@ -153,11 +160,13 @@ def calibrate_cash_backwards(
         if txn_type == "fill":
             qty = float(txn.get("quantity") or 0)
             price = float(txn.get("price") or 0)
+            symbol = txn.get("symbol", "")
+            mult = _option_multiplier(symbol)
             side = txn.get("side", "")
             if side == "buy":
-                delta = -(qty * price)
+                delta = -(qty * price * mult)
             elif side == "sell":
-                delta = qty * price
+                delta = qty * price * mult
         elif txn_type in ("deposit", "dividend", "interest"):
             delta = float(txn.get("amount") or 0)
         elif txn_type in ("withdrawal", "fee"):
@@ -214,7 +223,7 @@ def materialize_equity(
                 price = pos["avg_cost"]
                 estimated = True
 
-            positions_value += qty * price
+            positions_value += qty * price * _option_multiplier(symbol)
 
         total_value = positions_value + cash
         rows.append({
