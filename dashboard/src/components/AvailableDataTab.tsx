@@ -1,7 +1,7 @@
 // src/components/AvailableDataTab.tsx
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { useCoverage, useAvailableData, useFillGaps } from "../api/hooks";
+import { useCoverage, useAvailableData, useFillGaps, useDownloads } from "../api/hooks";
 import { useProcessedCoverage, type AssetType } from "../hooks/useProcessedCoverage";
 import { TimeWindowControls } from "./TimeWindowControls";
 import { DataFilterBar } from "./DataFilterBar";
@@ -43,11 +43,34 @@ function writeCompareToUrl(datasets: CompareDataset[], mode: CompareMode, open: 
   window.history.replaceState({}, "", next);
 }
 
+const ACTIVE_STATUSES = new Set(["pending", "running", "queued"]);
+
 export function AvailableDataTab() {
-  const { data: coverageData, isLoading: coverageLoading } = useCoverage();
+  const { data: coverageData, isLoading: coverageLoading, refetch: refetchCoverage } = useCoverage();
   const { isLoading: availableLoading } = useAvailableData();
   const fillGapsMutation = useFillGaps();
+  const { data: downloads, refetch: refetchDownloads } = useDownloads();
   const addAlert = useUIStore((s) => s.addAlert);
+
+  const activeDownloadCount = useMemo(
+    () => (downloads ?? []).filter((d) => ACTIVE_STATUSES.has(d.status)).length,
+    [downloads],
+  );
+  const prevActiveRef = useRef(0);
+
+  // Poll downloads while any are active; refetch coverage when they finish
+  useEffect(() => {
+    if (activeDownloadCount === 0) {
+      if (prevActiveRef.current > 0) {
+        void refetchCoverage();
+      }
+      prevActiveRef.current = 0;
+      return;
+    }
+    prevActiveRef.current = activeDownloadCount;
+    const id = setInterval(() => void refetchDownloads(), 3000);
+    return () => clearInterval(id);
+  }, [activeDownloadCount, refetchDownloads, refetchCoverage]);
 
   const processed = useProcessedCoverage(coverageData);
 
