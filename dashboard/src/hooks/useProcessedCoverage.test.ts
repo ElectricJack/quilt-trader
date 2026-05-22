@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { processCoverage, type DisplayRow } from "./useProcessedCoverage";
+import { processCoverage } from "./useProcessedCoverage";
 import type { CoverageResponse } from "../api/client";
 
 const MOCK_COVERAGE: CoverageResponse = {
