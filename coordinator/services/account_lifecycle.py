@@ -195,10 +195,20 @@ class AccountLifecycleService:
         await self._push_progress(account_id, "Replaying transactions...")
         txn_dicts = [self._normalize_transaction(t) for t in transactions]
 
-        # 4. Replay
+        # 4. Replay (forward pass for position ledger)
         ledger, cash_by_date = replay_transactions(txn_dicts, starting_cash=0.0)
 
-        # 5. Forward-fill
+        # 5. Calibrate cash backwards from broker's actual current cash
+        try:
+            info = await asyncio.to_thread(adapter.get_account_info)
+            actual_cash = float(info.get("cash", 0))
+            from coordinator.services.account_backfill import calibrate_cash_backwards
+            cash_by_date = calibrate_cash_backwards(cash_by_date, txn_dicts, actual_cash)
+            logger.info("Calibrated cash backwards from broker value $%.2f", actual_cash)
+        except Exception:
+            logger.warning("Failed to calibrate cash; using forward replay values", exc_info=True)
+
+        # 6. Forward-fill
         sorted_dates = sorted(ledger.keys())
         start_date = sorted_dates[0]
         end_date = date.today() - timedelta(days=1)

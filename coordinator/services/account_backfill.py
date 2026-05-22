@@ -123,6 +123,59 @@ def forward_fill_ledger(
 
 
 # ---------------------------------------------------------------------------
+# 2b. calibrate_cash_backwards
+# ---------------------------------------------------------------------------
+
+def calibrate_cash_backwards(
+    cash_by_date: dict[date, float],
+    transactions: list[dict],
+    actual_cash_today: float,
+) -> dict[date, float]:
+    """Recompute cash balances by anchoring at today's known broker cash
+    and walking backwards through transactions.
+
+    This avoids compounding errors from forward replay — each day's error
+    is bounded to that day's transactions instead of accumulating.
+    """
+    if not cash_by_date:
+        return cash_by_date
+
+    sorted_dates = sorted(cash_by_date.keys())
+
+    daily_deltas: dict[date, float] = {}
+    for txn in transactions:
+        ts = txn.get("timestamp", "")
+        if not ts:
+            continue
+        txn_date = datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
+        delta = 0.0
+        txn_type = txn.get("type", "")
+        if txn_type == "fill":
+            qty = float(txn.get("quantity") or 0)
+            price = float(txn.get("price") or 0)
+            side = txn.get("side", "")
+            if side == "buy":
+                delta = -(qty * price)
+            elif side == "sell":
+                delta = qty * price
+        elif txn_type in ("deposit", "dividend", "interest"):
+            delta = float(txn.get("amount") or 0)
+        elif txn_type in ("withdrawal", "fee"):
+            delta = -abs(float(txn.get("amount") or 0))
+
+        daily_deltas[txn_date] = daily_deltas.get(txn_date, 0.0) + delta
+
+    calibrated: dict[date, float] = {}
+    cash = actual_cash_today
+
+    for d in reversed(sorted_dates):
+        calibrated[d] = cash
+        cash -= daily_deltas.get(d, 0.0)
+
+    return calibrated
+
+
+# ---------------------------------------------------------------------------
 # 3. materialize_equity
 # ---------------------------------------------------------------------------
 
