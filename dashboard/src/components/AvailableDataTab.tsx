@@ -265,8 +265,10 @@ export function AvailableDataTab() {
           </button>
           <button
             onClick={() => {
-              setFillStart(effectiveStart);
-              setFillEnd(effectiveEnd);
+              if (!fillGapsOpen) {
+                setFillStart(effectiveStart);
+                setFillEnd(effectiveEnd);
+              }
               setFillGapsOpen(!fillGapsOpen);
             }}
             className="px-2.5 py-1 rounded text-xs font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors"
