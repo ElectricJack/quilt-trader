@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import { z } from "zod";
-import { Trash2, Play, Eye, X, RotateCcw } from "lucide-react";
+import { Trash2, Play, Eye, RotateCcw } from "lucide-react";
 import {
-  useAvailableData,
   useDownloads,
   useCreateDownload,
   useCancelDownload,
@@ -14,25 +14,15 @@ import {
   useDeleteScraper,
   useRunScraper,
   useDataSources,
-  useCoverage,
-  useFillGaps,
 } from "../api/hooks";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { DataTable, type ColumnDef } from "../components/DataTable";
 import { StatusBadge } from "../components/StatusBadge";
-import { DatasetPreviewModal } from "../components/DatasetPreviewModal";
 import { CustomDataPreviewModal } from "../components/CustomDataPreviewModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { CoverageTimeline } from "../components/CoverageTimeline";
 import { LiveSubscriptionsSection } from "../components/LiveSubscriptionsSection";
-import {
-  CompareView,
-  encodeCompareDataset,
-  decodeCompareDataset,
-  type CompareDataset,
-  type CompareMode,
-} from "../components/CompareView";
+import { AvailableDataTab } from "../components/AvailableDataTab";
 import { useUIStore } from "../stores/ui";
 import type { MarketDataDownload } from "../types";
 import type { DataSourceRow } from "../api/client";
@@ -282,44 +272,30 @@ function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProp
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-// ─── Compare-state URL helpers ────────────────────────────────────────────────
-
-function readCompareFromUrl(): { datasets: CompareDataset[]; mode: CompareMode; open: boolean } {
-  if (typeof window === "undefined") {
-    return { datasets: [], mode: "overlay", open: false };
-  }
-  const params = new URLSearchParams(window.location.search);
-  const compareRaw = params.get("compare");
-  const modeRaw = params.get("mode");
-  const datasets: CompareDataset[] = compareRaw
-    ? compareRaw
-        .split(",")
-        .map(decodeCompareDataset)
-        .filter((d): d is CompareDataset => d != null)
-    : [];
-  const mode: CompareMode =
-    modeRaw === "stacked" ? modeRaw : "overlay";
-  return { datasets, mode, open: datasets.length > 0 };
-}
-
-function writeCompareToUrl(datasets: CompareDataset[], mode: CompareMode, open: boolean): void {
-  if (typeof window === "undefined") return;
-  const params = new URLSearchParams(window.location.search);
-  if (open && datasets.length > 0) {
-    params.set("compare", datasets.map(encodeCompareDataset).join(","));
-    params.set("mode", mode);
-  } else {
-    params.delete("compare");
-    params.delete("mode");
-  }
-  const qs = params.toString();
-  const next = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
-  window.history.replaceState({}, "", next);
-}
+const TABS = ["acquisition", "available", "history"] as const;
+type Tab = (typeof TABS)[number];
+const TAB_LABELS: Record<Tab, string> = {
+  acquisition: "Data Acquisition",
+  available: "Available Data",
+  history: "Download History",
+};
 
 export function Data() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get("tab");
+  const activeTab: Tab = TABS.includes(rawTab as Tab) ? (rawTab as Tab) : "acquisition";
+  const setActiveTab = useCallback(
+    (tab: Tab) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", tab);
+        return next;
+      }, { replace: true });
+    },
+    [setSearchParams],
+  );
+
   const [modalOpen, setModalOpen] = useState(false);
-  const [preview, setPreview] = useState<{ provider: string; symbol: string; timeframe: string } | null>(null);
   const [rowToDelete, setRowToDelete] = useState<MarketDataDownload | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [installScraperOpen, setInstallScraperOpen] = useState(false);
@@ -327,43 +303,6 @@ export function Data() {
   const [customPreview, setCustomPreview] = useState<DataSourceRow | null>(null);
   const [downloadDefaults, setDownloadDefaults] = useState<DownloadFormValues>(loadDownloadDefaults);
 
-  // ── Multi-select & compare state ──────────────────────────────────────────
-  // Initialise from URL so deep-linking works.
-  const initialCompare = useMemo(readCompareFromUrl, []);
-  const [selected, setSelected] = useState<CompareDataset[]>(initialCompare.datasets);
-  const [compareOpen, setCompareOpen] = useState(initialCompare.open);
-  const [compareMode, setCompareMode] = useState<CompareMode>(initialCompare.mode);
-
-  // Persist URL whenever compare state changes.
-  useEffect(() => {
-    writeCompareToUrl(selected, compareMode, compareOpen);
-  }, [selected, compareMode, compareOpen]);
-
-  const selectionKey = useCallback(
-    (d: { provider: string; symbol: string; timeframe: string }) =>
-      `${d.provider}:${d.symbol}:${d.timeframe}`,
-    []
-  );
-  const selectedKeys = useMemo(
-    () => new Set(selected.map(selectionKey)),
-    [selected, selectionKey]
-  );
-  const toggleSelected = useCallback(
-    (d: CompareDataset) => {
-      const k = selectionKey(d);
-      setSelected((prev) =>
-        prev.some((p) => selectionKey(p) === k)
-          ? prev.filter((p) => selectionKey(p) !== k)
-          : [...prev, d]
-      );
-    },
-    [selectionKey]
-  );
-  const clearSelection = useCallback(() => setSelected([]), []);
-
-  const { data: available, isLoading: availableLoading } = useAvailableData();
-  const { data: coverageData, isLoading: coverageLoading } = useCoverage();
-  const fillGapsMutation = useFillGaps();
   const { data: downloads, isLoading: downloadsLoading, refetch } = useDownloads();
   const { mutateAsync: createDownload, isPending: isCreating } = useCreateDownload();
   const { mutate: cancelDownload, isPending: isCancelling } = useCancelDownload();
@@ -376,20 +315,6 @@ export function Data() {
   const deleteScraper = useDeleteScraper();
   const runScraper = useRunScraper();
   const addAlert = useUIStore((s) => s.addAlert);
-
-  // Track which provider groups are expanded.
-  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
-  const toggleProvider = useCallback((provider: string) => {
-    setExpandedProviders((prev) => {
-      const next = new Set(prev);
-      if (next.has(provider)) {
-        next.delete(provider);
-      } else {
-        next.add(provider);
-      }
-      return next;
-    });
-  }, []);
 
   // Index sources by scraper name so we can join with the scraper list cleanly.
   const sourceBySrc = useMemo(() => {
@@ -474,10 +399,6 @@ export function Data() {
     return () => clearInterval(id);
   }, [activeDownloads.length, refetch]);
 
-  // `available` is kept for the compare feature's `selected` state initialization;
-  // the Available Data section now uses `coverageData` from useCoverage().
-  void available;
-
   async function handleSubmit(values: DownloadFormValues) {
     setDownloadDefaults(values);
     try {
@@ -539,378 +460,202 @@ export function Data() {
     });
   }
 
-  async function handleFillGaps(provider: string, symbol: string) {
-    const today = new Date().toISOString().slice(0, 10);
-    // Default: fill from 1 year ago to today.
-    const oneYearAgo = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
-    try {
-      const result = await fillGapsMutation.mutateAsync({
-        provider,
-        symbol,
-        start: oneYearAgo,
-        end: today,
-        timeframe: "1min",
-      });
-      if (result.gap_count === 0) {
-        addAlert({ message: `${symbol} (${provider}) is already fully covered.`, severity: "success" });
-      } else {
-        addAlert({
-          message: `Queued ${result.gap_count} download${result.gap_count === 1 ? "" : "s"} to fill gaps for ${symbol}.`,
-          severity: "success",
-        });
-      }
-    } catch (e) {
-      addAlert({ message: `Fill gaps failed: ${(e as Error).message}`, severity: "error" });
-    }
-  }
-
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Data</h1>
         <div className="flex gap-2">
-          <button
-            onClick={() => setInstallScraperOpen(true)}
-            className="px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors"
-          >
-            Install Scraper
-          </button>
-          <button
-            onClick={() => setModalOpen(true)}
-            className="px-4 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
-          >
-            Download Market Data
-          </button>
+          {activeTab === "acquisition" && (
+            <button
+              onClick={() => setInstallScraperOpen(true)}
+              className="px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors"
+            >
+              Install Scraper
+            </button>
+          )}
+          {activeTab === "available" && (
+            <button
+              onClick={() => setModalOpen(true)}
+              className="px-4 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
+            >
+              Download Market Data
+            </button>
+          )}
+          {activeTab === "history" && historyDownloads.length > 0 && (
+            <button
+              onClick={() => setConfirmClear(true)}
+              className="px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors"
+            >
+              Clear Download History
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Live Subscriptions */}
-      <LiveSubscriptionsSection />
+      {/* Tab bar */}
+      <div className="flex gap-1 border-b border-gray-800">
+        {TABS.map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+              activeTab === tab
+                ? "text-white"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            {TAB_LABELS[tab]}
+            {activeTab === tab && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-500" />
+            )}
+          </button>
+        ))}
+      </div>
 
-      {/* Scrapers & their outputs */}
-      <section>
-        <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
-          Scrapers{" "}
-          {scrapers.length > 0 && (
-            <span className="font-normal text-gray-500">({scrapers.length})</span>
-          )}
-        </h2>
-        {scrapersLoading || sourcesLoading ? (
-          <p className="text-gray-400 text-sm">Loading…</p>
-        ) : scrapers.length === 0 ? (
-          <p className="text-gray-500 text-sm">
-            No scrapers installed. Click "Install Scraper" above to add one from a git repo.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {scrapers.map((s) => {
-              const source = sourceBySrc.get(s.name);
-              const rowCount = (source?.metadata as { row_count?: number } | null)?.row_count ?? null;
-              return (
-                <div
-                  key={s.name}
-                  className="bg-gray-900 border border-gray-800 rounded p-3 flex items-center justify-between gap-3"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-gray-100 truncate">{s.name}</span>
-                      {s.version && (
-                        <span className="text-[10px] text-gray-500 font-mono">v{s.version}</span>
-                      )}
-                      {s.last_status && (
-                        <span
-                          className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                            s.last_status === "ok"
-                              ? "bg-green-900/40 text-green-300 border-green-800"
-                              : s.last_status === "running"
-                              ? "bg-blue-900/40 text-blue-300 border-blue-800"
-                              : "bg-red-900/40 text-red-300 border-red-800"
-                          }`}
-                        >
-                          {s.last_status}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-4 gap-y-0.5">
-                      {s.description && <span className="truncate max-w-md">{s.description}</span>}
-                      <span>schedule: <span className="font-mono text-gray-400">{s.schedule}</span></span>
-                      {s.next_run_at && s.next_run_at !== "None" && (
-                        <span>next: <span className="text-gray-400">{s.next_run_at}</span></span>
-                      )}
-                      {source?.last_updated && (
-                        <span>
-                          updated: <span className="text-gray-400">{new Date(source.last_updated).toLocaleString()}</span>
-                          {rowCount != null && <span className="text-gray-500"> ({rowCount} rows)</span>}
-                        </span>
-                      )}
-                    </div>
-                    {s.last_error && (
-                      <p className="text-xs text-red-400 mt-1 truncate" title={s.last_error}>
-                        {s.last_error}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {source && (
-                      <button
-                        onClick={() => setCustomPreview(source)}
-                        className="p-1.5 text-gray-400 hover:text-indigo-400 hover:bg-gray-800 rounded transition-colors"
-                        title="Preview output"
-                      >
-                        <Eye size={14} />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleRunScraper(s.name)}
-                      disabled={runScraper.isPending}
-                      className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-gray-800 rounded transition-colors disabled:opacity-60"
-                      title="Run now"
+      {/* ── Data Acquisition tab ── */}
+      {activeTab === "acquisition" && (
+        <div className="space-y-8">
+          <section>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
+              Scrapers{" "}
+              {scrapers.length > 0 && (
+                <span className="font-normal text-gray-500">({scrapers.length})</span>
+              )}
+            </h2>
+            {scrapersLoading || sourcesLoading ? (
+              <p className="text-gray-400 text-sm">Loading…</p>
+            ) : scrapers.length === 0 ? (
+              <p className="text-gray-500 text-sm">
+                No scrapers installed. Click "Install Scraper" above to add one from a git repo.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {scrapers.map((s) => {
+                  const source = sourceBySrc.get(s.name);
+                  const rowCount = (source?.metadata as { row_count?: number } | null)?.row_count ?? null;
+                  return (
+                    <div
+                      key={s.name}
+                      className="bg-gray-900 border border-gray-800 rounded p-3 flex items-center justify-between gap-3"
                     >
-                      <Play size={14} />
-                    </button>
-                    <button
-                      onClick={() => setScraperToDelete(s.name)}
-                      className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded transition-colors"
-                      title="Uninstall"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* Active Downloads */}
-      {(activeDownloads.length > 0 || downloadsLoading) && (
-        <section>
-          <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
-            Active Downloads
-          </h2>
-          {downloadsLoading ? (
-            <p className="text-gray-400 text-sm">Loading…</p>
-          ) : (
-            <div className="space-y-3">
-              {activeDownloads.map((d) => (
-                <ActiveDownloadCard
-                  key={d.id}
-                  download={d}
-                  onCancel={handleCancel}
-                  isCancelling={isCancelling}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* Download History */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase">Download History</h2>
-          {historyDownloads.length > 0 && (
-            <button
-              onClick={() => setConfirmClear(true)}
-              className="text-xs text-gray-400 hover:text-red-400 transition-colors"
-            >
-              Clear History
-            </button>
-          )}
-        </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-          <DataTable
-            data={historyDownloads}
-            columns={historyColumns}
-            isLoading={downloadsLoading}
-            emptyMessage="No completed downloads yet."
-            enableSorting
-          />
-        </div>
-      </section>
-
-      {/* Available Data — asset tree with coverage timeline */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase">
-            Available Data
-          </h2>
-          {selected.length > 0 && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={clearSelection}
-                className="text-xs text-gray-400 hover:text-gray-200 transition-colors"
-              >
-                Clear ({selected.length})
-              </button>
-              <button
-                onClick={() => setCompareOpen(true)}
-                disabled={selected.length < 2}
-                className="px-3 py-1.5 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                title={
-                  selected.length < 2
-                    ? "Select at least 2 datasets to compare"
-                    : `Compare ${selected.length} datasets`
-                }
-              >
-                Compare selected ({selected.length})
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Coverage-grouped asset tree */}
-        {coverageLoading || availableLoading ? (
-          <p className="text-gray-400 text-sm">Loading…</p>
-        ) : !coverageData || Object.keys(coverageData.providers).length === 0 ? (
-          <p className="text-gray-500 text-sm">No data sources available.</p>
-        ) : (
-          <div className="space-y-2">
-            {Object.entries(coverageData.providers).map(([provider, assets]) => {
-              const isExpanded = expandedProviders.has(provider);
-              return (
-                <div key={provider} className="bg-gray-900 border border-gray-800 rounded">
-                  {/* Provider header */}
-                  <button
-                    onClick={() => toggleProvider(provider)}
-                    className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-800/50 transition-colors rounded"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500">{isExpanded ? "▾" : "▸"}</span>
-                      <span className="font-semibold text-gray-200 capitalize">{provider}</span>
-                    </div>
-                    <span className="text-xs text-gray-500">
-                      {assets.length} asset{assets.length !== 1 ? "s" : ""}
-                    </span>
-                  </button>
-
-                  {/* Asset rows (collapsible) */}
-                  {isExpanded && (
-                    <div className="border-t border-gray-800 divide-y divide-gray-800/50">
-                      {assets.map((asset) => {
-                        const defaultTf = asset.timeframes_on_disk.includes("1min")
-                          ? "1min"
-                          : asset.timeframes_on_disk[0] ?? "1min";
-                        const ds: CompareDataset = {
-                          provider: asset.provider,
-                          symbol: asset.symbol,
-                          timeframe: defaultTf,
-                        };
-                        const isSelected = selectedKeys.has(selectionKey(ds));
-                        return (
-                          <div
-                            key={asset.symbol}
-                            className="px-4 py-2.5 flex items-center gap-3"
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-100 truncate">{s.name}</span>
+                          {s.version && (
+                            <span className="text-[10px] text-gray-500 font-mono">v{s.version}</span>
+                          )}
+                          {s.last_status && (
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                s.last_status === "ok"
+                                  ? "bg-green-900/40 text-green-300 border-green-800"
+                                  : s.last_status === "running"
+                                  ? "bg-blue-900/40 text-blue-300 border-blue-800"
+                                  : "bg-red-900/40 text-red-300 border-red-800"
+                              }`}
+                            >
+                              {s.last_status}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-4 gap-y-0.5">
+                          {s.description && <span className="truncate max-w-md">{s.description}</span>}
+                          <span>schedule: <span className="font-mono text-gray-400">{s.schedule}</span></span>
+                          {s.next_run_at && s.next_run_at !== "None" && (
+                            <span>next: <span className="text-gray-400">{s.next_run_at}</span></span>
+                          )}
+                          {source?.last_updated && (
+                            <span>
+                              updated: <span className="text-gray-400">{new Date(source.last_updated).toLocaleString()}</span>
+                              {rowCount != null && <span className="text-gray-500"> ({rowCount} rows)</span>}
+                            </span>
+                          )}
+                        </div>
+                        {s.last_error && (
+                          <p className="text-xs text-red-400 mt-1 truncate" title={s.last_error}>
+                            {s.last_error}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {source && (
+                          <button
+                            onClick={() => setCustomPreview(source)}
+                            className="p-1.5 text-gray-400 hover:text-indigo-400 hover:bg-gray-800 rounded transition-colors"
+                            title="Preview output"
                           >
-                            {/* Compare checkbox */}
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={() => toggleSelected(ds)}
-                              className="accent-indigo-500 shrink-0"
-                              title="Select for compare"
-                            />
-
-                            {/* Symbol name */}
-                            <button
-                              onClick={() =>
-                                setPreview({
-                                  provider: asset.provider,
-                                  symbol: asset.symbol,
-                                  timeframe: defaultTf,
-                                })
-                              }
-                              className="text-sm font-mono font-semibold text-gray-200 hover:text-white w-16 text-left shrink-0"
-                            >
-                              {asset.symbol}
-                            </button>
-
-                            {/* Timeline bar */}
-                            <div className="flex-1 min-w-0">
-                              {asset.ranges.length > 0 ? (
-                                <CoverageTimeline ranges={asset.ranges} />
-                              ) : (
-                                <span className="text-xs text-gray-600">no coverage data</span>
-                              )}
-                            </div>
-
-                            {/* Timeframes on disk */}
-                            <div className="hidden sm:flex gap-1 shrink-0">
-                              {asset.timeframes_on_disk.map((tf) => (
-                                <span
-                                  key={tf}
-                                  className="text-[10px] font-mono text-gray-500 bg-gray-800 px-1 py-0.5 rounded"
-                                >
-                                  {tf}
-                                </span>
-                              ))}
-                            </div>
-
-                            {/* Fill gaps button */}
-                            <button
-                              onClick={() => handleFillGaps(asset.provider, asset.symbol)}
-                              disabled={fillGapsMutation.isPending}
-                              className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50 shrink-0 transition-colors"
-                              title="Fill gaps"
-                            >
-                              Fill gaps
-                            </button>
-                          </div>
-                        );
-                      })}
+                            <Eye size={14} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleRunScraper(s.name)}
+                          disabled={runScraper.isPending}
+                          className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-gray-800 rounded transition-colors disabled:opacity-60"
+                          title="Run now"
+                        >
+                          <Play size={14} />
+                        </button>
+                        <button
+                          onClick={() => setScraperToDelete(s.name)}
+                          className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded transition-colors"
+                          title="Uninstall"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+                  );
+                })}
+              </div>
+            )}
+          </section>
 
-      {/* Compare modal */}
-      {compareOpen && (
-        <div
-          className="fixed inset-0 z-50 bg-black/70 flex flex-col"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="flex items-center justify-between px-6 py-3 bg-gray-900 border-b border-gray-800">
-            <div className="flex items-center gap-3 min-w-0">
-              <h3 className="text-base font-semibold text-white">
-                Compare Datasets
-              </h3>
-              <span className="text-xs text-gray-400">
-                {selected.length} selected
-              </span>
-            </div>
-            <button
-              onClick={() => setCompareOpen(false)}
-              className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors"
-              title="Close"
-            >
-              <X size={18} />
-            </button>
-          </div>
-          <div className="flex-1 overflow-hidden flex flex-col min-h-0 p-6">
-            <CompareView
-              datasets={selected}
-              mode={compareMode}
-              onModeChange={setCompareMode}
-            />
-          </div>
+          <LiveSubscriptionsSection />
         </div>
       )}
 
-      {/* Dataset Preview modal (market data) */}
-      <DatasetPreviewModal
-        open={!!preview}
-        onClose={() => setPreview(null)}
-        provider={preview?.provider ?? null}
-        symbol={preview?.symbol ?? null}
-        timeframe={preview?.timeframe ?? null}
-      />
+      {/* ── Available Data tab ── */}
+      {activeTab === "available" && <AvailableDataTab />}
+
+      {/* ── Download History tab ── */}
+      {activeTab === "history" && (
+        <div className="space-y-8">
+          {(activeDownloads.length > 0 || downloadsLoading) && (
+            <section>
+              <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
+                Active Downloads
+              </h2>
+              {downloadsLoading ? (
+                <p className="text-gray-400 text-sm">Loading…</p>
+              ) : (
+                <div className="space-y-3">
+                  {activeDownloads.map((d) => (
+                    <ActiveDownloadCard
+                      key={d.id}
+                      download={d}
+                      onCancel={handleCancel}
+                      isCancelling={isCancelling}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          <section>
+            <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+              <DataTable
+                data={historyDownloads}
+                columns={historyColumns}
+                isLoading={downloadsLoading}
+                emptyMessage="No completed downloads yet."
+                enableSorting
+              />
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* Custom data preview modal (scraper outputs) */}
       <CustomDataPreviewModal
