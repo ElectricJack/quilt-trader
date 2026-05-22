@@ -90,6 +90,7 @@ class DataService:
         """Return the max timestamp in the saved parquet, or None if no file/column."""
         path = self._resolve_provider_path(provider, symbol, timeframe)
         if not path:
+            return None
         try:
             df = pd.read_parquet(path, columns=["timestamp"])
         except Exception:
@@ -106,6 +107,7 @@ class DataService:
         """Return the min timestamp in the saved parquet, or None if no file/column."""
         path = self._resolve_provider_path(provider, symbol, timeframe)
         if not path:
+            return None
         try:
             df = pd.read_parquet(path, columns=["timestamp"])
         except Exception:
