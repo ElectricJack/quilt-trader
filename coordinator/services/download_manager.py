@@ -227,6 +227,7 @@ class DownloadManager:
 
         provider = self._providers[provider_name]
         errors = []
+        any_bars_saved = False
 
         async def _update_progress_message(message: str) -> None:
             async with self._session_factory() as session:
@@ -317,20 +318,20 @@ class DownloadManager:
                     symbol, timeframe, effective_start, end,
                     on_page=on_page, on_status=on_status, on_bars=on_bars,
                 )
-                if bars:
-                    # Providers that don't stream pages (e.g. Theta) won't have invoked
-                    # on_bars; save the full result for them.
-                    if not incremental_saved:
+                if bars or incremental_saved:
+                    if bars and not incremental_saved:
                         df = pd.DataFrame(bars)
                         await asyncio.to_thread(
                             self._data_service.save_market_data,
                             provider_name, symbol, timeframe, df,
                         )
-                    logger.info("Downloaded %d bars for %s/%s", len(bars), symbol, timeframe)
-                    await _update_progress_message(f"{symbol}: saved {len(bars):,} bars")
+                    any_bars_saved = True
+                    bar_count = len(bars) if bars else 0
+                    logger.info("Downloaded %d bars for %s/%s", bar_count, symbol, timeframe)
+                    await _update_progress_message(f"{symbol}: saved {bar_count:,} bars")
                 else:
-                    logger.info("No new bars for %s/%s", symbol, timeframe)
-                    await _update_progress_message(f"{symbol}: no new data")
+                    logger.warning("No data returned for %s/%s/%s (%s to %s)", provider_name, symbol, timeframe, effective_start, end)
+                    errors.append(f"{symbol}: no data returned by {provider_name} for {effective_start} to {end}")
             except NotImplementedError as e:
                 logger.warning("%s", e)
                 errors.append(f"{symbol}: {e}")
