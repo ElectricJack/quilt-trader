@@ -41,14 +41,21 @@ async def portfolio_equity(
     range: RangeLiteral = Query("1m"),
     db: AsyncSession = Depends(get_db),
 ):
+    import asyncio
+    import json as _json
     from coordinator.database.models import AccountEquityDaily
+    from worker.adapter_factory import make_broker_adapter
 
     cutoff = _range_to_cutoff(range)
     accounts = await _visible_accounts(db)
+    container = get_container()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     out = []
     for acct in accounts:
-        # Try materialized daily table first
+        points = []
+
+        # Historical: materialized daily table
         eq_query = select(AccountEquityDaily).where(AccountEquityDaily.account_id == acct.id)
         if cutoff is not None:
             eq_query = eq_query.where(AccountEquityDaily.date >= cutoff.date())
@@ -56,34 +63,39 @@ async def portfolio_equity(
         eq_rows = (await db.execute(eq_query)).scalars().all()
 
         if eq_rows:
+            points = [
+                {"timestamp": r.date.isoformat() + "T00:00:00Z", "value": r.total_value}
+                for r in eq_rows
+            ]
+        else:
+            # Fallback to sparse snapshots for accounts not yet backfilled
+            snap_query = select(AccountSnapshot).where(AccountSnapshot.account_id == acct.id)
+            if cutoff is not None:
+                snap_query = snap_query.where(AccountSnapshot.timestamp >= cutoff)
+            snap_query = snap_query.order_by(AccountSnapshot.timestamp)
+            snaps = (await db.execute(snap_query)).scalars().all()
+            points = [
+                {"timestamp": to_iso_utc(s.timestamp), "value": s.total_value}
+                for s in snaps
+            ]
+
+        # Append live broker value as the current data point
+        try:
+            creds = _json.loads(container.encryption.decrypt(acct.credentials))
+            adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
+            info = await asyncio.to_thread(adapter.get_account_info)
+            live_value = float(info.get("portfolio_value", 0))
+            if live_value > 0:
+                points.append({"timestamp": now_iso, "value": live_value})
+        except Exception:
+            logger.warning("Failed to fetch live value for %s", acct.name, exc_info=True)
+
+        if points:
             out.append({
                 "account_id": acct.id,
                 "account_name": acct.name,
-                "points": [
-                    {"timestamp": r.date.isoformat() + "T00:00:00Z", "value": r.total_value}
-                    for r in eq_rows
-                ],
+                "points": points,
             })
-            continue
-
-        # Fallback to sparse snapshots for accounts not yet backfilled
-        snap_query = select(AccountSnapshot).where(AccountSnapshot.account_id == acct.id)
-        if cutoff is not None:
-            snap_query = snap_query.where(AccountSnapshot.timestamp >= cutoff)
-        snap_query = snap_query.order_by(AccountSnapshot.timestamp)
-        snaps = (await db.execute(snap_query)).scalars().all()
-
-        if not snaps:
-            continue
-
-        out.append({
-            "account_id": acct.id,
-            "account_name": acct.name,
-            "points": [
-                {"timestamp": to_iso_utc(s.timestamp), "value": s.total_value}
-                for s in snaps
-            ],
-        })
 
     return {"accounts": out}
 
