@@ -285,45 +285,9 @@ class DownloadManager:
                     )
                     incremental_saved = True
 
-                # Resume: if existing data overlaps the requested range, narrow
-                # the fetch window. Check both the earliest and latest timestamps
-                # to handle both forward-extension and backfill scenarios.
-                effective_start = start
-                effective_end = end
-                earliest = self._data_service.earliest_market_data_timestamp(
-                    provider_name, symbol, timeframe
-                )
-                latest = self._data_service.latest_market_data_timestamp(
-                    provider_name, symbol, timeframe
-                )
-                if earliest is not None and latest is not None:
-                    earliest_date = earliest.date()
-                    latest_date = latest.date()
-                    if earliest_date <= start and latest_date >= end:
-                        await _update_progress_message(
-                            f"{symbol}: already up to date ({earliest_date} to {latest_date})"
-                        )
-                        async with self._session_factory() as session:
-                            await session.execute(
-                                update(MarketDataDownload)
-                                .where(MarketDataDownload.id == download_id)
-                                .values(progress_current=i + 1, current_symbol_pct=None)
-                            )
-                            await session.commit()
-                        continue
-                    if latest_date >= start and latest_date < end:
-                        effective_start = latest_date + timedelta(days=1)
-                    if earliest_date <= end and earliest_date > start:
-                        effective_end = earliest_date - timedelta(days=1)
-
-                if effective_start != start or effective_end != end:
-                    await _update_progress_message(
-                        f"{symbol}: fetching {effective_start} to {effective_end}"
-                    )
-                else:
-                    await _update_progress_message(f"{symbol}: starting…")
+                await _update_progress_message(f"{symbol}: fetching {start} to {end}")
                 bars = await provider.fetch_bars(
-                    symbol, timeframe, effective_start, effective_end,
+                    symbol, timeframe, start, end,
                     on_page=on_page, on_status=on_status, on_bars=on_bars,
                 )
                 if bars or incremental_saved:
