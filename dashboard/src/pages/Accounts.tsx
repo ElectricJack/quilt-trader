@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { z } from "zod";
 import { Pencil, Trash2 } from "lucide-react";
 import type { UseFormReturn } from "react-hook-form";
@@ -9,15 +9,21 @@ import {
   useUpdateAccount,
   useDeleteAccount,
   useBrokerAssetTypes,
+  useAccountSnapshotsLatest,
 } from "../api/hooks";
 import { api } from "../api/client";
 import type { Account } from "../types";
-import { DataTable, type ColumnDef } from "../components/DataTable";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { StatusBadge } from "../components/StatusBadge";
 import { useUIStore } from "../stores/ui";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtMoney(v: number): string {
+  return `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+}
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -408,6 +414,7 @@ function EditAccountFormBody({
 export function Accounts() {
   const navigate = useNavigate();
   const { data: accounts = [], isLoading } = useAccounts();
+  const { data: snapshots } = useAccountSnapshotsLatest();
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
@@ -418,91 +425,20 @@ export function Accounts() {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
 
-  // ─── Columns ────────────────────────────────────────────────────────────────
+  // ─── Snapshot map ───────────────────────────────────────────────────────────
 
-  const columns: ColumnDef<Account, unknown>[] = [
-    {
-      id: "name",
-      header: "Name",
-      accessorKey: "name",
-      cell: ({ row }) => (
-        <Link
-          to={`/accounts/${row.original.id}`}
-          className="text-indigo-400 hover:underline"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {row.original.name}
-        </Link>
-      ),
-    },
-    {
-      id: "broker_type",
-      header: "Broker",
-      accessorKey: "broker_type",
-    },
-    {
-      id: "environment",
-      header: "Env",
-      accessorKey: "environment",
-      cell: ({ row }) => {
-        const env = row.original.environment;
-        const cls = env === "live"
-          ? "bg-emerald-900/40 text-emerald-300 border-emerald-800"
-          : "bg-blue-900/40 text-blue-300 border-blue-800";
-        return (
-          <span className={`text-xs px-2 py-0.5 rounded border ${cls}`}>
-            {env === "live" ? "LIVE" : "PAPER"}
-          </span>
-        );
-      },
-    },
-    {
-      id: "supported_asset_types",
-      header: "Asset Types",
-      accessorFn: (row) => (row.supported_asset_types ?? []).join(", "),
-    },
-    {
-      id: "pdt_mode",
-      header: "PDT Mode",
-      accessorKey: "pdt_mode",
-    },
-    {
-      id: "status",
-      header: "Status",
-      accessorFn: (row) => (row.locked_by ? "locked" : "available"),
-      cell: ({ row }) => (
-        <StatusBadge status={row.original.locked_by ? "locked" : "available"} />
-      ),
-    },
-    {
-      id: "actions",
-      header: "Actions",
-      cell: ({ row }) => (
-        <div className="flex gap-2">
-          <button
-            className="p-1 text-gray-400 hover:text-indigo-400 transition-colors"
-            title="Edit"
-            onClick={(e) => {
-              e.stopPropagation();
-              setEditTarget(row.original);
-            }}
-          >
-            <Pencil size={14} />
-          </button>
-          <button
-            className="p-1 text-gray-400 hover:text-red-400 transition-colors"
-            title="Delete"
-            onClick={(e) => {
-              e.stopPropagation();
-              setDeleteTarget(row.original);
-            }}
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
-      ),
-    },
-  ];
+  const snapshotMap = new Map(
+    (snapshots?.items ?? []).map((s) => [s.account_id, s])
+  );
+
+  // ─── Sorted accounts: live first, then alpha within each group ───────────────
+
+  const sorted = [...accounts].sort((a, b) => {
+    if (a.environment !== b.environment) {
+      return a.environment === "live" ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
 
   // ─── Test connection ────────────────────────────────────────────────────────
 
@@ -603,15 +539,104 @@ export function Accounts() {
         </button>
       </div>
 
-      {/* Table */}
-      <DataTable
-        data={accounts}
-        columns={columns}
-        isLoading={isLoading}
-        emptyMessage="No accounts found."
-        enableSorting
-        onRowClick={(row) => navigate(`/accounts/${row.id}`)}
-      />
+      {/* Account Cards */}
+      {isLoading ? (
+        <p className="text-gray-500 text-sm">Loading…</p>
+      ) : sorted.length === 0 ? (
+        <p className="text-gray-500 text-sm">No accounts found.</p>
+      ) : (
+        <div className="space-y-3">
+          {sorted.map((account) => {
+            const snap = snapshotMap.get(account.id);
+            const total = snap?.latest.total_value ?? 0;
+            const positionsValue = snap?.latest.positions_value ?? 0;
+            const cashValue = snap?.latest.cash ?? 0;
+            const dayPct = snap?.day_pct ?? null;
+            const positionsPct = total > 0 ? (positionsValue / total) * 100 : 0;
+            const cashPct = total > 0 ? (cashValue / total) * 100 : 0;
+            const env = account.environment;
+            const envCls =
+              env === "live"
+                ? "bg-emerald-900/40 text-emerald-300 border-emerald-800"
+                : "bg-blue-900/40 text-blue-300 border-blue-800";
+
+            return (
+              <div
+                key={account.id}
+                onClick={() => navigate(`/accounts/${account.id}`)}
+                className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden cursor-pointer hover:border-gray-700 transition-colors"
+              >
+                {/* Balance section */}
+                <div className="px-4 py-3">
+                  <div className="flex items-baseline justify-between mb-1.5">
+                    <strong className="text-sm">{account.name}</strong>
+                    <span className="text-sm font-semibold">
+                      {fmtMoney(total)}{" "}
+                      {dayPct !== null && (
+                        <span
+                          className={`text-[11px] ${dayPct >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                        >
+                          {dayPct >= 0 ? "+" : ""}
+                          {dayPct.toFixed(1)}%
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex h-3 rounded-sm overflow-hidden mb-1">
+                    <div style={{ width: `${positionsPct}%`, background: "#3b82f6" }} />
+                    <div style={{ width: `${cashPct}%`, background: "#10b981" }} />
+                  </div>
+                  <div className="text-[10px] text-gray-500">
+                    {positionsPct.toFixed(0)}% positions ({fmtMoney(positionsValue)})
+                    {" · "}
+                    {cashPct.toFixed(0)}% cash ({fmtMoney(cashValue)})
+                  </div>
+                </div>
+
+                {/* Metadata row */}
+                <div
+                  className="px-4 py-2 border-t border-gray-800 flex items-center gap-2 flex-wrap"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <span className="text-xs text-gray-400">{account.broker_type}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded border ${envCls}`}>
+                    {env === "live" ? "LIVE" : "PAPER"}
+                  </span>
+                  {(account.supported_asset_types ?? []).length > 0 && (
+                    <span className="text-xs text-gray-500">
+                      {(account.supported_asset_types ?? []).join(", ")}
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-500">PDT: {account.pdt_mode}</span>
+                  <StatusBadge status={account.locked_by ? "locked" : "available"} />
+                  <div className="ml-auto flex gap-2">
+                    <button
+                      className="p-1 text-gray-400 hover:text-indigo-400 transition-colors"
+                      title="Edit"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditTarget(account);
+                      }}
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                      title="Delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteTarget(account);
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Add Account Modal */}
       <FormModal
