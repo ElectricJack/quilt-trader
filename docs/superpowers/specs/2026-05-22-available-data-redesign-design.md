@@ -60,14 +60,15 @@ Unknown providers fall back to `gray-400`.
 Each row in the flat list:
 
 ```
-[checkbox] [symbol label] [coverage bar ~~~~~~~~~~~~~~~~~~~~~~] [timeframe badges] [fill gaps]
+[checkbox] [symbol label] [coverage bar ~~~~~~~~~~~~~~~~~~~~~~] [timeframe badges]
 ```
 
-- **Checkbox** — existing compare selection, unchanged.
+- **Checkbox** — selects the row for bulk actions (compare, fill gaps). Unchanged from existing compare behavior.
 - **Symbol label** — font-mono, fixed width. For options groups: "SPY Options (23)" with expand/collapse toggle.
 - **Coverage bar** — colored by provider, rendered within the global time window. No per-row date labels.
 - **Timeframe badges** — small pills showing timeframes on disk (e.g., `1min`, `1day`).
-- **Fill gaps** — existing button, unchanged.
+
+No per-row fill-gaps button. Fill gaps is handled via **bulk action bar** (see section 6a).
 
 ### 5. Options Contract Grouping
 
@@ -91,11 +92,21 @@ Detection heuristic: a symbol is an options contract if it matches the regex pat
 
 Format: `{underlying} ${strike} {Call|Put} {MM/DD/YY}`
 
-Each child row has its own coverage bar, checkbox, and fill-gaps button.
+Each child row has its own coverage bar and checkbox.
 
 SPY (equity) and SPY Options (group) are **separate rows** — they are not nested.
 
-### 6. Bar Interactions
+### 6a. Bulk Action Bar
+
+When one or more rows are selected (via checkboxes), a floating action bar appears above the list (or below the filter bar) showing:
+
+- **Selection count** — "{N} selected" with a "Clear" link
+- **Compare** button — opens compare modal (existing behavior, requires 2+ selections)
+- **Fill Gaps** button — opens a small inline form to configure gap-filling for the selected assets. The form includes date range inputs (defaulting to the global time window) and a timeframe selector (defaulting to `1min`). Submitting calls the existing `fillGaps` mutation for each selected asset.
+
+This replaces the per-row fill-gaps button with a single bulk action.
+
+### 6b. Bar Interactions
 
 **Hover:** A vertical crosshair line follows the mouse cursor across the bar. A tooltip positioned near the cursor shows the date at that x-position, computed from the bar's proportion within the global time window.
 
@@ -137,7 +148,7 @@ Internal components (can be local to the file):
 ### 10. What Stays the Same
 
 - Compare checkboxes and compare modal flow
-- Fill gaps button behavior
+- Fill gaps mutation logic (now triggered via bulk action instead of per-row button)
 - Download Market Data button in the tab header
 - `DatasetPreviewModal` (extended with optional `targetDate`)
 - `CoverageTimeline` component itself (still used elsewhere if needed)
@@ -147,4 +158,4 @@ Internal components (can be local to the file):
 - No backend API changes
 - No changes to other tabs (Data Acquisition, Download History)
 - No changes to the compare view
-- Options grouping is display-only — fill-gaps and compare still operate on individual contracts
+- Options grouping is display-only — bulk actions (fill-gaps, compare) operate on individual contracts within expanded groups
