@@ -320,6 +320,26 @@ async def get_coverage():
     return {"providers": grouped}
 
 
+class DeleteDatasetRequest(BaseModel):
+    provider: str
+    symbol: str
+    timeframe: str
+
+
+@router.post("/delete-datasets")
+async def delete_datasets(body: list[DeleteDatasetRequest]):
+    """Delete one or more market data parquet files."""
+    svc = get_data_service()
+    coverage = get_coverage_index()
+    deleted = 0
+    for item in body:
+        if svc.delete_market_data(item.provider, item.symbol, item.timeframe):
+            deleted += 1
+            if coverage:
+                coverage.invalidate(item.provider, item.symbol)
+    return {"deleted": deleted}
+
+
 class FillGapsRequest(BaseModel):
     provider: str
     symbol: str

@@ -13,6 +13,18 @@ class DataService:
     def market_data_path(self, provider: str, symbol: str, timeframe: str) -> str:
         return os.path.join(self._market_dir, provider, symbol, f"{timeframe}.parquet")
 
+    def delete_market_data(self, provider: str, symbol: str, timeframe: str) -> bool:
+        """Delete a specific parquet file. Returns True if it existed."""
+        path = self.market_data_path(provider, symbol, timeframe)
+        if os.path.exists(path):
+            os.remove(path)
+            # Clean up empty directories
+            symbol_dir = os.path.dirname(path)
+            if os.path.isdir(symbol_dir) and not os.listdir(symbol_dir):
+                os.rmdir(symbol_dir)
+            return True
+        return False
+
     def custom_data_path(self, name: str, fmt: str) -> str:
         return os.path.join(self._custom_dir, f"{name}.{fmt}")
 

@@ -578,6 +578,12 @@ export const api = {
       body: JSON.stringify(body),
     });
   },
+  deleteDatasets(body: { provider: string; symbol: string; timeframe: string }[]): Promise<{ deleted: number }> {
+    return request<{ deleted: number }>("/api/data/delete-datasets", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
 
   // Events
   listEvents(params: EventParams = {}): Promise<PaginatedResponse<SystemEvent>> {

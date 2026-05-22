@@ -1,12 +1,13 @@
 // src/components/AvailableDataTab.tsx
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { useCoverage, useAvailableData, useFillGaps, useDownloads } from "../api/hooks";
-import { useProcessedCoverage, type AssetType } from "../hooks/useProcessedCoverage";
+import { useCoverage, useAvailableData, useFillGaps, useDownloads, useDeleteDatasets } from "../api/hooks";
+import { useProcessedCoverage, type AssetType, type DisplayRow } from "../hooks/useProcessedCoverage";
 import { TimeWindowControls } from "./TimeWindowControls";
 import { DataFilterBar } from "./DataFilterBar";
 import { InteractiveCoverageBar } from "./InteractiveCoverageBar";
 import { DatasetPreviewModal } from "./DatasetPreviewModal";
+import { ConfirmDialog } from "./ConfirmDialog";
 import {
   CompareView,
   encodeCompareDataset,
@@ -49,8 +50,10 @@ export function AvailableDataTab() {
   const { data: coverageData, isLoading: coverageLoading, refetch: refetchCoverage } = useCoverage();
   const { isLoading: availableLoading } = useAvailableData();
   const fillGapsMutation = useFillGaps();
+  const deleteDatasetsMutation = useDeleteDatasets();
   const { data: downloads, refetch: refetchDownloads } = useDownloads();
   const addAlert = useUIStore((s) => s.addAlert);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const activeDownloadCount = useMemo(
     () => (downloads ?? []).filter((d) => ACTIVE_STATUSES.has(d.status)).length,
@@ -191,25 +194,42 @@ export function AvailableDataTab() {
   const filteredRows = useMemo(() => {
     if (!processed) return [];
     const search = searchText.toLowerCase();
-    return processed.rows.filter((row) => {
-      if (!assetTypes.has(row.assetType)) return false;
+    const result: DisplayRow[] = [];
+    for (const row of processed.rows) {
+      if (!assetTypes.has(row.assetType)) continue;
+
       if (row.kind === "multi-provider") {
-        if (!row.children.some((c) => effectiveProviders.has(c.provider))) return false;
-      } else if (!effectiveProviders.has(row.provider)) return false;
+        const matchingChildren = row.children.filter((c) => effectiveProviders.has(c.provider));
+        if (matchingChildren.length === 0) continue;
+        if (search && !row.symbol.toLowerCase().includes(search)) continue;
+        if (matchingChildren.length === 1) {
+          const c = matchingChildren[0];
+          result.push({
+            kind: "asset",
+            symbol: row.symbol,
+            provider: c.provider,
+            ranges: c.ranges,
+            timeframes: [c.timeframe],
+            assetType: row.assetType,
+            sortKey: row.sortKey,
+          });
+        } else {
+          result.push({ ...row, children: matchingChildren });
+        }
+        continue;
+      }
+
+      if (!effectiveProviders.has(row.provider)) continue;
       if (search) {
         if (row.kind === "options-group") {
-          return (
-            row.underlying.toLowerCase().includes(search) ||
-            row.children.some((c) => c.symbol.toLowerCase().includes(search) || c.readableLabel.toLowerCase().includes(search))
-          );
-        }
-        if (row.kind === "multi-provider") {
-          return row.symbol.toLowerCase().includes(search);
-        }
-        return row.symbol.toLowerCase().includes(search);
+          if (!row.underlying.toLowerCase().includes(search) &&
+              !row.children.some((c) => c.symbol.toLowerCase().includes(search) || c.readableLabel.toLowerCase().includes(search)))
+            continue;
+        } else if (!row.symbol.toLowerCase().includes(search)) continue;
       }
-      return true;
-    });
+      result.push(row);
+    }
+    return result;
   }, [processed, searchText, assetTypes, effectiveProviders]);
 
   function makeCompareDataset(provider: string, symbol: string, timeframes: string[]): CompareDataset {
@@ -275,6 +295,12 @@ export function AvailableDataTab() {
           >
             Fill Gaps
           </button>
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="px-2.5 py-1 rounded text-xs font-medium text-gray-200 bg-red-900 hover:bg-red-800 transition-colors"
+          >
+            Delete
+          </button>
           {fillGapsOpen && (
             <div className="flex items-center gap-2 ml-2">
               <input type="date" value={fillStart} onChange={(e) => setFillStart(e.target.value)} className="bg-gray-800 border border-gray-700 text-gray-100 rounded px-2 py-1 text-xs" />
@@ -285,6 +311,28 @@ export function AvailableDataTab() {
           )}
         </div>
       )}
+
+      {/* Delete confirmation */}
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Delete datasets"
+        message={`Permanently delete ${selected.length} selected dataset${selected.length === 1 ? "" : "s"} from disk? This cannot be undone.`}
+        confirmLabel="Delete"
+        onConfirm={async () => {
+          try {
+            const result = await deleteDatasetsMutation.mutateAsync(
+              selected.map((ds) => ({ provider: ds.provider, symbol: ds.symbol, timeframe: ds.timeframe }))
+            );
+            addAlert({ message: `Deleted ${result.deleted} dataset${result.deleted === 1 ? "" : "s"}.`, severity: "success" });
+            clearSelection();
+          } catch (e) {
+            addAlert({ message: `Delete failed: ${(e as Error).message}`, severity: "error" });
+          } finally {
+            setConfirmDelete(false);
+          }
+        }}
+        onCancel={() => setConfirmDelete(false)}
+      />
 
       {/* Asset rows */}
       <div className="space-y-px">

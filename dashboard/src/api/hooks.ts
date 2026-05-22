@@ -506,6 +506,18 @@ export function useFillGaps() {
   });
 }
 
+export function useDeleteDatasets() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { provider: string; symbol: string; timeframe: string }[]) =>
+      api.deleteDatasets(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["data", "coverage"] });
+      void qc.invalidateQueries({ queryKey: ["data", "available"] });
+    },
+  });
+}
+
 // ─── Scrapers ─────────────────────────────────────────────────────────────────
 
 export function useScrapers() {
