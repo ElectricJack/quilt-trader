@@ -179,13 +179,17 @@ export function AvailableDataTab() {
   const handleBulkFillGaps = useCallback(async () => {
     const start = fillStart || effectiveStart;
     const end = fillEnd || effectiveEnd;
-    const provider = fillProvider || fillDefaults.provider;
-    const timeframe = fillTimeframe || fillDefaults.timeframe;
+    const overrideProvider = fillProvider !== fillDefaults.provider ? fillProvider : "";
+    const overrideTimeframe = fillTimeframe !== fillDefaults.timeframe ? fillTimeframe : "";
     let total = 0;
     for (const ds of selected) {
       try {
         const result = await fillGapsMutation.mutateAsync({
-          provider: provider || ds.provider, symbol: ds.symbol, start, end, timeframe,
+          provider: overrideProvider || ds.provider,
+          symbol: ds.symbol,
+          start,
+          end,
+          timeframe: overrideTimeframe || ds.timeframe,
         });
         total += result.gap_count;
       } catch (e) {
