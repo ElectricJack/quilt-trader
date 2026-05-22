@@ -209,10 +209,12 @@ async def accounts_snapshots_latest(db: AsyncSession = Depends(get_db)):
         if live_total == 0:
             continue
 
-        # Get yesterday's close from materialized equity for day % change
-        eq_q = select(AccountEquityDaily).where(
-            AccountEquityDaily.account_id == acct.id,
-            AccountEquityDaily.date == yesterday,
+        # Get most recent materialized close for day % change
+        eq_q = (
+            select(AccountEquityDaily)
+            .where(AccountEquityDaily.account_id == acct.id)
+            .order_by(AccountEquityDaily.date.desc())
+            .limit(1)
         )
         yesterday_row = (await db.execute(eq_q)).scalar_one_or_none()
         day_pct = None

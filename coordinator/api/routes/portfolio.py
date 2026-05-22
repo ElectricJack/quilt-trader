@@ -118,19 +118,21 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
     total_equity = total_positions_value + total_cash
     open_risk = sum(p.get("unrealized_pnl", 0) for p in live_positions)
 
-    # Today's P&L: live broker value minus yesterday's materialized close
-    yesterday_total = 0.0
+    # Today's P&L: live broker value minus most recent materialized close
+    prior_total = 0.0
     for acct in accounts:
-        eq_q = select(AccountEquityDaily).where(
-            AccountEquityDaily.account_id == acct.id,
-            AccountEquityDaily.date == yesterday,
+        eq_q = (
+            select(AccountEquityDaily)
+            .where(AccountEquityDaily.account_id == acct.id)
+            .order_by(AccountEquityDaily.date.desc())
+            .limit(1)
         )
         row = (await db.execute(eq_q)).scalar_one_or_none()
         if row:
-            yesterday_total += row.total_value
+            prior_total += row.total_value
 
-    today_pnl = total_equity - yesterday_total if yesterday_total > 0 else 0.0
-    today_pnl_pct = (today_pnl / yesterday_total * 100.0) if yesterday_total > 0 else 0.0
+    today_pnl = total_equity - prior_total if prior_total > 0 else 0.0
+    today_pnl_pct = (today_pnl / prior_total * 100.0) if prior_total > 0 else 0.0
 
     # Today's trades from trade_log
     trade_q = select(func.count(TradeLog.id)).where(
