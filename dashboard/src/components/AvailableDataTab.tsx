@@ -137,15 +137,51 @@ export function AvailableDataTab() {
   const [fillGapsOpen, setFillGapsOpen] = useState(false);
   const [fillStart, setFillStart] = useState("");
   const [fillEnd, setFillEnd] = useState("");
+  const [fillProvider, setFillProvider] = useState("");
+  const [fillTimeframe, setFillTimeframe] = useState("");
+
+  // Derive defaults from selected rows: most common provider and the broadest timeframe on disk
+  const fillDefaults = useMemo(() => {
+    if (!processed || selected.length === 0) return { provider: "", timeframe: "1min", timeframes: [] as string[] };
+    const rowLookup = new Map<string, { provider: string; timeframes: string[] }>();
+    for (const row of processed.rows) {
+      if (row.kind === "options-group") {
+        for (const child of row.children) {
+          rowLookup.set(`${child.provider}:${child.symbol}`, { provider: child.provider, timeframes: child.timeframes });
+        }
+      } else {
+        rowLookup.set(`${row.provider}:${row.symbol}`, { provider: row.provider, timeframes: row.timeframes });
+      }
+    }
+    const providerCounts = new Map<string, number>();
+    const allTimeframes = new Set<string>();
+    for (const ds of selected) {
+      const info = rowLookup.get(`${ds.provider}:${ds.symbol}`);
+      if (info) {
+        providerCounts.set(info.provider, (providerCounts.get(info.provider) ?? 0) + 1);
+        for (const tf of info.timeframes) allTimeframes.add(tf);
+      }
+    }
+    let topProvider = "";
+    let topCount = 0;
+    for (const [p, c] of providerCounts) {
+      if (c > topCount) { topProvider = p; topCount = c; }
+    }
+    const tfList = Array.from(allTimeframes).sort();
+    const defaultTf = tfList.includes("1day") && !tfList.includes("1min") ? "1day" : tfList[0] ?? "1min";
+    return { provider: topProvider, timeframe: defaultTf, timeframes: tfList };
+  }, [processed, selected]);
 
   const handleBulkFillGaps = useCallback(async () => {
     const start = fillStart || effectiveStart;
     const end = fillEnd || effectiveEnd;
+    const provider = fillProvider || fillDefaults.provider;
+    const timeframe = fillTimeframe || fillDefaults.timeframe;
     let total = 0;
     for (const ds of selected) {
       try {
         const result = await fillGapsMutation.mutateAsync({
-          provider: ds.provider, symbol: ds.symbol, start, end, timeframe: "1min",
+          provider: provider || ds.provider, symbol: ds.symbol, start, end, timeframe,
         });
         total += result.gap_count;
       } catch (e) {
@@ -158,7 +194,7 @@ export function AvailableDataTab() {
       addAlert({ message: "All selected assets are fully covered.", severity: "success" });
     }
     setFillGapsOpen(false);
-  }, [selected, fillStart, fillEnd, effectiveStart, effectiveEnd, fillGapsMutation, addAlert]);
+  }, [selected, fillStart, fillEnd, fillProvider, fillTimeframe, fillDefaults, effectiveStart, effectiveEnd, fillGapsMutation, addAlert]);
 
   // Filter rows
   const filteredRows = useMemo(() => {
@@ -232,13 +268,37 @@ export function AvailableDataTab() {
             Compare
           </button>
           <button
-            onClick={() => { setFillStart(effectiveStart); setFillEnd(effectiveEnd); setFillGapsOpen(!fillGapsOpen); }}
+            onClick={() => {
+              setFillStart(effectiveStart);
+              setFillEnd(effectiveEnd);
+              setFillProvider(fillDefaults.provider);
+              setFillTimeframe(fillDefaults.timeframe);
+              setFillGapsOpen(!fillGapsOpen);
+            }}
             className="px-2.5 py-1 rounded text-xs font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors"
           >
             Fill Gaps
           </button>
           {fillGapsOpen && (
-            <div className="flex items-center gap-2 ml-2">
+            <div className="flex items-center gap-2 ml-2 flex-wrap">
+              <select
+                value={fillProvider || fillDefaults.provider}
+                onChange={(e) => setFillProvider(e.target.value)}
+                className="bg-gray-800 border border-gray-700 text-gray-100 rounded px-2 py-1 text-xs"
+              >
+                {processed!.providers.map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+              <select
+                value={fillTimeframe || fillDefaults.timeframe}
+                onChange={(e) => setFillTimeframe(e.target.value)}
+                className="bg-gray-800 border border-gray-700 text-gray-100 rounded px-2 py-1 text-xs"
+              >
+                {(fillDefaults.timeframes.length > 0 ? fillDefaults.timeframes : ["1min", "5min", "15min", "1hour", "1day"]).map((tf) => (
+                  <option key={tf} value={tf}>{tf}</option>
+                ))}
+              </select>
               <input type="date" value={fillStart} onChange={(e) => setFillStart(e.target.value)} className="bg-gray-800 border border-gray-700 text-gray-100 rounded px-2 py-1 text-xs" />
               <span className="text-xs text-gray-500">to</span>
               <input type="date" value={fillEnd} onChange={(e) => setFillEnd(e.target.value)} className="bg-gray-800 border border-gray-700 text-gray-100 rounded px-2 py-1 text-xs" />
