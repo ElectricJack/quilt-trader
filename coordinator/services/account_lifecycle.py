@@ -220,7 +220,7 @@ class AccountLifecycleService:
         all_symbols: set[str] = set()
         for day_positions in filled_ledger.values():
             for sym in day_positions:
-                if len(sym) > 15 or "/" in sym:
+                if "/" in sym:
                     continue
                 all_symbols.add(sym)
 
