@@ -55,7 +55,7 @@ def replay_transactions(
     ledger: dict[date, dict[str, dict]] = {}
     cash_by_date: dict[date, float] = {}
 
-    for txn in transactions:
+    for txn in sorted(transactions, key=lambda t: t.get("timestamp", "")):
         ts = txn["timestamp"]
         if isinstance(ts, str):
             txn_date = datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
