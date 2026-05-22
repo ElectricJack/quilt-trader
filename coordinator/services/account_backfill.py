@@ -14,9 +14,9 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-def _option_multiplier(symbol: str) -> int:
+def _option_multiplier(symbol: str | None) -> int:
     """Return the contract multiplier for a symbol. US equity options (OCC format) = 100."""
-    return 100 if len(symbol) > 15 else 1
+    return 100 if symbol and len(symbol) > 15 else 1
 
 
 def _occ_expiration(symbol: str) -> date | None:

@@ -198,15 +198,32 @@ class AccountLifecycleService:
         # 4. Replay (forward pass for position ledger)
         ledger, cash_by_date = replay_transactions(txn_dicts, starting_cash=0.0)
 
-        # 5. Calibrate cash backwards from broker's actual current cash
+        # 5. Calibrate against broker's actual current state
         try:
             info = await asyncio.to_thread(adapter.get_account_info)
             actual_cash = float(info.get("cash", 0))
+            actual_positions = await asyncio.to_thread(adapter.get_positions)
+
+            # 5a. Calibrate cash backwards
             from coordinator.services.account_backfill import calibrate_cash_backwards
             cash_by_date = calibrate_cash_backwards(cash_by_date, txn_dicts, actual_cash)
             logger.info("Calibrated cash backwards from broker value $%.2f", actual_cash)
+
+            # 5b. Reconcile latest positions against broker reality
+            if ledger:
+                latest_date = max(ledger.keys())
+                broker_syms = set(actual_positions.keys())
+                ledger_syms = set(ledger[latest_date].keys())
+                phantom = ledger_syms - broker_syms
+                if phantom:
+                    logger.info(
+                        "Removing %d phantom positions not held at broker: %s",
+                        len(phantom), sorted(phantom),
+                    )
+                    for sym in phantom:
+                        del ledger[latest_date][sym]
         except Exception:
-            logger.warning("Failed to calibrate cash; using forward replay values", exc_info=True)
+            logger.warning("Failed to calibrate; using forward replay values", exc_info=True)
 
         # 6. Forward-fill
         sorted_dates = sorted(ledger.keys())
