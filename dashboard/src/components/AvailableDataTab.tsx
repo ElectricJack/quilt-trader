@@ -1,5 +1,6 @@
 // src/components/AvailableDataTab.tsx
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 import { useCoverage, useAvailableData, useFillGaps, useDownloads, useDeleteDatasets } from "../api/hooks";
 import { useProcessedCoverage, type AssetType, type DisplayRow } from "../hooks/useProcessedCoverage";
@@ -47,6 +48,10 @@ function writeCompareToUrl(datasets: CompareDataset[], mode: CompareMode, open: 
 const ACTIVE_STATUSES = new Set(["pending", "running", "queued"]);
 
 export function AvailableDataTab() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialSearch = searchParams.get("search") ?? "";
+  const initialPreview = searchParams.get("preview");
+
   const { data: coverageData, isLoading: coverageLoading, refetch: refetchCoverage } = useCoverage();
   const { isLoading: availableLoading } = useAvailableData();
   const fillGapsMutation = useFillGaps();
@@ -75,6 +80,19 @@ export function AvailableDataTab() {
     return () => clearInterval(id);
   }, [activeDownloadCount, refetchDownloads, refetchCoverage]);
 
+  // Clear deep-link params after they've been consumed
+  useEffect(() => {
+    if (initialSearch || initialPreview) {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("search");
+        next.delete("preview");
+        return next;
+      }, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const processed = useProcessedCoverage(coverageData);
 
   // Time window state
@@ -88,8 +106,8 @@ export function AvailableDataTab() {
     setWindowEnd(end);
   }, []);
 
-  // Filter state
-  const [searchText, setSearchText] = useState("");
+  // Filter state — initialize from URL params (e.g. linked from live subscriptions)
+  const [searchText, setSearchText] = useState(initialSearch);
   const [assetTypes, setAssetTypes] = useState<Set<AssetType>>(new Set(["equities", "options", "crypto"]));
   const [activeProviders, setActiveProviders] = useState<Set<string> | null>(null);
   const effectiveProviders = activeProviders ?? new Set(processed?.providers ?? []);
@@ -153,10 +171,15 @@ export function AvailableDataTab() {
   );
   const clearSelection = useCallback(() => setSelected([]), []);
 
-  // Preview state
+  // Preview state — initialize from URL param (e.g. "alpaca_live:SPY:1min")
   const [preview, setPreview] = useState<{
     provider: string; symbol: string; timeframe: string; targetDate?: string;
-  } | null>(null);
+  } | null>(() => {
+    if (!initialPreview) return null;
+    const parts = initialPreview.split(":");
+    if (parts.length !== 3) return null;
+    return { provider: parts[0], symbol: parts[1], timeframe: parts[2] };
+  });
   const [markerDate, setMarkerDate] = useState<string | null>(null);
 
   // Fill-gaps bulk action

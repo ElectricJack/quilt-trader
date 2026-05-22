@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
 import { Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   useLiveSubscriptions,
   useCreateLiveSubscription,
@@ -78,16 +78,21 @@ function groupSubscriptions(subs: LiveSubscription[]): SubGroup[] {
 function SubscriptionChip({
   sub,
   onDelete,
+  onView,
 }: {
   sub: LiveSubscription;
   onDelete: (id: string, label: string) => void;
+  onView: (sub: LiveSubscription) => void;
 }) {
   const stale =
     !sub.last_tick_at ||
     Date.now() - new Date(sub.last_tick_at).getTime() > 60_000;
 
   return (
-    <div className="inline-flex items-center gap-2 bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm">
+    <div
+      className="inline-flex items-center gap-2 bg-gray-800 border border-gray-700 rounded px-2.5 py-1.5 text-sm cursor-pointer hover:bg-gray-700 transition-colors"
+      onClick={() => onView(sub)}
+    >
       <span className="font-mono font-medium text-gray-200">{sub.symbol}</span>
       <span className="text-[10px] px-1 py-0.5 rounded border bg-gray-900 text-gray-400 border-gray-700">
         {sub.asset_class}
@@ -125,6 +130,17 @@ export function LiveSubscriptionsSection() {
   const create = useCreateLiveSubscription();
   const unsub = useUnsubscribeLiveSubscription();
   const addAlert = useUIStore((s) => s.addAlert);
+  const navigate = useNavigate();
+
+  const handleViewSubscription = useCallback((sub: LiveSubscription) => {
+    const source = sub.provider_type
+      ? `${sub.provider_type}_live`
+      : sub.account_id
+      ? `${sub.broker}_live`
+      : sub.broker;
+    const tf = "1min";
+    navigate(`/data?tab=available&search=${encodeURIComponent(sub.symbol)}&preview=${encodeURIComponent(`${source}:${sub.symbol}:${tf}`)}`);
+  }, [navigate]);
 
   const [adding, setAdding] = useState(false);
   const [sourceValue, setSourceValue] = useState<string>("");
@@ -282,6 +298,7 @@ export function LiveSubscriptionsSection() {
                         key={s.id}
                         sub={s}
                         onDelete={handleDelete}
+                        onView={handleViewSubscription}
                       />
                     ))}
                   </div>
