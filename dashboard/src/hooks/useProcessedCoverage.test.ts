@@ -73,11 +73,15 @@ describe("processCoverage", () => {
     }
   });
 
-  it("keeps equity SPY as a separate row", () => {
-    const equityRows = result.rows.filter(
+  it("deduplicates same symbol across base and _live provider into one row", () => {
+    const spyEquity = result.rows.filter(
       (r) => r.kind === "asset" && r.symbol === "SPY"
     );
-    expect(equityRows.length).toBeGreaterThanOrEqual(1);
+    expect(spyEquity).toHaveLength(1);
+    const spy = spyEquity[0] as { timeframes: string[]; ranges: { start: string; end: string }[] };
+    expect(spy.timeframes).toContain("1day");
+    expect(spy.timeframes).toContain("1min");
+    expect(spy.ranges.length).toBeGreaterThanOrEqual(1);
   });
 
   it("sorts rows alphabetically, options group after equity", () => {

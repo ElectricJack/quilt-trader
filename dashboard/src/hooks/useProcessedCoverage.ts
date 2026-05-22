@@ -80,10 +80,28 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     }
   }
 
+  // 1b. Deduplicate: merge assets with same symbol+provider after normalization
+  const deduped = new Map<string, (typeof allAssets)[0]>();
+  for (const asset of allAssets) {
+    const key = `${asset.normalizedProvider}\0${asset.symbol}`;
+    const existing = deduped.get(key);
+    if (existing) {
+      existing.ranges = [...existing.ranges, ...asset.ranges];
+      existing.timeframes_on_disk = [...new Set([...existing.timeframes_on_disk, ...asset.timeframes_on_disk])];
+    } else {
+      deduped.set(key, { ...asset, ranges: [...asset.ranges], timeframes_on_disk: [...asset.timeframes_on_disk] });
+    }
+  }
+  const mergedAssets = Array.from(deduped.values());
+  // Merge overlapping ranges within each asset
+  for (const asset of mergedAssets) {
+    asset.ranges = mergeRanges(asset.ranges);
+  }
+
   // 2. Compute global min/max
   let globalMin = "9999-12-31";
   let globalMax = "0000-01-01";
-  for (const asset of allAssets) {
+  for (const asset of mergedAssets) {
     for (const r of asset.ranges) {
       if (r.start < globalMin) globalMin = r.start;
       if (r.end > globalMax) globalMax = r.end;
@@ -92,14 +110,14 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
 
   // 3. Collect unique providers
   const providerSet = new Set<string>();
-  for (const a of allAssets) providerSet.add(a.normalizedProvider);
+  for (const a of mergedAssets) providerSet.add(a.normalizedProvider);
   const providers = Array.from(providerSet).sort();
 
   // 4. Separate options from non-options
   const optionsByUnderlying = new Map<string, (CoverageAsset & { normalizedProvider: string })[]>();
   const nonOptions: (CoverageAsset & { normalizedProvider: string })[] = [];
 
-  for (const asset of allAssets) {
+  for (const asset of mergedAssets) {
     const parsed = parseOCC(asset.symbol);
     if (parsed) {
       const list = optionsByUnderlying.get(parsed.underlying) ?? [];
