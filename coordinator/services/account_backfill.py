@@ -94,9 +94,12 @@ def replay_transactions(
                 if pos is not None:
                     pos["quantity"] -= qty
                     cash += qty * price * mult
-                    # Remove near-zero positions
                     if abs(pos["quantity"]) < 0.001:
                         del positions[symbol]
+                else:
+                    # Sell-to-open: create a short position
+                    positions[symbol] = {"quantity": -qty, "avg_cost": price}
+                    cash += qty * price * mult
 
         elif txn_type in ("deposit", "dividend", "interest"):
             cash += txn["amount"]
