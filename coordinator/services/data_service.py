@@ -56,10 +56,19 @@ class DataService:
         "1day": "1d",
     }
 
-    def load_market_data(self, provider: str, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
-        # Try the exact file first (backwards-compat + native bars preferred).
+    def _resolve_provider_path(self, provider: str, symbol: str, timeframe: str) -> Optional[str]:
+        """Find the parquet file, checking both the exact provider and {provider}_live."""
         path = self.market_data_path(provider, symbol, timeframe)
         if os.path.exists(path):
+            return path
+        live_path = self.market_data_path(f"{provider}_live", symbol, timeframe)
+        if os.path.exists(live_path):
+            return live_path
+        return None
+
+    def load_market_data(self, provider: str, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+        path = self._resolve_provider_path(provider, symbol, timeframe)
+        if path:
             return pd.read_parquet(path)
 
         # Derive from 1-min when the exact file is absent and the timeframe is aggregatable.
@@ -79,9 +88,8 @@ class DataService:
         self, provider: str, symbol: str, timeframe: str
     ) -> Optional[pd.Timestamp]:
         """Return the max timestamp in the saved parquet, or None if no file/column."""
-        path = self.market_data_path(provider, symbol, timeframe)
-        if not os.path.exists(path):
-            return None
+        path = self._resolve_provider_path(provider, symbol, timeframe)
+        if not path:
         try:
             df = pd.read_parquet(path, columns=["timestamp"])
         except Exception:
@@ -96,9 +104,8 @@ class DataService:
         self, provider: str, symbol: str, timeframe: str
     ) -> Optional[pd.Timestamp]:
         """Return the min timestamp in the saved parquet, or None if no file/column."""
-        path = self.market_data_path(provider, symbol, timeframe)
-        if not os.path.exists(path):
-            return None
+        path = self._resolve_provider_path(provider, symbol, timeframe)
+        if not path:
         try:
             df = pd.read_parquet(path, columns=["timestamp"])
         except Exception:

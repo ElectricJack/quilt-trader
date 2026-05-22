@@ -63,6 +63,7 @@ export interface OptionsGroupRow {
 
 export interface ProviderChild {
   provider: string;
+  sourceProvider: string;
   timeframe: string;
   ranges: CoverageRange[];
 }
@@ -161,7 +162,7 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
       if (existing) {
         existing.ranges = mergeRanges([...existing.ranges, ...asset.ranges]);
       } else {
-        list.push({ provider: asset.normalizedProvider, timeframe: tf, ranges: [...asset.ranges] });
+        list.push({ provider: asset.normalizedProvider, sourceProvider: asset.provider, timeframe: tf, ranges: [...asset.ranges] });
       }
     }
     childBySymbol.set(asset.symbol, list);

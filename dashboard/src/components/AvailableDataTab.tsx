@@ -400,15 +400,15 @@ export function AvailableDataTab() {
                   {isExpanded && (
                     <div className="ml-6">
                       {row.children.map((child) => {
-                        const childDs: CompareDataset = { provider: child.provider, symbol: row.symbol, timeframe: child.timeframe };
+                        const childDs: CompareDataset = { provider: child.sourceProvider, symbol: row.symbol, timeframe: child.timeframe };
                         const childSelected = selectedKeys.has(selectionKey(childDs));
                         return (
                           <div key={`${child.provider}-${child.timeframe}`} className="flex items-center gap-3 px-3 py-1.5 bg-gray-950 hover:bg-gray-900/50 transition-colors">
                             <input type="checkbox" checked={childSelected} onChange={() => toggleSelected(childDs)} className="accent-indigo-500 shrink-0" />
-                            <span className="text-xs font-mono text-gray-400 w-44 truncate shrink-0 cursor-pointer hover:text-gray-200 capitalize" onClick={() => handleBarClick(child.provider, row.symbol, [child.timeframe], effectiveStart)}>
+                            <span className="text-xs font-mono text-gray-400 w-44 truncate shrink-0 cursor-pointer hover:text-gray-200 capitalize" onClick={() => handleBarClick(child.sourceProvider, row.symbol, [child.timeframe], effectiveStart)}>
                               {child.provider} · {child.timeframe}
                             </span>
-                            <InteractiveCoverageBar ranges={child.ranges} provider={child.provider} windowStart={effectiveStart} windowEnd={effectiveEnd} markerDate={markerDate} onClick={(date) => handleBarClick(child.provider, row.symbol, [child.timeframe], date)} />
+                            <InteractiveCoverageBar ranges={child.ranges} provider={child.provider} windowStart={effectiveStart} windowEnd={effectiveEnd} markerDate={markerDate} onClick={(date) => handleBarClick(child.sourceProvider, row.symbol, [child.timeframe], date)} />
                           </div>
                         );
                       })}
