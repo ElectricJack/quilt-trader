@@ -227,6 +227,15 @@ def calibrate_cash_backwards(
         calibrated[d] = cash
         cash -= daily_deltas.get(d, 0.0)
 
+    # If the earliest value is negative, the backward walk overshot
+    # (common with option spreads where 100x multiplied legs don't perfectly
+    # balance across dates). Shift the entire series so the minimum is 0.
+    if calibrated:
+        min_cash = min(calibrated.values())
+        if min_cash < 0:
+            for d in calibrated:
+                calibrated[d] -= min_cash
+
     return calibrated
 
 
