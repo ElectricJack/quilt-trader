@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from coordinator.api.dependencies import get_db
+from coordinator.api.dependencies import get_container, get_db
 from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import Account, AccountSnapshot, Position, TradeLog
 
@@ -112,13 +112,9 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
             total_cash += snap.cash
             total_positions_value += snap.positions_value
 
-    # Open positions (visible accounts only)
-    pos_q = select(Position).where(
-        Position.status == "open",
-        Position.account_id.in_(visible_ids),
-    )
-    open_positions = (await db.execute(pos_q)).scalars().all()
-    open_risk = sum(p.unrealized_pnl or 0.0 for p in open_positions)
+    # Open positions — fetch live from brokers
+    live_positions, _ = await _fetch_live_positions(accounts)
+    open_risk = sum(p.get("unrealized_pnl", 0) for p in live_positions)
 
     # Today's trades (visible accounts only)
     trade_q = select(func.count(TradeLog.id)).where(
@@ -173,9 +169,9 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
         "trades_today_losses": today_losses,
         "win_rate": today_win_rate,
         "win_rate_7d_avg": week_win_rate,
-        "open_positions": len(open_positions),
-        "open_positions_long": sum(1 for p in open_positions if (p.net_cost or 0) >= 0),
-        "open_positions_short": sum(1 for p in open_positions if (p.net_cost or 0) < 0),
+        "open_positions": len(live_positions),
+        "open_positions_long": sum(1 for p in live_positions if p.get("quantity", 0) > 0),
+        "open_positions_short": sum(1 for p in live_positions if p.get("quantity", 0) < 0),
         "open_risk": open_risk,
         "open_risk_pct_equity": (open_risk / total_equity * 100.0) if total_equity > 0 else 0.0,
         "deployed_pct": deployed_pct,
@@ -199,35 +195,52 @@ SYMBOL_PALETTE = [
 ]
 
 
-@router.get("/allocation")
-async def portfolio_allocation(db: AsyncSession = Depends(get_db)):
-    # Cash: sum across latest snapshots per visible account
-    accts = await _visible_accounts(db)
+async def _fetch_live_positions(accts) -> tuple[list[dict], float]:
+    """Fetch live positions from brokers for all visible accounts."""
+    import asyncio
+    import json as _json
+    from worker.adapter_factory import make_broker_adapter
+    container = get_container()
+
+    all_positions: list[dict] = []
     total_cash = 0.0
     for acct in accts:
-        snap_q = (
-            select(AccountSnapshot)
-            .where(AccountSnapshot.account_id == acct.id)
-            .order_by(AccountSnapshot.timestamp.desc())
-            .limit(1)
-        )
-        snap = (await db.execute(snap_q)).scalar_one_or_none()
-        if snap:
-            total_cash += snap.cash
+        try:
+            creds = _json.loads(container.encryption.decrypt(acct.credentials))
+            adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
+            positions = await asyncio.to_thread(adapter.get_positions)
+            info = await asyncio.to_thread(adapter.get_account_info)
+            total_cash += float(info.get("cash", 0))
+            for sym, pos in positions.items():
+                all_positions.append({
+                    "symbol": sym,
+                    "quantity": float(pos.get("quantity", 0)),
+                    "market_value": float(pos.get("market_value", 0)),
+                    "current_price": float(pos.get("current_price", 0)),
+                    "avg_price": float(pos.get("avg_price", 0)),
+                    "unrealized_pnl": float(pos.get("unrealized_pnl", 0)),
+                    "asset_class": pos.get("asset_class", "equities"),
+                    "account_id": acct.id,
+                    "account_name": acct.name,
+                })
+        except Exception:
+            logger.warning("Failed to fetch positions for %s", acct.name, exc_info=True)
+    return all_positions, total_cash
 
-    # Open positions
-    pos_q = select(Position).where(Position.status == "open")
-    positions = (await db.execute(pos_q)).scalars().all()
+
+@router.get("/allocation")
+async def portfolio_allocation(db: AsyncSession = Depends(get_db)):
+    accts = await _visible_accounts(db)
+    all_positions, total_cash = await _fetch_live_positions(accts)
 
     class_totals: dict[str, float] = {}
     symbol_totals: dict[str, float] = {}
-    for pos in positions:
-        for leg in pos.legs or []:
-            asset_class = leg.get("asset_type", "equities")
-            symbol = leg.get("symbol", "?")
-            value = float(leg.get("value", 0.0))
-            class_totals[asset_class] = class_totals.get(asset_class, 0.0) + value
-            symbol_totals[symbol] = symbol_totals.get(symbol, 0.0) + value
+    for pos in all_positions:
+        asset_class = pos.get("asset_class", "equities")
+        symbol = pos["symbol"]
+        value = pos["market_value"]
+        class_totals[asset_class] = class_totals.get(asset_class, 0.0) + value
+        symbol_totals[symbol] = symbol_totals.get(symbol, 0.0) + value
 
     if total_cash > 0:
         class_totals["cash"] = total_cash

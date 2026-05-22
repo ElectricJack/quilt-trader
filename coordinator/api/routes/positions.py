@@ -1,15 +1,19 @@
+import asyncio
+import json as _json
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from coordinator.api.dependencies import get_db
+from coordinator.api.dependencies import get_container, get_db
 from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
-    Position, AlgorithmInstance, Algorithm,
+    Account, Position, AlgorithmInstance, Algorithm,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/positions", tags=["positions"])
 
 
@@ -37,6 +41,45 @@ def _expand(pos: Position, algo_name: Optional[str]) -> dict:
     }
 
 
+async def _fetch_broker_positions(db: AsyncSession) -> list[dict]:
+    """Fetch live positions from all visible broker accounts."""
+    from worker.adapter_factory import make_broker_adapter
+    container = get_container()
+
+    accounts = (await db.execute(
+        select(Account).where(Account.show_in_overview == True)  # noqa: E712
+    )).scalars().all()
+
+    items = []
+    for acct in accounts:
+        try:
+            creds = _json.loads(container.encryption.decrypt(acct.credentials))
+            adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
+            positions = await asyncio.to_thread(adapter.get_positions)
+            for sym, pos in positions.items():
+                items.append({
+                    "id": f"{acct.id}:{sym}",
+                    "instance_id": None,
+                    "account_id": acct.id,
+                    "algorithm_name": None,
+                    "status": "open",
+                    "symbol": sym,
+                    "side": "long" if float(pos.get("quantity", 0)) > 0 else "short",
+                    "quantity": float(pos.get("quantity", 0)),
+                    "avg_price": float(pos.get("avg_price", 0)),
+                    "current_price": float(pos.get("current_price", 0)),
+                    "asset_type": pos.get("asset_class", "equities"),
+                    "unrealized_pnl": float(pos.get("unrealized_pnl", 0)),
+                    "net_pnl": None,
+                    "net_cost": float(pos.get("avg_price", 0)) * float(pos.get("quantity", 0)),
+                    "extra_legs": 0,
+                    "opened_at": None,
+                })
+        except Exception:
+            logger.warning("Failed to fetch positions for %s", acct.name, exc_info=True)
+    return items
+
+
 @router.get("")
 async def list_positions(
     status: Optional[str] = Query(None),
@@ -48,6 +91,11 @@ async def list_positions(
         query = query.where(Position.status == status)
     query = query.order_by(Position.opened_at.desc()).limit(limit)
     positions = (await db.execute(query)).scalars().all()
+
+    # If no positions in DB, fetch live from brokers
+    if not positions and (status is None or status == "open"):
+        broker_positions = await _fetch_broker_positions(db)
+        return {"items": broker_positions[:limit]}
 
     # Resolve algorithm names via instance_id
     instance_ids = {p.instance_id for p in positions if p.instance_id}
