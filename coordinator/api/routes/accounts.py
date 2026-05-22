@@ -181,41 +181,63 @@ def _snap_to_dict(snap: "AccountSnapshot") -> dict:
 
 @router.get("/snapshots/latest")
 async def accounts_snapshots_latest(db: AsyncSession = Depends(get_db)):
+    import asyncio
+    import json as _json
+    from coordinator.database.models import AccountEquityDaily
+    from datetime import date as date_type
+    from worker.adapter_factory import make_broker_adapter
+
     accounts = (await db.execute(select(Account))).scalars().all()
-    now = datetime.now(timezone.utc)
-    cutoff_24h = now - timedelta(hours=24)
+    container = get_container()
+    yesterday = date_type.today() - timedelta(days=1)
 
     items = []
     for acct in accounts:
-        latest_q = (
-            select(AccountSnapshot)
-            .where(AccountSnapshot.account_id == acct.id)
-            .order_by(AccountSnapshot.timestamp.desc())
-            .limit(1)
-        )
-        latest = (await db.execute(latest_q)).scalar_one_or_none()
-        if not latest:
+        # Get live broker values
+        try:
+            creds = _json.loads(container.encryption.decrypt(acct.credentials))
+            adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
+            info = await asyncio.to_thread(adapter.get_account_info)
+            live_total = float(info.get("portfolio_value", 0))
+            live_cash = float(info.get("cash", 0))
+            live_positions = live_total - live_cash
+        except Exception:
+            live_total = 0.0
+            live_cash = 0.0
+            live_positions = 0.0
+
+        if live_total == 0:
             continue
 
-        prior_q = (
-            select(AccountSnapshot)
-            .where(AccountSnapshot.account_id == acct.id)
-            .where(AccountSnapshot.timestamp <= cutoff_24h)
-            .order_by(AccountSnapshot.timestamp.desc())
-            .limit(1)
+        # Get yesterday's close from materialized equity for day % change
+        eq_q = select(AccountEquityDaily).where(
+            AccountEquityDaily.account_id == acct.id,
+            AccountEquityDaily.date == yesterday,
         )
-        prior = (await db.execute(prior_q)).scalar_one_or_none()
-
+        yesterday_row = (await db.execute(eq_q)).scalar_one_or_none()
         day_pct = None
-        if prior and prior.total_value:
-            day_pct = (latest.total_value - prior.total_value) / prior.total_value * 100.0
+        prior_dict = None
+        if yesterday_row and yesterday_row.total_value > 0:
+            day_pct = (live_total - yesterday_row.total_value) / yesterday_row.total_value * 100.0
+            prior_dict = {
+                "timestamp": yesterday_row.date.isoformat() + "T00:00:00Z",
+                "total_value": yesterday_row.total_value,
+                "cash": yesterday_row.cash,
+                "positions_value": yesterday_row.positions_value,
+            }
 
+        now_iso = datetime.now(timezone.utc).isoformat()
         items.append({
             "account_id": acct.id,
             "account_name": acct.name,
             "broker_type": acct.broker_type,
-            "latest": _snap_to_dict(latest),
-            "prior": _snap_to_dict(prior) if prior else None,
+            "latest": {
+                "timestamp": now_iso,
+                "total_value": live_total,
+                "cash": live_cash,
+                "positions_value": live_positions,
+            },
+            "prior": prior_dict,
             "day_pct": day_pct,
         })
 

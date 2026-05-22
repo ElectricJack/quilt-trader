@@ -102,33 +102,37 @@ async def portfolio_equity(
 
 @router.get("/kpis")
 async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
+    from coordinator.database.models import AccountEquityDaily
+    from datetime import date as date_type
+
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday = date_type.today() - timedelta(days=1)
 
-    # Total equity: sum of latest snapshot per visible account
     accounts = await _visible_accounts(db)
     visible_ids = [a.id for a in accounts]
-    total_equity = 0.0
-    total_cash = 0.0
-    total_positions_value = 0.0
-    for acct in accounts:
-        snap_q = (
-            select(AccountSnapshot)
-            .where(AccountSnapshot.account_id == acct.id)
-            .order_by(AccountSnapshot.timestamp.desc())
-            .limit(1)
-        )
-        snap = (await db.execute(snap_q)).scalar_one_or_none()
-        if snap:
-            total_equity += snap.total_value
-            total_cash += snap.cash
-            total_positions_value += snap.positions_value
 
-    # Open positions — fetch live from brokers
-    live_positions, _ = await _fetch_live_positions(accounts)
+    # Fetch live broker values for total equity + positions
+    live_positions, total_cash = await _fetch_live_positions(accounts)
+    total_positions_value = sum(p.get("market_value", 0) for p in live_positions)
+    total_equity = total_positions_value + total_cash
     open_risk = sum(p.get("unrealized_pnl", 0) for p in live_positions)
 
-    # Today's trades (visible accounts only)
+    # Today's P&L: live broker value minus yesterday's materialized close
+    yesterday_total = 0.0
+    for acct in accounts:
+        eq_q = select(AccountEquityDaily).where(
+            AccountEquityDaily.account_id == acct.id,
+            AccountEquityDaily.date == yesterday,
+        )
+        row = (await db.execute(eq_q)).scalar_one_or_none()
+        if row:
+            yesterday_total += row.total_value
+
+    today_pnl = total_equity - yesterday_total if yesterday_total > 0 else 0.0
+    today_pnl_pct = (today_pnl / yesterday_total * 100.0) if yesterday_total > 0 else 0.0
+
+    # Today's trades from trade_log
     trade_q = select(func.count(TradeLog.id)).where(
         TradeLog.timestamp >= today_start,
         TradeLog.account_id.in_(visible_ids),
@@ -139,48 +143,15 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
         (total_positions_value / total_equity * 100.0) if total_equity > 0 else 0.0
     )
 
-    # Today's closed positions for trades_today_wins/losses (visible accounts only)
-    today_closed_q = (
-        select(Position)
-        .where(Position.status == "closed")
-        .where(Position.closed_at >= today_start)
-        .where(Position.net_pnl.is_not(None))
-        .where(Position.account_id.in_(visible_ids))
-    )
-    today_closed = (await db.execute(today_closed_q)).scalars().all()
-    today_wins = sum(1 for p in today_closed if (p.net_pnl or 0) > 0)
-    today_losses = sum(1 for p in today_closed if (p.net_pnl or 0) < 0)
-    today_total = today_wins + today_losses
-    today_win_rate = (today_wins / today_total * 100.0) if today_total > 0 else 0.0
-
-    # Rolling 7-day win rate (visible accounts only)
-    week_start = now - timedelta(days=7)
-    week_closed_q = (
-        select(Position)
-        .where(Position.status == "closed")
-        .where(Position.closed_at >= week_start)
-        .where(Position.net_pnl.is_not(None))
-        .where(Position.account_id.in_(visible_ids))
-    )
-    week_closed = (await db.execute(week_closed_q)).scalars().all()
-    week_wins = sum(1 for p in week_closed if (p.net_pnl or 0) > 0)
-    week_total = len(week_closed)
-    week_win_rate = (week_wins / week_total * 100.0) if week_total > 0 else 0.0
-
-    # Today's realized P&L from closed positions today
-    today_realized = sum((p.net_pnl or 0.0) for p in today_closed)
-    today_pnl = today_realized
-    today_pnl_pct = (today_pnl / total_equity * 100.0) if total_equity > 0 else 0.0
-
     return {
         "total_equity": total_equity,
         "today_pnl": today_pnl,
         "today_pnl_pct": today_pnl_pct,
         "trades_today": trades_today,
-        "trades_today_wins": today_wins,
-        "trades_today_losses": today_losses,
-        "win_rate": today_win_rate,
-        "win_rate_7d_avg": week_win_rate,
+        "trades_today_wins": 0,
+        "trades_today_losses": 0,
+        "win_rate": 0.0,
+        "win_rate_7d_avg": 0.0,
         "open_positions": len(live_positions),
         "open_positions_long": sum(1 for p in live_positions if p.get("quantity", 0) > 0),
         "open_positions_short": sum(1 for p in live_positions if p.get("quantity", 0) < 0),
