@@ -1147,6 +1147,15 @@ async def close_position_by_id(
             detail=f"Position is already {position.status!r}; cannot close",
         )
 
+    # Validate partial close quantity against remaining_quantity
+    close_quantity = body.quantity  # None means full close
+    if close_quantity is not None and position.remaining_quantity is not None:
+        if close_quantity > position.remaining_quantity:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Requested quantity {close_quantity} exceeds remaining quantity {position.remaining_quantity}",
+            )
+
     # Build closing legs: invert each side, mark position_intent="close"
     legs_spec: list[MultilegLegSpec] = []
     for leg in (position.legs or []):
@@ -1211,8 +1220,19 @@ async def close_position_by_id(
                     )
                 )
 
-            position.status = "closed"
-            position.closed_at = now
+            # Update remaining_quantity and determine close status
+            if close_quantity is not None and position.remaining_quantity is not None:
+                position.remaining_quantity -= close_quantity
+                if position.remaining_quantity <= 0:
+                    position.status = "closed"
+                    position.closed_at = now
+                # else: keep status as "open" for partial close
+            else:
+                # Full close
+                position.remaining_quantity = 0
+                position.status = "closed"
+                position.closed_at = now
+
             position.net_proceeds = total_proceeds
             position.total_fees = (position.total_fees or 0.0) + total_fees
             position.net_pnl = total_proceeds - (position.net_cost or 0.0)
@@ -1305,9 +1325,19 @@ async def close_position_by_id(
                         )
                     )
 
+                # Update remaining_quantity and determine close status
                 if not partial:
-                    position.status = "closed"
-                    position.closed_at = now
+                    if close_quantity is not None and position.remaining_quantity is not None:
+                        position.remaining_quantity -= close_quantity
+                        if position.remaining_quantity <= 0:
+                            position.status = "closed"
+                            position.closed_at = now
+                        # else: keep status as "open" for partial close
+                    else:
+                        # Full close
+                        position.remaining_quantity = 0
+                        position.status = "closed"
+                        position.closed_at = now
                 position.net_proceeds = total_proceeds
                 position.total_fees = (position.total_fees or 0.0) + total_fees
                 position.net_pnl = total_proceeds - (position.net_cost or 0.0)
