@@ -63,9 +63,17 @@ def _validate_assets(raw: list) -> list[dict]:
     return result
 
 
-def _derive_package_dir_name(repo_url: str) -> str:
-    """Derive the on-disk directory name from a GitHub repo URL (last path segment)."""
-    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url or "")
+def _derive_package_dir_name(repo_url: str, algo_name: str = "") -> str:
+    """Derive the on-disk directory name from a GitHub repo URL (last path segment).
+
+    For locally-installed algorithms (empty repo_url), falls back to the
+    algorithm name which matches the package directory.
+    """
+    if not repo_url:
+        if algo_name:
+            return algo_name
+        raise ValueError("Cannot derive package directory: both repo_url and algo_name are empty")
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url)
     if not m:
         raise ValueError(f"Cannot derive package directory from repo_url: {repo_url!r}")
     return m.group(1).split("/", 1)[1]
@@ -255,7 +263,7 @@ async def algorithm_package(
             detail=f"Algorithm SHA mismatch: have {algo.commit_hash}, requested {sha}",
         )
     try:
-        pkg_dir_name = _derive_package_dir_name(algo.repo_url)
+        pkg_dir_name = _derive_package_dir_name(algo.repo_url, algo.name)
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
     src_path = PACKAGE_ROOT / pkg_dir_name

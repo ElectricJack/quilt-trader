@@ -29,7 +29,7 @@ from coordinator.services.backtest_tick_context import BacktestTickContext
 logger = logging.getLogger(__name__)
 
 
-def _package_dir_name(repo_url: str) -> str:
+def _package_dir_name(repo_url: str, algo_name: str = "") -> str:
     """Return the on-disk package directory name for an installed algorithm.
 
     Matches the convention used by the install flow (coordinator/api/routes/
@@ -37,9 +37,16 @@ def _package_dir_name(repo_url: str) -> str:
     the GitHub repo (last URL segment), NOT after the manifest's `name` field.
     Algorithm.name in the DB comes from the manifest, so it can differ —
     don't use it for filesystem lookups.
+
+    For locally-installed algorithms (empty repo_url), the package directory
+    matches the algorithm name.
     """
     import re
-    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url or "")
+    if not repo_url:
+        if algo_name:
+            return algo_name
+        raise ValueError("Cannot derive package directory: both repo_url and algo_name are empty")
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url)
     if not m:
         raise ValueError(f"Cannot derive package directory from repo_url: {repo_url!r}")
     return m.group(1).split("/", 1)[1]
@@ -161,7 +168,7 @@ class BacktestRunner:
             await session.commit()
 
         try:
-            pkg_dir_name = _package_dir_name(algo_repo_url)
+            pkg_dir_name = _package_dir_name(algo_repo_url, algo_name)
             manifest = _load_manifest(pkg_dir_name)
             # Read from manifest.assets (new format) with fallback to
             # requirements.data_dependencies (legacy).
@@ -230,11 +237,12 @@ class BacktestRunner:
                         await self._wait_for_download(dl["id"])
 
             # Stage 1b: option chain pre-download for options algorithms
+            options_chain_errors: list[str] = []
             if "options" in (manifest.requirements.asset_types or []):
                 option_underlyings = [
                     dep.get("symbol") for dep in deps if dep.get("symbol")
                 ]
-                await self._download_option_chains(
+                options_chain_errors = await self._download_option_chains(
                     option_underlyings, date_range_start, date_range_end, run_id,
                 )
 
@@ -408,9 +416,13 @@ class BacktestRunner:
                 )).scalar_one()
                 r.status = "completed"
                 r.completed_at = datetime.now(timezone.utc)
-                r.progress_message = "Backtest complete"
                 r.progress_pct = 1.0
                 r.download_ids = download_ids
+                if options_chain_errors:
+                    r.progress_message = "Backtest complete (options data issues)"
+                    r.error_message = "\n".join(options_chain_errors)
+                else:
+                    r.progress_message = "Backtest complete"
                 await session.commit()
         except Exception as exc:
             logger.exception("BacktestRunner failed for %s", run_id)
@@ -446,13 +458,18 @@ class BacktestRunner:
                 current = _date(current.year, current.month + 1, 1)
         return expirations
 
-    async def _download_option_chains(self, underlyings, date_start, date_end, run_id):
-        """Pre-download option chain snapshots for each monthly expiration."""
+    async def _download_option_chains(self, underlyings, date_start, date_end, run_id) -> list[str]:
+        """Pre-download option chain snapshots for each monthly expiration.
+
+        Returns a list of error messages for any chains that failed to download.
+        """
         from coordinator.database.models import BacktestRun
+        errors: list[str] = []
 
         provider = self._dm._providers.get("polygon") if hasattr(self._dm, "_providers") else None
         if provider is None or not hasattr(provider, "fetch_option_chain"):
-            return
+            errors.append("No data provider with options chain support is configured.")
+            return errors
 
         start_d = date_start.date() if hasattr(date_start, "date") else date_start
         end_d = date_end.date() if hasattr(date_end, "date") else date_end
@@ -473,11 +490,23 @@ class BacktestRunner:
                     df = await provider.fetch_option_chain(underlying, exp)
                     if df is not None and not df.empty:
                         self._ds.save_option_chain("polygon", underlying, exp, df)
-                except Exception:
-                    logger.warning(
-                        "Failed to download option chain for %s %s",
-                        underlying, exp, exc_info=True,
-                    )
+                except Exception as exc:
+                    error_msg = f"Failed to download option chain for {underlying} {exp}: {exc}"
+                    errors.append(error_msg)
+                    logger.warning(error_msg, exc_info=True)
+                    async with self._sf() as session:
+                        r = (await session.execute(
+                            select(BacktestRun).where(BacktestRun.id == run_id)
+                        )).scalar_one()
+                        r.progress_message = error_msg
+                        await session.commit()
+                    if "403" in str(exc) or "Forbidden" in str(exc):
+                        errors.append(
+                            f"Polygon options data not available for {underlying} (403 Forbidden). "
+                            f"Options backtesting requires a Polygon Options subscription."
+                        )
+                        break
+        return errors
 
     async def _progress_pump(
         self, run_id: str, observer, interval_s: float = 2.0,
