@@ -760,6 +760,8 @@ class ClosePositionRequest(BaseModel):
     asset_type: str
     side: str  # "long" or "short" — the *position* side, not the order side
     quantity: float
+    order_type: str = "market"
+    limit_price: Optional[float] = None
 
 
 class ClosePositionByIdRequest(BaseModel):
@@ -1031,9 +1033,11 @@ async def close_position(
     body: ClosePositionRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Close an open broker position by submitting an opposite-side market order.
+    """Close an open broker position by submitting an opposite-side order.
 
     Identifies the position by broker-visible (symbol, side, quantity).
+    Supports market (default), limit, and stop order types via optional
+    ``order_type`` and ``limit_price`` fields on the request body.
     Does NOT honor the account `locked_by` check — closes must work as a
     safety valve even when an algorithm holds the account lock.
     """
@@ -1051,6 +1055,10 @@ async def close_position(
         )
     order_side = "sell" if pos_side == "long" else "buy"
 
+    # Validate order-type-specific fields
+    if body.order_type == "limit" and body.limit_price is None:
+        raise HTTPException(status_code=422, detail="limit_price is required when order_type is 'limit'")
+
     adapter = await _adapter_for_account(account)
     try:
         def _sub():
@@ -1058,7 +1066,8 @@ async def close_position(
                 symbol=body.symbol,
                 side=order_side,
                 quantity=body.quantity,
-                order_type="market",
+                order_type=body.order_type,
+                limit_price=body.limit_price,
                 asset_type=body.asset_type,
             )
         result = await asyncio.to_thread(_sub)
@@ -1095,7 +1104,7 @@ async def close_position(
             asset_type=body.asset_type,
             side=order_side,
             quantity=body.quantity,
-            order_type="market",
+            order_type=body.order_type,
             filled_price=result.filled_price,
             fees=result.fees or 0.0,
             broker_txn_id=result.broker_order_id,

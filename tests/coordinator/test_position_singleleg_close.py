@@ -59,6 +59,7 @@ async def test_close_single_leg_position_uses_submit_order(
             quantity,
             order_type="market",
             limit_price=None,
+            stop_price=None,
             asset_type="equities",
         ):
             submitted.append(
