@@ -459,6 +459,31 @@ class BacktestEngine:
             for k, ps in positions.items()
         ]
 
+    @staticmethod
+    def _build_union_clock(bars: dict[tuple, pd.DataFrame]) -> pd.DataFrame:
+        """Merge all symbol timelines into a sorted, deduplicated clock DataFrame.
+
+        Each row carries real OHLCV data from whichever symbol contributed that
+        timestamp first (never zeros).  Used by the engine to tick through a
+        unified timeline when backtesting multi-asset algorithms.
+        """
+        if not bars:
+            return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        frames = []
+        for key, df in bars.items():
+            if df is not None and not df.empty:
+                sub = df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+                sub["timestamp"] = pd.to_datetime(sub["timestamp"])
+                if sub["timestamp"].dt.tz is not None:
+                    sub["timestamp"] = sub["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+                frames.append(sub)
+        if not frames:
+            return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        combined = pd.concat(frames, ignore_index=True)
+        combined = combined.drop_duplicates(subset=["timestamp"], keep="first")
+        combined = combined.sort_values("timestamp").reset_index(drop=True)
+        return combined
+
     def _positions_for_context(self, positions: dict, bar=None, ctx=None, sim_time=None) -> dict:
         """Convert internal state to sdk.models.Position dict the algorithm reads via ctx.positions."""
         from sdk.models import Position
