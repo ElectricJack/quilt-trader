@@ -19,6 +19,12 @@ class OrderType(Enum):
     STOP_LIMIT = "stop_limit"
 
 
+class TimeInForce(Enum):
+    DAY = "DAY"
+    GTC = "GTC"
+    IOC = "IOC"
+
+
 @dataclass
 class SignalLeg:
     symbol: str
@@ -28,6 +34,7 @@ class SignalLeg:
     order_type: OrderType = OrderType.MARKET
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None
+    time_in_force: TimeInForce = TimeInForce.DAY
 
     def to_dict(self) -> dict:
         return {
@@ -38,6 +45,7 @@ class SignalLeg:
             "order_type": self.order_type.value,
             "limit_price": self.limit_price,
             "stop_price": self.stop_price,
+            "time_in_force": self.time_in_force.value,
         }
 
     @staticmethod
@@ -50,6 +58,7 @@ class SignalLeg:
             order_type=OrderType(d.get("order_type", "market")),
             limit_price=d.get("limit_price"),
             stop_price=d.get("stop_price"),
+            time_in_force=TimeInForce(d.get("time_in_force", "DAY")),
         )
 
 
@@ -75,6 +84,7 @@ class Signal:
         order_type: OrderType = OrderType.MARKET,
         limit_price: Optional[float] = None,
         reasoning: Optional[str] = None,
+        time_in_force: TimeInForce = TimeInForce.DAY,
     ) -> Signal:
         return Signal(
             legs=[
@@ -85,6 +95,7 @@ class Signal:
                     asset_type=asset_type,
                     order_type=order_type,
                     limit_price=limit_price,
+                    time_in_force=time_in_force,
                 )
             ],
             strategy_type="single",
