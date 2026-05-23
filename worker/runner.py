@@ -78,6 +78,9 @@ class AlgorithmRunner:
     def save_state(self) -> dict:
         return self._algorithm.save_state()
 
+    def on_position_closed(self, symbol: str, reason: str, details: dict | None = None) -> None:
+        self._algorithm.on_position_closed(symbol, reason, details)
+
     def on_signal_rejected(self, signal: Signal, reason: str) -> None:
         self._algorithm.on_signal_rejected(signal, reason)
 

@@ -208,8 +208,11 @@ class TradierAdapter(BrokerAdapter):
             data["price"] = f"{limit_price:.2f}"
         for i, leg in enumerate(legs):
             data[f"option_symbol[{i}]"] = self.compose_symbol(leg)
-            side_map = {("buy",): "buy_to_open", ("sell",): "sell_to_open"}
-            data[f"side[{i}]"] = side_map[(leg.side,)]
+            intent = getattr(leg, "position_intent", "open")
+            if leg.side == "buy":
+                data[f"side[{i}]"] = "buy_to_close" if intent == "close" else "buy_to_open"
+            else:
+                data[f"side[{i}]"] = "sell_to_close" if intent == "close" else "sell_to_open"
             data[f"quantity[{i}]"] = str(int(leg.quantity))
         headers = {
             "Authorization": f"Bearer {self._access_token}",

@@ -167,6 +167,19 @@ class LiveInstanceRuntime:
         except Exception:
             logger.exception("Checkpoint failed for %s", self._instance_id)
 
+    async def on_position_closed(self, message: dict) -> None:
+        symbol = message.get("symbol", "")
+        reason = message.get("reason", "manual_close")
+        details = message.get("details")
+        try:
+            self._runner.on_position_closed(symbol, reason, details)
+        except Exception as e:
+            logger.exception("on_position_closed raised for %s", self._instance_id)
+            await self._agent.send_activity_event(
+                self._instance_id, "algo_exception", severity="error",
+                payload={"error": str(e), "context": "on_position_closed"},
+            )
+
     async def shut_down(self) -> dict:
         try:
             return self._runner.stop()  # calls algo.on_stop()

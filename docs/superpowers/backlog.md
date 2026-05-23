@@ -10,14 +10,17 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Deferred from:** [2026-05-18-close-positions-design.md](specs/2026-05-18-close-positions-design.md)
 - **Why deferred:** v1 closes single-leg market orders only. Multi-leg positions (options spreads) need coordinated closing across legs and use a different broker call (`submit_multileg_order` with inverted sides).
 - **What's needed:** a position model that knows when broker rows belong to a single user-intent (e.g. an iron condor) and closes them atomically; UI that shows the *strategy*, not just the legs.
+- **RESOLVED** (2026-05-22): `close_position_by_id` endpoint supports atomic multileg close via `submit_multileg_order` with inverted sides, with sequential single-leg fallback. Position model tracks `strategy_type` and multi-leg `legs` array.
 
 ### Partial position close
 - **Deferred from:** [2026-05-18-close-positions-design.md](specs/2026-05-18-close-positions-design.md)
 - **Why deferred:** v1 closes the full quantity shown on the row. Partial close needs a quantity input + validation against current broker quantity.
+- **RESOLVED** (2026-05-22): `close_position_by_id` accepts optional `quantity` parameter for partial close. Validates against `remaining_quantity`, decrements on fill, keeps position `open` until fully closed. Cost basis lots track each partial close independently.
 
 ### Limit / stop close orders
 - **Deferred from:** [2026-05-18-close-positions-design.md](specs/2026-05-18-close-positions-design.md)
 - **Why deferred:** v1 submits market orders only. Limit needs price input, unfilled-state handling, and an order-management view to cancel/replace.
+- **RESOLVED** (2026-05-22): Both `close_position_by_id` and the legacy `close_position` endpoints accept `order_type` (market/limit/stop) with `limit_price` and `stop_price` parameters. Validation enforces required price fields per order type. Position enters `closing` status when fill price is null (pending limit/stop).
 
 ### Bulk "close all" action
 - **Deferred from:** [2026-05-18-close-positions-design.md](specs/2026-05-18-close-positions-design.md)
@@ -27,16 +30,19 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Deferred from:** [2026-05-18-close-positions-design.md](specs/2026-05-18-close-positions-design.md)
 - **Why deferred:** v1 close endpoint doesn't notify the algo. The algo sees the position disappear on its next broker sync but may attempt to re-open it.
 - **What's needed:** a coord→worker signal "this position was force-closed by user, treat as final"; algo SDK API to receive it.
+- **RESOLVED** (2026-05-22): `_notify_owner_of_position_close` sets `state_stale=True` on the owning instance and sends a `position_closed` WebSocket message (with `reason: manual_close`) to the worker. Positions track `owner_instance_id` for attribution.
 
 ### `open_position` doesn't forward `asset_type` to the broker adapter
 - **Surfaced by:** crypto-close fix on 2026-05-18 (commits `784ca9c` / `416252c` / `1a52a9b`).
 - **Why deferred:** the close-position fix threaded `asset_type` through `submit_order` so AlpacaAdapter picks `TimeInForce.GTC` for crypto. The `open_position` route's sequential-fallback path at `coordinator/api/routes/accounts.py` still calls `adapter.submit_order(...)` without `asset_type`, so opening a crypto position via the dashboard will hit the same Alpaca `invalid crypto time_in_force` error.
 - **What's needed:** in the open-position handler's sequential fallback, pass `asset_type=leg.asset_type` (or the appropriate leg field) to each `submit_order` call. Add a regression test mirroring `test_close_passes_asset_type_to_adapter`.
+- **RESOLVED** (2026-05-22): The `open_position` sequential fallback now passes `asset_type=leg.asset_type` to each `submit_order` call (visible in the current `accounts.py` at the fallback path, line ~916).
 
 ### Holistic position-tracking model
 - **Deferred from:** [2026-05-18-close-positions-design.md](specs/2026-05-18-close-positions-design.md) (implicit — surfaces as common dependency above)
 - **Why deferred:** today positions live in two places — broker's `get_positions` and Quilt's internal `Position` table — with no canonical join. Each new feature (multi-leg, partial, limit, manual-vs-algo attribution, lot tracking) hits this seam.
 - **What's needed:** a roadmap spec covering: position identity across legs, ownership (manual vs which algo run), lot-level cost basis, reconciliation against broker truth, and what the data model should look like. **Promote this to a `docs/superpowers/roadmaps/position-tracking.md` once 2-3 more position features have accumulated deferred work here** — the shape will be clearer then than it is today.
+- **PARTIALLY RESOLVED** (2026-05-22): Position model now has `owner_instance_id` for ownership tracking, `cost_basis_lots` for lot-level cost basis, `remaining_quantity` for partial close tracking, and a reconciliation endpoint (`/positions/reconcile`) using `PositionReconciler` to compare broker vs internal state. Full roadmap spec still needed for the remaining seam between broker and internal position identity.
 
 ---
 

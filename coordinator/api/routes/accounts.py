@@ -760,6 +760,15 @@ class ClosePositionRequest(BaseModel):
     asset_type: str
     side: str  # "long" or "short" — the *position* side, not the order side
     quantity: float
+    order_type: str = "market"
+    limit_price: Optional[float] = None
+
+
+class ClosePositionByIdRequest(BaseModel):
+    order_type: str = "market"
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    quantity: Optional[float] = None  # partial close; None = full close
 
 
 @router.post("/{account_id}/positions/open")
@@ -909,6 +918,7 @@ async def open_position(
                         quantity=leg.quantity,
                         order_type=body.order_type,
                         limit_price=body.limit_price,
+                        asset_type=leg.asset_type,
                     )
 
                 try:
@@ -1023,9 +1033,11 @@ async def close_position(
     body: ClosePositionRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Close an open broker position by submitting an opposite-side market order.
+    """Close an open broker position by submitting an opposite-side order.
 
     Identifies the position by broker-visible (symbol, side, quantity).
+    Supports market (default), limit, and stop order types via optional
+    ``order_type`` and ``limit_price`` fields on the request body.
     Does NOT honor the account `locked_by` check — closes must work as a
     safety valve even when an algorithm holds the account lock.
     """
@@ -1043,6 +1055,10 @@ async def close_position(
         )
     order_side = "sell" if pos_side == "long" else "buy"
 
+    # Validate order-type-specific fields
+    if body.order_type == "limit" and body.limit_price is None:
+        raise HTTPException(status_code=422, detail="limit_price is required when order_type is 'limit'")
+
     adapter = await _adapter_for_account(account)
     try:
         def _sub():
@@ -1050,7 +1066,8 @@ async def close_position(
                 symbol=body.symbol,
                 side=order_side,
                 quantity=body.quantity,
-                order_type="market",
+                order_type=body.order_type,
+                limit_price=body.limit_price,
                 asset_type=body.asset_type,
             )
         result = await asyncio.to_thread(_sub)
@@ -1087,7 +1104,7 @@ async def close_position(
             asset_type=body.asset_type,
             side=order_side,
             quantity=body.quantity,
-            order_type="market",
+            order_type=body.order_type,
             filled_price=result.filled_price,
             fees=result.fees or 0.0,
             broker_txn_id=result.broker_order_id,
@@ -1099,4 +1116,398 @@ async def close_position(
         "broker_order_id": result.broker_order_id,
         "filled_price": result.filled_price,
         "status": "filled" if result.filled_price else "pending",
+    }
+
+
+async def _notify_owner_of_position_close(
+    db: AsyncSession, position: "Position",
+) -> None:
+    """If the closed position is owned by a running algorithm instance,
+    mark ``state_stale = True`` on the instance and send a
+    ``position_closed`` WebSocket message to the worker."""
+    if not position.owner_instance_id:
+        return
+    instance = (
+        await db.execute(
+            select(AlgorithmInstance).where(
+                AlgorithmInstance.id == position.owner_instance_id
+            )
+        )
+    ).scalar_one_or_none()
+    if instance is None or instance.status != "running":
+        return
+    instance.state_stale = True
+    await db.flush()
+    try:
+        from coordinator.api.websocket import manager as ws_manager
+
+        worker_ws = ws_manager.worker_connections.get(instance.worker_id)
+        if worker_ws:
+            await worker_ws.send_json({
+                "type": "position_closed",
+                "instance_id": str(instance.id),
+                "position_id": str(position.id),
+                "symbol": (position.legs[0]["symbol"] if position.legs else ""),
+                "reason": "manual_close",
+            })
+    except Exception:
+        logger.warning(
+            "Failed to notify worker of position close",
+            exc_info=True,
+        )
+
+
+@router.post("/{account_id}/positions/{position_id}/close")
+async def close_position_by_id(
+    account_id: str,
+    position_id: str,
+    body: ClosePositionByIdRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Close an existing position by its ID.
+
+    Reads the position's legs, inverts each side (buy->sell, sell->buy),
+    and submits via multileg (atomic) or sequential single-leg fallback.
+    Does NOT honor the account `locked_by` check — closes must work as a
+    safety valve even when an algorithm holds the account lock.
+    """
+    from worker.broker_adapter import MultilegLegSpec
+
+    account = (
+        await db.execute(select(Account).where(Account.id == account_id))
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    position = (
+        await db.execute(
+            select(Position).where(
+                Position.id == position_id,
+                Position.account_id == account_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if position is None:
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    if position.status != "open":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Position is already {position.status!r}; cannot close",
+        )
+
+    # Validate order-type-specific price fields
+    if body.order_type == "limit" and body.limit_price is None:
+        raise HTTPException(status_code=422, detail="limit_price is required when order_type is 'limit'")
+    if body.order_type == "stop" and body.stop_price is None:
+        raise HTTPException(status_code=422, detail="stop_price is required when order_type is 'stop'")
+
+    # Validate partial close quantity against remaining_quantity
+    close_quantity = body.quantity  # None means full close
+    if close_quantity is not None and position.remaining_quantity is not None:
+        if close_quantity > position.remaining_quantity:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Requested quantity {close_quantity} exceeds remaining quantity {position.remaining_quantity}",
+            )
+
+    # Build closing legs: invert each side, mark position_intent="close"
+    legs_spec: list[MultilegLegSpec] = []
+    for leg in (position.legs or []):
+        orig_side = leg.get("side", "buy")
+        close_side = "sell" if orig_side == "buy" else "buy"
+        qty = body.quantity if body.quantity is not None else leg.get("quantity", 0)
+        legs_spec.append(
+            MultilegLegSpec(
+                symbol=leg.get("symbol", ""),
+                asset_type=leg.get("asset_type", "equities"),
+                side=close_side,
+                quantity=qty,
+                expiry=leg.get("expiry"),
+                strike=leg.get("strike"),
+                right=leg.get("right"),
+                position_intent="close",
+            )
+        )
+
+    if not legs_spec:
+        raise HTTPException(status_code=422, detail="Position has no legs")
+
+    adapter = await _adapter_for_account(account)
+    now = datetime.now(timezone.utc)
+    try:
+        if len(legs_spec) > 1 and adapter.supports_multileg_orders(legs_spec):
+            # Atomic multileg path
+            def _submit():
+                return adapter.submit_multileg_order(
+                    legs_spec,
+                    order_type=body.order_type,
+                    limit_price=body.limit_price,
+                )
+
+            try:
+                result = await asyncio.to_thread(_submit)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=422, detail=f"Broker rejected: {e}")
+
+            # Update position
+            total_proceeds = 0.0
+            total_fees = 0.0
+            for leg, leg_res in zip(legs_spec, result.legs):
+                filled = leg_res.filled_price or 0.0
+                fees = leg_res.fees or 0.0
+                total_proceeds += filled * leg.quantity * (1 if leg.side == "sell" else -1)
+                total_fees += fees
+                db.add(
+                    TradeLog(
+                        account_id=account_id,
+                        position_id=position.id,
+                        source="manual",
+                        timestamp=now,
+                        symbol=leg.symbol,
+                        asset_type=leg.asset_type,
+                        side=leg.side,
+                        quantity=leg.quantity,
+                        order_type=body.order_type,
+                        filled_price=filled,
+                        fees=fees,
+                        broker_txn_id=leg_res.broker_order_id,
+                    )
+                )
+
+            # Update remaining_quantity and determine close status
+            close_qty = close_quantity if close_quantity is not None else (position.remaining_quantity or 0)
+            if close_quantity is not None and position.remaining_quantity is not None:
+                position.remaining_quantity -= close_quantity
+                if position.remaining_quantity <= 0:
+                    position.status = "closed"
+                    position.closed_at = now
+                # else: keep status as "open" for partial close
+            else:
+                # Full close
+                position.remaining_quantity = 0
+                position.status = "closed"
+                position.closed_at = now
+
+            position.net_proceeds = total_proceeds
+            position.total_fees = (position.total_fees or 0.0) + total_fees
+            position.net_pnl = total_proceeds - (position.net_cost or 0.0)
+
+            # Record cost basis lot for the close
+            filled_prices = [lr.filled_price or 0.0 for lr in result.legs]
+            fill_price = filled_prices[0] if len(filled_prices) == 1 else (
+                sum(fp * ls.quantity for fp, ls in zip(filled_prices, legs_spec))
+                / sum(ls.quantity for ls in legs_spec)
+                if legs_spec else 0.0
+            )
+            lots = list(position.cost_basis_lots or [])
+            lots.append({
+                "quantity": close_qty,
+                "fill_price": fill_price,
+                "timestamp": now.isoformat(),
+                "type": "close",
+            })
+            position.cost_basis_lots = lots
+
+            await db.flush()
+            await _notify_owner_of_position_close(db, position)
+
+            return {
+                "position_id": position.id,
+                "broker_order_id": result.broker_order_id,
+                "legs": [
+                    {
+                        "index": r.index,
+                        "status": r.status,
+                        "filled_price": r.filled_price,
+                        "fees": r.fees,
+                        "error": r.error,
+                        "broker_order_id": r.broker_order_id,
+                    }
+                    for r in result.legs
+                ],
+                "atomic": True,
+                "partial_fill": False,
+            }
+        else:
+            # Sequential single-leg fallback
+            leg_outcomes = []
+            filled_legs = []
+            for i, leg in enumerate(legs_spec):
+                def _sub(leg=leg):
+                    return adapter.submit_order(
+                        symbol=adapter.compose_symbol(leg),
+                        side=leg.side,
+                        quantity=leg.quantity,
+                        order_type=body.order_type,
+                        limit_price=body.limit_price,
+                        stop_price=body.stop_price,
+                        asset_type=leg.asset_type,
+                    )
+
+                try:
+                    res = await asyncio.to_thread(_sub)
+                    leg_outcomes.append(
+                        {
+                            "index": i,
+                            "status": "filled",
+                            "filled_price": res.filled_price,
+                            "fees": res.fees,
+                            "broker_order_id": res.broker_order_id,
+                            "error": None,
+                        }
+                    )
+                    filled_legs.append((i, leg, res))
+                except Exception as e:  # noqa: BLE001
+                    leg_outcomes.append(
+                        {
+                            "index": i,
+                            "status": "rejected",
+                            "filled_price": None,
+                            "fees": None,
+                            "broker_order_id": None,
+                            "error": str(e),
+                        }
+                    )
+
+            partial = (
+                any(lo["status"] == "rejected" for lo in leg_outcomes)
+                and len(filled_legs) > 0
+            )
+
+            if filled_legs:
+                total_proceeds = 0.0
+                total_fees = 0.0
+                for _, leg, res in filled_legs:
+                    filled = res.filled_price or 0.0
+                    fees = res.fees or 0.0
+                    total_proceeds += filled * leg.quantity * (1 if leg.side == "sell" else -1)
+                    total_fees += fees
+                    db.add(
+                        TradeLog(
+                            account_id=account_id,
+                            position_id=position.id,
+                            source="manual",
+                            timestamp=now,
+                            symbol=leg.symbol,
+                            asset_type=leg.asset_type,
+                            side=leg.side,
+                            quantity=leg.quantity,
+                            order_type=body.order_type,
+                            filled_price=filled,
+                            fees=fees,
+                            broker_txn_id=res.broker_order_id,
+                        )
+                    )
+
+                # Update remaining_quantity and determine close status
+                close_qty = close_quantity if close_quantity is not None else (position.remaining_quantity or 0)
+
+                # If any leg returned filled_price=None, order is pending (limit/stop not yet filled)
+                if any(lo.get("filled_price") is None for lo in leg_outcomes if lo.get("status") != "rejected"):
+                    position.status = "closing"
+                    # Don't decrement remaining_quantity until fill confirmed
+                elif not partial:
+                    if close_quantity is not None and position.remaining_quantity is not None:
+                        position.remaining_quantity -= close_quantity
+                        if position.remaining_quantity <= 0:
+                            position.status = "closed"
+                            position.closed_at = now
+                        # else: keep status as "open" for partial close
+                    else:
+                        # Full close
+                        position.remaining_quantity = 0
+                        position.status = "closed"
+                        position.closed_at = now
+                position.net_proceeds = total_proceeds
+                position.total_fees = (position.total_fees or 0.0) + total_fees
+                position.net_pnl = total_proceeds - (position.net_cost or 0.0)
+
+                # Record cost basis lot for the close
+                filled_prices = [res.filled_price or 0.0 for _, _, res in filled_legs]
+                fill_price = filled_prices[0] if len(filled_prices) == 1 else (
+                    sum(fp * leg.quantity for fp, (_, leg, _) in zip(filled_prices, filled_legs))
+                    / sum(leg.quantity for _, leg, _ in filled_legs)
+                    if filled_legs else 0.0
+                )
+                lots = list(position.cost_basis_lots or [])
+                lots.append({
+                    "quantity": close_qty,
+                    "fill_price": fill_price,
+                    "timestamp": now.isoformat(),
+                    "type": "close",
+                })
+                position.cost_basis_lots = lots
+
+                await db.flush()
+                await _notify_owner_of_position_close(db, position)
+
+            if not filled_legs:
+                return Response(
+                    content=json.dumps(
+                        {
+                            "position_id": position.id,
+                            "broker_order_id": None,
+                            "legs": leg_outcomes,
+                            "atomic": False,
+                            "partial_fill": False,
+                        }
+                    ),
+                    media_type="application/json",
+                    status_code=422,
+                )
+            return Response(
+                content=json.dumps(
+                    {
+                        "position_id": position.id,
+                        "broker_order_id": None,
+                        "legs": leg_outcomes,
+                        "atomic": False,
+                        "partial_fill": partial,
+                    }
+                ),
+                media_type="application/json",
+                status_code=207 if partial else 200,
+            )
+    finally:
+        _close_adapter(adapter)
+
+
+@router.get("/{account_id}/positions/reconcile")
+async def reconcile_positions(
+    account_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Compare broker positions against Quilt's internal position records."""
+    from coordinator.services.position_reconciler import PositionReconciler
+
+    account = (await db.execute(
+        select(Account).where(Account.id == account_id)
+    )).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    adapter = await _adapter_for_account(account)
+    try:
+        broker_positions = await asyncio.to_thread(adapter.get_positions)
+    finally:
+        _close_adapter(adapter)
+
+    db_positions_rows = (await db.execute(
+        select(Position).where(
+            Position.account_id == account_id,
+            Position.status == "open",
+        )
+    )).scalars().all()
+    db_positions = [
+        {"id": p.id, "legs": p.legs, "status": p.status, "account_id": p.account_id}
+        for p in db_positions_rows
+    ]
+
+    result = PositionReconciler.reconcile(broker_positions, db_positions)
+    return {
+        "matched": result.matched,
+        "untracked": result.untracked,
+        "stale": result.stale,
+        "mismatched": result.mismatched,
     }

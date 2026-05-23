@@ -32,6 +32,10 @@ class QuiltAlgorithm:
     def on_trade_executed(self, signal: Signal, fill: TradeFill) -> None:
         pass
 
+    def on_position_closed(self, symbol: str, reason: str, details: Optional[dict] = None) -> None:
+        """Called when a position is manually closed by the user."""
+        pass
+
     def notify(self, event_name: str, message: str, data: Optional[dict] = None) -> None:
         self._pending_notifications.append({
             "event_name": event_name,

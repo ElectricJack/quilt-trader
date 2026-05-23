@@ -105,3 +105,19 @@ def test_mock_compose_symbol_passthrough():
     adapter = MockBrokerAdapter()
     leg = MultilegLegSpec(symbol="SPY", asset_type="equities", side="buy", quantity=1)
     assert adapter.compose_symbol(leg) == "SPY"
+
+def test_multileg_leg_spec_accepts_position_intent():
+    from worker.broker_adapter import MultilegLegSpec
+    leg = MultilegLegSpec(
+        symbol="SPY", asset_type="options", side="sell", quantity=2,
+        expiry="2026-06-20", strike=560.0, right="call",
+        position_intent="close",
+    )
+    assert leg.position_intent == "close"
+
+def test_multileg_leg_spec_defaults_intent_to_open():
+    from worker.broker_adapter import MultilegLegSpec
+    leg = MultilegLegSpec(
+        symbol="SPY", asset_type="options", side="buy", quantity=1,
+    )
+    assert leg.position_intent == "open"

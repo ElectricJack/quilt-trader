@@ -257,13 +257,15 @@ class AlpacaAdapter(BrokerAdapter):
         self._ensure_clients()
         req_legs = []
         for leg in legs:
+            intent = getattr(leg, "position_intent", "open")
             req_legs.append(OptionLegRequest(
                 symbol=self.compose_symbol(leg),
                 side=OrderSide.BUY if leg.side == "buy" else OrderSide.SELL,
                 ratio_qty=int(leg.quantity),
                 position_intent=(
-                    PositionIntent.BUY_TO_OPEN if leg.side == "buy"
-                    else PositionIntent.SELL_TO_OPEN
+                    (PositionIntent.BUY_TO_CLOSE if leg.side == "buy" else PositionIntent.SELL_TO_CLOSE)
+                    if intent == "close"
+                    else (PositionIntent.BUY_TO_OPEN if leg.side == "buy" else PositionIntent.SELL_TO_OPEN)
                 ),
             ))
         if order_type == "limit":
