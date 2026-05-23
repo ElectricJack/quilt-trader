@@ -1100,3 +1100,43 @@ async def close_position(
         "filled_price": result.filled_price,
         "status": "filled" if result.filled_price else "pending",
     }
+
+
+@router.get("/{account_id}/positions/reconcile")
+async def reconcile_positions(
+    account_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Compare broker positions against Quilt's internal position records."""
+    from coordinator.services.position_reconciler import PositionReconciler
+
+    account = (await db.execute(
+        select(Account).where(Account.id == account_id)
+    )).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    adapter = await _adapter_for_account(account)
+    try:
+        broker_positions = await asyncio.to_thread(adapter.get_positions)
+    finally:
+        _close_adapter(adapter)
+
+    db_positions_rows = (await db.execute(
+        select(Position).where(
+            Position.account_id == account_id,
+            Position.status == "open",
+        )
+    )).scalars().all()
+    db_positions = [
+        {"id": p.id, "legs": p.legs, "status": p.status, "account_id": p.account_id}
+        for p in db_positions_rows
+    ]
+
+    result = PositionReconciler.reconcile(broker_positions, db_positions)
+    return {
+        "matched": result.matched,
+        "untracked": result.untracked,
+        "stale": result.stale,
+        "mismatched": result.mismatched,
+    }
