@@ -1109,6 +1109,44 @@ async def close_position(
     }
 
 
+async def _notify_owner_of_position_close(
+    db: AsyncSession, position: "Position",
+) -> None:
+    """If the closed position is owned by a running algorithm instance,
+    mark ``state_stale = True`` on the instance and send a
+    ``position_closed`` WebSocket message to the worker."""
+    if not position.owner_instance_id:
+        return
+    instance = (
+        await db.execute(
+            select(AlgorithmInstance).where(
+                AlgorithmInstance.id == position.owner_instance_id
+            )
+        )
+    ).scalar_one_or_none()
+    if instance is None or instance.status != "running":
+        return
+    instance.state_stale = True
+    await db.flush()
+    try:
+        from coordinator.api.websocket import manager as ws_manager
+
+        worker_ws = ws_manager.worker_connections.get(instance.worker_id)
+        if worker_ws:
+            await worker_ws.send_json({
+                "type": "position_closed",
+                "instance_id": str(instance.id),
+                "position_id": str(position.id),
+                "symbol": (position.legs[0]["symbol"] if position.legs else ""),
+                "reason": "manual_close",
+            })
+    except Exception:
+        logger.warning(
+            "Failed to notify worker of position close",
+            exc_info=True,
+        )
+
+
 @router.post("/{account_id}/positions/{position_id}/close")
 async def close_position_by_id(
     account_id: str,
@@ -1262,6 +1300,7 @@ async def close_position_by_id(
             position.cost_basis_lots = lots
 
             await db.flush()
+            await _notify_owner_of_position_close(db, position)
 
             return {
                 "position_id": position.id,
@@ -1391,6 +1430,7 @@ async def close_position_by_id(
                 position.cost_basis_lots = lots
 
                 await db.flush()
+                await _notify_owner_of_position_close(db, position)
 
             if not filled_legs:
                 return Response(
