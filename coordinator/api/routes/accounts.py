@@ -916,6 +916,7 @@ async def open_position(
                         quantity=leg.quantity,
                         order_type=body.order_type,
                         limit_price=body.limit_price,
+                        asset_type=leg.asset_type,
                     )
 
                 try:

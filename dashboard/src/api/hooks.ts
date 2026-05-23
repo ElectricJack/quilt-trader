@@ -832,6 +832,30 @@ export function useClosePosition(accountId: string) {
   });
 }
 
+// ── U4: close position by ID ──
+
+export function useClosePositionById() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ accountId, positionId, body }: { accountId: string; positionId: string; body?: { order_type?: "market" | "limit" | "stop"; limit_price?: number; stop_price?: number; quantity?: number } }) =>
+      api.closePositionById(accountId, positionId, body || {}),
+    onSuccess: (_data, { accountId }) => {
+      void qc.invalidateQueries({ queryKey: ["accounts", accountId, "broker-info"] });
+    },
+  });
+}
+
+// ── U4: reconcile positions ──
+
+export function useReconcilePositions(accountId: string) {
+  return useQuery({
+    queryKey: ["accounts", accountId, "positions", "reconcile"] as const,
+    queryFn: () => api.reconcilePositions(accountId),
+    enabled: !!accountId,
+    staleTime: 30_000,
+  });
+}
+
 // ── U5: live subscriptions + compare ──
 
 export function useLiveSubscriptions() {

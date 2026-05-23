@@ -787,6 +787,38 @@ export const api = {
     });
   },
 
+  // ── U4: close position by ID ──
+  closePositionById(
+    accountId: string,
+    positionId: string,
+    body: {
+      order_type?: "market" | "limit" | "stop";
+      limit_price?: number;
+      stop_price?: number;
+      quantity?: number;
+    } = {}
+  ): Promise<{
+    position_id: string;
+    broker_order_id: string | null;
+    legs: Array<{ index: number; status: string; filled_price: number | null; fees: number | null }>;
+    atomic: boolean;
+  }> {
+    return request(`/api/accounts/${accountId}/positions/${positionId}/close`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  // ── U4: reconcile positions ──
+  reconcilePositions(accountId: string): Promise<{
+    matched: Array<{ db_id: string; broker_symbol: string }>;
+    untracked: Array<{ symbol: string }>;
+    stale: Array<{ id: string }>;
+    mismatched: Array<{ db_id: string; broker_qty: number; db_qty: number }>;
+  }> {
+    return request(`/api/accounts/${accountId}/positions/reconcile`);
+  },
+
   // ── U1: broker asset-type catalog ──
   getBrokerAssetTypes(brokerType: string): Promise<{ asset_types: string[] }> {
     return request<{ asset_types: string[] }>(`/api/brokers/${brokerType}/asset-types`);
