@@ -231,73 +231,128 @@ class PolygonProvider:
         underlying: str,
         expiration: date,
         on_status: StatusCallback | None = None,
+        strike_range_pct: float = 0.15,
     ) -> "pd.DataFrame":
-        """Fetch options chain snapshot for a given underlying + expiration.
+        """Fetch options chain for a given underlying + expiration.
 
-        Uses the Polygon /v3/snapshot/options/{underlying} endpoint.
-        Returns a DataFrame with columns: symbol, strike, option_type, bid, ask,
-        last, volume, open_interest, implied_volatility.
+        Uses two endpoints that work on all Polygon plans:
+        1. /v2/aggs/ticker/{underlying} — get current price for ATM filtering
+        2. /v3/reference/options/contracts — discover contracts near ATM
+        3. /v2/aggs/ticker/{OCC}/range/1/day — get latest daily bar per contract
+
+        ``strike_range_pct`` controls how far from ATM to include (0.15 = ±15%).
         """
         import pandas as _pd
+        from datetime import timedelta
 
-        api_ticker = INDEX_SYMBOL_MAP.get(underlying.upper(), underlying)
-        snapshot_url = f"{self.BASE_URL}/v3/snapshot/options/{api_ticker}"
+        empty = _pd.DataFrame(columns=[
+            "symbol", "strike", "option_type", "bid", "ask",
+            "last", "volume", "open_interest", "implied_volatility",
+        ])
+
+        # Step 0: Get underlying price for ATM strike filtering
+        await self._safe_status(on_status, f"Fetching {underlying} price for ATM filtering")
+        underlying_price = None
+        try:
+            price_url = (
+                f"{self.BASE_URL}/v2/aggs/ticker/{underlying}/range"
+                f"/1/day/{(expiration - timedelta(days=7)).isoformat()}/{expiration.isoformat()}"
+            )
+            price_resp = await self._request_with_retry(
+                price_url, {"apiKey": self._api_key, "limit": 5, "sort": "desc"},
+                on_status=on_status,
+            )
+            price_bars = price_resp.json().get("results") or []
+            if price_bars:
+                underlying_price = price_bars[0].get("c")
+        except Exception:
+            logger.warning("Could not fetch underlying price for %s", underlying)
+
+        # Step 1: Discover contracts via reference endpoint
+        await self._safe_status(on_status, f"Discovering {underlying} contracts for {expiration}")
+        contracts: list[dict] = []
+        url = f"{self.BASE_URL}/v3/reference/options/contracts"
         params: dict[str, Any] = {
             "apiKey": self._api_key,
+            "underlying_ticker": underlying,
             "expiration_date": expiration.isoformat(),
-            "limit": 250,
+            "as_of": expiration.isoformat(),
+            "limit": 1000,
+            "sort": "strike_price",
+            "order": "asc",
         }
-
-        snapshot_results: list[dict] = []
+        if underlying_price is not None:
+            params["strike_price.gte"] = round(underlying_price * (1 - strike_range_pct))
+            params["strike_price.lte"] = round(underlying_price * (1 + strike_range_pct))
         while True:
-            await self._safe_status(
-                on_status,
-                f"Fetching options snapshot for {underlying} {expiration}",
-            )
-            resp = await self._request_with_retry(
-                snapshot_url, params, on_status=on_status
-            )
+            resp = await self._request_with_retry(url, params, on_status=on_status)
             data = resp.json()
-            for r in data.get("results") or []:
-                snapshot_results.append(r)
+            for c in data.get("results") or []:
+                contracts.append(c)
             next_url = data.get("next_url")
             if not next_url:
                 break
-            snapshot_url = next_url
+            url = next_url
             params = {"apiKey": self._api_key}
 
-        if not snapshot_results:
-            return _pd.DataFrame(
-                columns=[
-                    "symbol",
-                    "strike",
-                    "option_type",
-                    "bid",
-                    "ask",
-                    "last",
-                    "volume",
-                    "open_interest",
-                    "implied_volatility",
-                ]
-            )
+        if not contracts:
+            return empty
+
+        await self._safe_status(
+            on_status, f"Found {len(contracts)} contracts, fetching daily bars..."
+        )
+
+        # Step 2: Fetch the last daily bar for each contract
+        # Use a date window ending at expiration to get the most recent prices
+        bar_end = expiration
+        bar_start = expiration - timedelta(days=7)
 
         rows: list[dict] = []
-        for r in snapshot_results:
-            details = r.get("details", {})
-            quote = r.get("last_quote", {})
-            day = r.get("day", {})
-            rows.append(
-                {
-                    "symbol": details.get("ticker", ""),
-                    "strike": details.get("strike_price", 0.0),
-                    "option_type": details.get("contract_type", ""),
-                    "bid": quote.get("bid", 0.0),
-                    "ask": quote.get("ask", 0.0),
-                    "last": day.get("close", 0.0),
-                    "volume": day.get("volume", 0),
-                    "open_interest": r.get("open_interest", 0),
-                    "implied_volatility": r.get("implied_volatility", 0.0),
-                }
+        for i, c in enumerate(contracts):
+            ticker = c["ticker"]
+            strike = c.get("strike_price", 0.0)
+            contract_type = c.get("contract_type", "")
+
+            if i % 20 == 0:
+                await self._safe_status(
+                    on_status,
+                    f"Fetching bars: {i}/{len(contracts)} contracts ({underlying} {expiration})",
+                )
+
+            bar_url = (
+                f"{self.BASE_URL}/v2/aggs/ticker/{ticker}/range"
+                f"/1/day/{bar_start.isoformat()}/{bar_end.isoformat()}"
             )
+            try:
+                bar_resp = await self._request_with_retry(
+                    bar_url, {"apiKey": self._api_key, "limit": 10, "sort": "desc"},
+                    on_status=on_status,
+                )
+                bar_data = bar_resp.json()
+                results = bar_data.get("results") or []
+                if results:
+                    last_bar = results[0]
+                    close = last_bar.get("c", 0.0)
+                    volume = last_bar.get("v", 0)
+                    high = last_bar.get("h", 0.0)
+                    low = last_bar.get("l", 0.0)
+                    spread = max((high - low) * 0.1, close * 0.02) if close > 0 else 0.1
+                    rows.append({
+                        "symbol": ticker,
+                        "strike": strike,
+                        "option_type": contract_type,
+                        "bid": max(0, close - spread / 2),
+                        "ask": close + spread / 2,
+                        "last": close,
+                        "volume": volume,
+                        "open_interest": 0,
+                        "implied_volatility": 0.0,
+                    })
+            except Exception:
+                logger.debug("Failed to fetch bar for %s, skipping", ticker)
+                continue
+
+        if not rows:
+            return empty
 
         return _pd.DataFrame(rows)
