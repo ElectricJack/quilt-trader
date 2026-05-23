@@ -276,6 +276,17 @@ class BacktestRunner:
                 on_miss=on_miss,
             )
 
+            # Warm option chain cache for options algorithms
+            if "options" in (manifest.requirements.asset_types or []):
+                for dep in deps:
+                    symbol = dep.get("symbol")
+                    if symbol and self._ds:
+                        expirations = self._ds.list_option_chain_expirations("polygon", symbol)
+                        for exp in expirations:
+                            df = self._ds.load_option_chain("polygon", symbol, exp)
+                            if df is not None and not df.empty:
+                                ctx._option_chain_cache[("polygon", symbol, exp)] = df
+
             AlgoClass = _load_algorithm_class(pkg_dir_name, manifest)
             algorithm = AlgoClass()
 
