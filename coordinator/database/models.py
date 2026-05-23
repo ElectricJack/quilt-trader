@@ -327,6 +327,11 @@ class Position(Base):
     adjustments: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True)
 
+    # Position management columns
+    owner_instance_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("algorithm_instances.id"), nullable=True)
+    remaining_quantity: Mapped[float] = mapped_column(Float, default=0.0)
+    cost_basis_lots: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
 
 class AccountCashFlow(Base):
     __tablename__ = "account_cash_flows"
