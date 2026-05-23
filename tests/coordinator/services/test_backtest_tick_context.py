@@ -1,7 +1,8 @@
 import pytest
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from coordinator.services.backtest_tick_context import BacktestTickContext, timeframe_to_seconds
+from sdk.models import OptionChain, OptionContract
 
 
 def _make_daily(start, days):
@@ -230,3 +231,59 @@ def test_market_data_default_source_falls_back_to_polygon():
 
     assert "polygon" in loaded_sources
     assert not out.empty
+
+
+# ---- option_chain tests ----
+
+def _make_mock_data_service_with_chains():
+    chains = {
+        ("polygon", "SPY", date(2026, 1, 17)): pd.DataFrame([
+            {"ticker": "O:SPY260117C00450000", "strike": 450.0, "option_type": "call",
+             "bid": 5.1, "ask": 5.3, "last": 5.2, "volume": 1200,
+             "open_interest": 8000, "implied_volatility": 0.25},
+            {"ticker": "O:SPY260117P00450000", "strike": 450.0, "option_type": "put",
+             "bid": 4.1, "ask": 4.3, "last": 4.2, "volume": 900,
+             "open_interest": 6000, "implied_volatility": 0.27},
+        ]),
+    }
+    class MockDS:
+        def load_market_data(self, src, sym, tf): return None
+        def load_option_chain(self, provider, symbol, expiration):
+            return chains.get((provider, symbol, expiration))
+        def list_option_chain_expirations(self, provider, symbol):
+            return [exp for (p, s, exp) in chains if p == provider and s == symbol]
+    return MockDS()
+
+
+def test_option_chain_returns_populated_chain():
+    ds = _make_mock_data_service_with_chains()
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=100_000.0,
+        data_service=ds, default_source="polygon",
+    )
+    ctx.set_sim_time(datetime(2026, 1, 17, 12, 0, tzinfo=timezone.utc))
+    chain = ctx.option_chain("SPY", expiration=date(2026, 1, 17))
+    assert isinstance(chain, OptionChain)
+    assert chain.underlying == "SPY"
+    assert chain.expiration == date(2026, 1, 17)
+    assert len(chain.calls) == 1
+    assert len(chain.puts) == 1
+    assert chain.calls[0].strike == 450.0
+    assert chain.calls[0].bid == 5.1
+
+
+def test_option_chain_returns_empty_when_no_data():
+    mock_ds = type("DS", (), {
+        "load_market_data": lambda self, s, sym, tf: None,
+        "load_option_chain": lambda self, p, s, e: None,
+        "list_option_chain_expirations": lambda self, p, s: [],
+    })()
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=100_000.0,
+        data_service=mock_ds, default_source="polygon",
+    )
+    ctx.set_sim_time(datetime(2026, 1, 15, tzinfo=timezone.utc))
+    chain = ctx.option_chain("SPY", expiration=date(2026, 1, 17))
+    assert isinstance(chain, OptionChain)
+    assert chain.calls == []
+    assert chain.puts == []
