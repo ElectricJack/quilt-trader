@@ -162,14 +162,6 @@ class BacktestEngine:
             signals = algorithm.on_tick(ctx) or []
 
             if signals:
-                # Validate options asset_type — fast fail per Spec D §12
-                for sig in signals:
-                    for leg in sig.legs:
-                        if leg.asset_type == "options":
-                            raise UnsupportedAssetTypeError(
-                                f"Options backtest not yet supported (leg: {leg.symbol}). "
-                                f"Tracked as a follow-up; see Spec D §12."
-                            )
                 all_signals_count += len(signals)
                 observer.on_signals_emitted(sim_time, signals)
                 # Schedule pending orders for the NEXT bar
@@ -205,6 +197,7 @@ class BacktestEngine:
                 fill, advance_for_stop = self._try_fill(
                     po, bar=fill_bar, slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
                     cash=cash, positions=positions, rng=rng, sim_time=bar["timestamp"].to_pydatetime(),
+                    ctx=ctx,
                 )
                 if fill is not None:
                     # Buying-power check for buys: paper equities/crypto have no
@@ -212,7 +205,8 @@ class BacktestEngine:
                     # Sells / shorts on existing positions are allowed; opening a
                     # short with no position is also rejected (no margin in v1).
                     if fill.side == "buy":
-                        notional_plus_fees = fill.fill_price * fill.quantity + fill.fees
+                        bp_multiplier = 100 if fill.asset_type == "options" else 1
+                        notional_plus_fees = fill.fill_price * fill.quantity * bp_multiplier + fill.fees
                         if notional_plus_fees > cash + 1e-6:
                             observer.on_signal_rejected(
                                 sim_time,
@@ -272,7 +266,7 @@ class BacktestEngine:
 
     def _try_fill(
         self, po: _PendingOrder, *, bar, slippage: SlippageModel,
-        buy_fees, sell_fees, cash, positions, rng, sim_time,
+        buy_fees, sell_fees, cash, positions, rng, sim_time, ctx=None,
     ) -> tuple[Optional[FillRecord], bool]:
         """Returns (fill_or_none, stop_triggered).
 
@@ -285,7 +279,7 @@ class BacktestEngine:
         fees_list = buy_fees if side == "buy" else sell_fees
 
         if ot == OrderType.MARKET or po.is_stop_triggered:
-            return self._fill_market(po, bar, side, slippage, fees_list, rng, sim_time), False
+            return self._fill_market(po, bar, side, slippage, fees_list, rng, sim_time, ctx=ctx), False
 
         if ot == OrderType.LIMIT:
             return self._fill_limit(po, bar, side, slippage, fees_list, sim_time), False
@@ -315,8 +309,89 @@ class BacktestEngine:
 
         raise ValueError(f"Unsupported order_type: {ot}")
 
-    def _fill_market(self, po, bar, side, slippage, fees_list, rng, sim_time) -> FillRecord:
+    def _lookup_option_price(self, contract_symbol: str, side: str, ctx) -> float | None:
+        """Find bid/ask for a contract from the cached option chain data.
+
+        Searches all cached chain DataFrames for the contract symbol.
+        If no cache hit, attempts to load the chain from data_service using
+        the underlying symbol extracted from the OCC-style contract symbol.
+        """
+        # First, search existing cache
+        for key, df in ctx._option_chain_cache.items():
+            if df is None or (hasattr(df, 'empty') and df.empty):
+                continue
+            for col in ("ticker", "symbol"):
+                if col in df.columns:
+                    match = df[df[col] == contract_symbol]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        return float(row.get("ask", 0)) if side == "buy" else float(row.get("bid", 0))
+
+        # Cache miss: try loading chain from data_service.
+        # Extract underlying from OCC symbol, e.g. "O:SPY260117C00450000" → "SPY"
+        if ctx._data_service is not None and hasattr(ctx._data_service, "load_option_chain"):
+            underlying = self._extract_underlying(contract_symbol)
+            if underlying:
+                # Use sim_time date as the expiration guess
+                exp = ctx._sim_time_now.date() if ctx._sim_time_now else None
+                source = ctx._default_source or "polygon"
+                try:
+                    chain_df = ctx._data_service.load_option_chain(source, underlying, exp)
+                    if chain_df is not None and not chain_df.empty:
+                        cache_key = (source, underlying, exp)
+                        ctx._option_chain_cache[cache_key] = chain_df
+                        for col in ("ticker", "symbol"):
+                            if col in chain_df.columns:
+                                match_rows = chain_df[chain_df[col] == contract_symbol]
+                                if not match_rows.empty:
+                                    row = match_rows.iloc[0]
+                                    return float(row.get("ask", 0)) if side == "buy" else float(row.get("bid", 0))
+                except Exception:
+                    logger.debug("Failed to load option chain for %s", underlying, exc_info=True)
+
+        return None
+
+    @staticmethod
+    def _extract_underlying(contract_symbol: str) -> str | None:
+        """Extract the underlying ticker from an OCC-style option symbol.
+
+        Examples:
+            "O:SPY260117C00450000" → "SPY"
+            "O:AAPL250620P00175000" → "AAPL"
+            "SPY260117C00450000" → "SPY"
+        """
+        sym = contract_symbol
+        if sym.startswith("O:"):
+            sym = sym[2:]
+        # OCC format: SYMBOL + 6-digit date + C/P + 8-digit strike
+        # Find where the date digits start (first digit after letters)
+        for i, ch in enumerate(sym):
+            if ch.isdigit():
+                return sym[:i] if i > 0 else None
+        return None
+
+    def _fill_market(self, po, bar, side, slippage, fees_list, rng, sim_time, ctx=None) -> FillRecord:
         leg = po.leg
+
+        # Options: use contract bid/ask from cached option chain data
+        if leg.asset_type == "options" and ctx is not None:
+            option_price = self._lookup_option_price(leg.symbol, side, ctx)
+            if option_price is not None and option_price > 0:
+                if slippage.market_bps > 0:
+                    sign = 1 if side == "buy" else -1
+                    option_price += option_price * (slippage.market_bps / 10000) * sign
+                fees, breakdown = self._compute_fees(leg, option_price, fees_list, order_type=OrderType.MARKET)
+                ts = bar["timestamp"]
+                if hasattr(ts, "to_pydatetime"):
+                    ts = ts.to_pydatetime()
+                return FillRecord(
+                    timestamp=ts,
+                    symbol=leg.symbol, asset_type="options", side=side, quantity=leg.quantity,
+                    requested_price=option_price, fill_price=option_price,
+                    slippage_dollars=0.0, slippage_bps_applied=slippage.market_bps,
+                    fees=fees, fee_breakdown=breakdown, signal_id=po.signal_id,
+                )
+
         if slippage.use_bar_range:
             fill_price = rng.uniform(float(bar["low"]), float(bar["high"]))
             slip_bps = abs(fill_price - float(bar["open"])) / float(bar["open"]) * 10000
@@ -404,7 +479,8 @@ class BacktestEngine:
     def _apply_fill(self, cash: float, positions: dict, fill: FillRecord) -> float:
         key = (fill.symbol,)  # Equities/crypto key for v1
         ps = positions.get(key) or _PositionState(asset_type=fill.asset_type)
-        notional = fill.fill_price * fill.quantity
+        multiplier = 100 if fill.asset_type == "options" else 1
+        notional = fill.fill_price * fill.quantity * multiplier
         if fill.side == "buy":
             # Weighted average price update
             total_qty = ps.quantity + fill.quantity
@@ -416,7 +492,7 @@ class BacktestEngine:
             cash -= notional + fill.fees
         else:  # sell
             # Realized PnL on the sold portion
-            realized = (fill.fill_price - ps.avg_price) * fill.quantity - fill.fees
+            realized = (fill.fill_price - ps.avg_price) * fill.quantity * multiplier - fill.fees
             fill.realized_pnl = realized
             ps.quantity -= fill.quantity
             if ps.quantity == 0:
@@ -443,28 +519,65 @@ class BacktestEngine:
                     break
         return float(fallback_bar["close"]) if fallback_bar is not None else 0.0
 
+    def _lookup_option_mtm_price(self, sym: str, ctx) -> float | None:
+        """Get current mid-price for an option from cached chain data."""
+        if ctx is None:
+            return None
+        for key, df in ctx._option_chain_cache.items():
+            if df is None or (hasattr(df, 'empty') and df.empty):
+                continue
+            for col in ("ticker", "symbol"):
+                if col in df.columns:
+                    match = df[df[col] == sym]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        bid = float(row.get("bid", 0))
+                        ask = float(row.get("ask", 0))
+                        if bid > 0 and ask > 0:
+                            return (bid + ask) / 2
+                        return ask if ask > 0 else bid
+        return None
+
     def _positions_market_value(self, positions: dict, bar, ctx=None, sim_time=None) -> float:
         total = 0.0
         for (sym,), ps in positions.items():
-            price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
-            total += ps.quantity * price
+            multiplier = 100 if ps.asset_type == "options" else 1
+            if ps.asset_type == "options":
+                option_price = self._lookup_option_mtm_price(sym, ctx)
+                price = option_price if option_price is not None else ps.avg_price
+            else:
+                price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            total += ps.quantity * price * multiplier
         return total
 
     def _positions_snapshot(self, positions: dict, bar, ctx=None, sim_time=None) -> list[dict]:
-        return [
-            {"symbol": k[0], "quantity": ps.quantity, "avg_price": ps.avg_price,
-             "current_price": self._lookup_symbol_close(k[0], sim_time, ctx, bar),
-             "market_value": ps.quantity * self._lookup_symbol_close(k[0], sim_time, ctx, bar),
-             "asset_type": ps.asset_type}
-            for k, ps in positions.items()
-        ]
+        result = []
+        for k, ps in positions.items():
+            sym = k[0]
+            multiplier = 100 if ps.asset_type == "options" else 1
+            if ps.asset_type == "options":
+                option_price = self._lookup_option_mtm_price(sym, ctx)
+                current_price = option_price if option_price is not None else ps.avg_price
+            else:
+                current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            result.append({
+                "symbol": sym, "quantity": ps.quantity, "avg_price": ps.avg_price,
+                "current_price": current_price,
+                "market_value": ps.quantity * current_price * multiplier,
+                "asset_type": ps.asset_type,
+            })
+        return result
 
     def _positions_for_context(self, positions: dict, bar=None, ctx=None, sim_time=None) -> dict:
         """Convert internal state to sdk.models.Position dict the algorithm reads via ctx.positions."""
         from sdk.models import Position
         out: dict = {}
         for (sym,), ps in positions.items():
-            current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            if ps.asset_type == "options":
+                option_price = self._lookup_option_mtm_price(sym, ctx)
+                current_price = option_price if option_price is not None else ps.avg_price
+            else:
+                current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
             if current_price == 0.0:
                 current_price = ps.avg_price
             try:

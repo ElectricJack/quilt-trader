@@ -167,13 +167,16 @@ def test_no_path_to_same_bar_fill():
     assert obs.fills[0].timestamp >= pd.Timestamp("2024-01-02", tz="UTC")
 
 
-def test_options_leg_fails_run_cleanly():
-    """Spec D §9.11. A signal with asset_type=options halts the run cleanly."""
+def test_options_leg_without_chain_data_falls_back_to_bar():
+    """Options fill falls back to bar OHLCV when no chain data is available."""
     from sdk.signals import Signal, SignalLeg, SignalType, OrderType
 
     class OptionsAlgo:
+        def __init__(self): self._fired = False
         def on_start(self, c, s): pass
         def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
             return [Signal(legs=[SignalLeg(
                 symbol="SPY240620C00500000", signal_type=SignalType.BUY, quantity=1,
                 asset_type="options", order_type=OrderType.MARKET,
@@ -182,16 +185,18 @@ def test_options_leg_fails_run_cleanly():
         def save_state(self): return {}
 
     clock = _bars("2024-01-01", 3, opens=[100.0]*3)
-    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=50_000.0)
     obs = RecordingObserver()
     BacktestEngine().run(
         algorithm=OptionsAlgo(), ctx=ctx, clock_series=clock,
         clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
-        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
-        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+        slippage=SlippageModel(market_bps=0), buy_fees=[], sell_fees=[],
+        initial_cash=50_000.0, observer=obs, cancel_token=CancelToken(),
     )
-    assert obs.error is not None
-    assert "options" in str(obs.error).lower()
+    # No error — options are now supported; without chain data, falls back to bar OHLCV
+    assert obs.error is None
+    assert len(obs.fills) == 1
+    assert obs.fills[0].asset_type == "options"
 
 
 def test_cancel_token_stops_engine_cleanly():
