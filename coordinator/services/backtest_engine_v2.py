@@ -251,10 +251,19 @@ class BacktestEngine:
                     po.scheduled_for_bar_index = bar_idx + 1
                     still_pending.append(po)
                 else:
-                    # Not filled, not stop-trigger — apply expiry (v1 = 1 bar)
-                    observer.on_signal_rejected(
-                        sim_time, Signal(legs=[po.leg]), "no_fill_within_timeout"
-                    )
+                    # Not filled, not stop-trigger — apply TIF-aware expiry
+                    from sdk.signals import TimeInForce
+                    tif = getattr(po.leg, 'time_in_force', None)
+                    if tif is None or tif == TimeInForce.IOC:
+                        observer.on_signal_rejected(
+                            sim_time, Signal(legs=[po.leg]), "no_fill_within_timeout"
+                        )
+                    elif tif in (TimeInForce.DAY, TimeInForce.GTC):
+                        still_pending.append(po)
+                    else:
+                        observer.on_signal_rejected(
+                            sim_time, Signal(legs=[po.leg]), f"unknown_time_in_force:{tif}"
+                        )
             pending = still_pending
 
             # ---- 3. Mark-to-market equity point ----
