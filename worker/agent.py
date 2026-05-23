@@ -135,6 +135,7 @@ class WorkerAgent:
         self.router.register("tick_batch", self._handle_tick_batch)
         self.router.register("signal_response", self._handle_signal_response)
         self.router.register("update_worker", self._handle_update_worker)
+        self.router.register("position_closed", self._handle_position_closed)
 
     async def _handle_start_instance(self, message: dict) -> None:
         from worker.live_instance_runtime import LiveInstanceRuntime
@@ -203,6 +204,14 @@ class WorkerAgent:
 
     async def _handle_heartbeat_ack(self, message: dict) -> None:
         pass  # No action needed
+
+    async def _handle_position_closed(self, message: dict) -> None:
+        instance_id = message.get("instance_id")
+        runtime = self._running_instances.get(instance_id)
+        if runtime is None:
+            logger.warning("position_closed for unknown instance %s; ignoring", instance_id)
+            return
+        await runtime.on_position_closed(message)
 
     async def _handle_tick_batch(self, message: dict) -> None:
         for entry in (message.get("ticks") or []):
