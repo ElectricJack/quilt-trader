@@ -91,6 +91,38 @@ def _load_algorithm_class(pkg_dir_name: str, manifest) -> type:
     return getattr(mod, manifest.class_name)
 
 
+def _validate_custom_data_deps(data_deps: list[dict], custom_dir: Path) -> None:
+    """Check that every declared custom data dependency exists on disk.
+
+    Raises FileNotFoundError for the first missing dependency.
+    """
+    for dep in data_deps:
+        source = dep.get("source", "")
+        if not source:
+            continue
+        if (custom_dir / source).is_file():
+            continue
+        found = False
+        for ext in (".csv", ".parquet", ".json"):
+            if (custom_dir / f"{source}{ext}").is_file():
+                found = True
+                break
+        if found:
+            continue
+        subdir = custom_dir / source
+        if subdir.is_dir() and (any(subdir.glob("*.csv")) or any(subdir.glob("*.parquet")) or any(subdir.glob("*.json"))):
+            continue
+        stem = Path(source).stem
+        if stem != source:
+            subdir2 = custom_dir / stem
+            if subdir2.is_dir() and (any(subdir2.glob("*.csv")) or any(subdir2.glob("*.parquet")) or any(subdir2.glob("*.json"))):
+                continue
+        raise FileNotFoundError(
+            f"Missing data dependency: {source!r}. "
+            f"Expected file or directory at {custom_dir / source}."
+        )
+
+
 class BacktestRunner:
     """One-shot orchestrator: walks manifest deps, downloads missing data,
     runs the engine, computes metrics, persists everything to the BacktestRun row.
@@ -134,6 +166,10 @@ class BacktestRunner:
             # Read from manifest.assets (new format) with fallback to
             # requirements.data_dependencies (legacy).
             deps = manifest.assets or manifest.requirements.data_dependencies or []
+
+            # Validate custom data dependencies exist before starting
+            if manifest.data:
+                _validate_custom_data_deps(manifest.data, Path("data/custom"))
 
             # Stage 1: data coverage — download only missing gaps
             from coordinator.services.coverage_utils import ensure_coverage
