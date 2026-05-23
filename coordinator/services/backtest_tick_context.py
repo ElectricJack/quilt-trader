@@ -65,6 +65,7 @@ class BacktestTickContext(TickContext):
         self._sim_time_now: Optional[datetime] = None
         self._custom_data_cache: Optional[dict[str, pd.DataFrame]] = None
         self._cancel_orders_requested = False
+        self._option_chain_cache: dict[tuple, "pd.DataFrame"] = {}
 
     # ---- mutation hooks called by the engine ----
 
@@ -232,7 +233,57 @@ class BacktestTickContext(TickContext):
         self._cancel_orders_requested = True
 
     def option_chain(self, symbol: str, expiration: Optional[date] = None) -> OptionChain:
-        raise NotImplementedError(
-            "option_chain not yet available in backtest contexts; tracked as a follow-up. "
-            "Options backtest support is documented in Spec D §12."
-        )
+        from sdk.models import OptionContract
+
+        exp = expiration or (self._sim_time_now.date() if self._sim_time_now else date.today())
+        source = self._default_source or "polygon"
+
+        cache_key = (source, symbol, exp)
+        if cache_key in self._option_chain_cache:
+            df = self._option_chain_cache[cache_key]
+        elif self._data_service is not None and hasattr(self._data_service, "load_option_chain"):
+            df = self._data_service.load_option_chain(source, symbol, exp)
+            if df is not None and not df.empty:
+                self._option_chain_cache[cache_key] = df
+            else:
+                df = pd.DataFrame()
+        else:
+            df = pd.DataFrame()
+
+        # Nearest-expiration fallback: if exact expiration not found,
+        # try the closest available within 7 days
+        if (df is None or df.empty) and self._data_service is not None and hasattr(self._data_service, "list_option_chain_expirations"):
+            available = self._data_service.list_option_chain_expirations(source, symbol)
+            if available:
+                nearest = min(available, key=lambda d: abs((d - exp).days))
+                if abs((nearest - exp).days) <= 7:
+                    df = self._data_service.load_option_chain(source, symbol, nearest)
+                    exp = nearest  # update expiration to the one we actually found
+                    if df is not None and not df.empty:
+                        self._option_chain_cache[cache_key] = df
+
+        if df is None or df.empty:
+            return OptionChain(underlying=symbol, expiration=exp, calls=[], puts=[])
+
+        calls: list[OptionContract] = []
+        puts: list[OptionContract] = []
+        for _, row in df.iterrows():
+            contract = OptionContract(
+                symbol=str(row.get("ticker", row.get("symbol", ""))),
+                underlying=symbol,
+                expiration=exp,
+                strike=float(row.get("strike", 0)),
+                option_type=str(row.get("option_type", "")),
+                bid=float(row.get("bid", 0)),
+                ask=float(row.get("ask", 0)),
+                last=float(row.get("last", 0)),
+                volume=int(row.get("volume", 0)),
+                open_interest=int(row.get("open_interest", 0)),
+                implied_volatility=float(row.get("implied_volatility", 0)),
+            )
+            if contract.option_type == "call":
+                calls.append(contract)
+            elif contract.option_type == "put":
+                puts.append(contract)
+
+        return OptionChain(underlying=symbol, expiration=exp, calls=calls, puts=puts)

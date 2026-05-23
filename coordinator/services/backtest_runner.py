@@ -229,6 +229,15 @@ class BacktestRunner:
                         download_ids.append(dl["id"])
                         await self._wait_for_download(dl["id"])
 
+            # Stage 1b: option chain pre-download for options algorithms
+            if "options" in (manifest.requirements.asset_types or []):
+                option_underlyings = [
+                    dep.get("symbol") for dep in deps if dep.get("symbol")
+                ]
+                await self._download_option_chains(
+                    option_underlyings, date_range_start, date_range_end, run_id,
+                )
+
             # Stage 2: run engine
             async with self._sf() as session:
                 r = (await session.execute(
@@ -302,6 +311,17 @@ class BacktestRunner:
                 data_service=self._ds,
                 on_miss=on_miss,
             )
+
+            # Warm option chain cache for options algorithms
+            if "options" in (manifest.requirements.asset_types or []):
+                for dep in deps:
+                    symbol = dep.get("symbol")
+                    if symbol and self._ds:
+                        expirations = self._ds.list_option_chain_expirations("polygon", symbol)
+                        for exp in expirations:
+                            df = self._ds.load_option_chain("polygon", symbol, exp)
+                            if df is not None and not df.empty:
+                                ctx._option_chain_cache[("polygon", symbol, exp)] = df
 
             AlgoClass = _load_algorithm_class(pkg_dir_name, manifest)
             algorithm = AlgoClass()
@@ -402,6 +422,62 @@ class BacktestRunner:
                 r.error_message = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
                 r.completed_at = datetime.now(timezone.utc)
                 await session.commit()
+
+    @staticmethod
+    def _monthly_expirations(start, end) -> list:
+        """Generate 3rd-Friday-of-month expiration dates within [start, end]."""
+        from datetime import date as _date, timedelta
+        expirations = []
+        # Start from the 1st of start's month
+        current = _date(start.year, start.month, 1)
+        while current <= end:
+            # Find 3rd Friday: first day of month, find first Friday, add 14 days
+            first_day = _date(current.year, current.month, 1)
+            # weekday(): Monday=0, Friday=4
+            days_to_friday = (4 - first_day.weekday()) % 7
+            first_friday = first_day + timedelta(days=days_to_friday)
+            third_friday = first_friday + timedelta(days=14)
+            if start <= third_friday <= end:
+                expirations.append(third_friday)
+            # Next month
+            if current.month == 12:
+                current = _date(current.year + 1, 1, 1)
+            else:
+                current = _date(current.year, current.month + 1, 1)
+        return expirations
+
+    async def _download_option_chains(self, underlyings, date_start, date_end, run_id):
+        """Pre-download option chain snapshots for each monthly expiration."""
+        from coordinator.database.models import BacktestRun
+
+        provider = self._dm._providers.get("polygon") if hasattr(self._dm, "_providers") else None
+        if provider is None or not hasattr(provider, "fetch_option_chain"):
+            return
+
+        start_d = date_start.date() if hasattr(date_start, "date") else date_start
+        end_d = date_end.date() if hasattr(date_end, "date") else date_end
+        expirations = self._monthly_expirations(start_d, end_d)
+
+        for underlying in underlyings:
+            for exp in expirations:
+                existing = self._ds.load_option_chain("polygon", underlying, exp)
+                if existing is not None and not existing.empty:
+                    continue
+                try:
+                    async with self._sf() as session:
+                        r = (await session.execute(
+                            select(BacktestRun).where(BacktestRun.id == run_id)
+                        )).scalar_one()
+                        r.progress_message = f"Downloading options chain: {underlying} exp {exp}"
+                        await session.commit()
+                    df = await provider.fetch_option_chain(underlying, exp)
+                    if df is not None and not df.empty:
+                        self._ds.save_option_chain("polygon", underlying, exp, df)
+                except Exception:
+                    logger.warning(
+                        "Failed to download option chain for %s %s",
+                        underlying, exp, exc_info=True,
+                    )
 
     async def _progress_pump(
         self, run_id: str, observer, interval_s: float = 2.0,

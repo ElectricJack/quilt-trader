@@ -172,6 +172,42 @@ class DataService:
         }).dropna(subset=["open"]).reset_index()
         return out
 
+    # -- Option chain storage ---------------------------------------------------
+
+    def option_chain_path(self, provider: str, symbol: str, expiration) -> str:
+        from datetime import date as _date
+        exp_str = expiration.isoformat() if isinstance(expiration, _date) else str(expiration)
+        return os.path.join(self._market_dir, provider, symbol, "options", exp_str, "chain.parquet")
+
+    def save_option_chain(self, provider: str, symbol: str, expiration, df: pd.DataFrame) -> str:
+        path = self.option_chain_path(provider, symbol, expiration)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        df.to_parquet(path, index=False)
+        return path
+
+    def load_option_chain(self, provider: str, symbol: str, expiration) -> Optional[pd.DataFrame]:
+        path = self.option_chain_path(provider, symbol, expiration)
+        if not os.path.exists(path):
+            return None
+        return pd.read_parquet(path)
+
+    def list_option_chain_expirations(self, provider: str, symbol: str) -> list:
+        from datetime import date as _date
+        options_dir = os.path.join(self._market_dir, provider, symbol, "options")
+        if not os.path.isdir(options_dir):
+            return []
+        expirations = []
+        for name in os.listdir(options_dir):
+            chain_path = os.path.join(options_dir, name, "chain.parquet")
+            if os.path.exists(chain_path):
+                try:
+                    expirations.append(_date.fromisoformat(name))
+                except ValueError:
+                    continue
+        return sorted(expirations)
+
+    # -- Market data listing ----------------------------------------------------
+
     def list_available_market_data(self) -> list[dict]:
         results = []
         if not os.path.exists(self._market_dir):
