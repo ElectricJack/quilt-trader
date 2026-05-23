@@ -765,6 +765,7 @@ class ClosePositionRequest(BaseModel):
 class ClosePositionByIdRequest(BaseModel):
     order_type: str = "market"
     limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
     quantity: Optional[float] = None  # partial close; None = full close
 
 
@@ -1146,6 +1147,12 @@ async def close_position_by_id(
             status_code=409,
             detail=f"Position is already {position.status!r}; cannot close",
         )
+
+    # Validate order-type-specific price fields
+    if body.order_type == "limit" and body.limit_price is None:
+        raise HTTPException(status_code=422, detail="limit_price is required when order_type is 'limit'")
+    if body.order_type == "stop" and body.stop_price is None:
+        raise HTTPException(status_code=422, detail="stop_price is required when order_type is 'stop'")
 
     # Validate partial close quantity against remaining_quantity
     close_quantity = body.quantity  # None means full close
