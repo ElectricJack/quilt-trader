@@ -83,6 +83,7 @@ class _PendingOrder:
     leg: SignalLeg
     scheduled_for_bar_index: int   # Index in clock_series; fill attempted at this bar (and possibly later for stops)
     is_stop_triggered: bool = False  # Stop-to-market two-stage tracking
+    created_date: object = None  # date when order was placed (for DAY expiry)
 
 
 @dataclass
@@ -184,9 +185,11 @@ class BacktestEngine:
                 for sig in signals:
                     sig_id = str(uuid.uuid4())
                     for leg in sig.legs:
+                        bar_date = bar["timestamp"].to_pydatetime().date() if hasattr(bar["timestamp"].to_pydatetime(), 'date') else None
                         pending.append(_PendingOrder(
                             signal_id=sig_id, leg=leg,
                             scheduled_for_bar_index=bar_idx + 1,
+                            created_date=bar_date,
                         ))
 
             # ---- 2. Process pending orders that target THIS bar ----
@@ -195,6 +198,20 @@ class BacktestEngine:
                 if po.scheduled_for_bar_index > bar_idx:
                     still_pending.append(po)
                     continue
+                # DAY order expiry: reject before attempting fill if day has changed.
+                # Only applies to orders being retried (scheduled bar already passed);
+                # on the first fill attempt (scheduled_for == bar_idx), always try to fill.
+                from sdk.signals import TimeInForce as _TIF
+                tif = getattr(po.leg, 'time_in_force', None)
+                if tif == _TIF.DAY and po.scheduled_for_bar_index < bar_idx:
+                    order_date = po.created_date
+                    bar_ts = bar["timestamp"].to_pydatetime()
+                    current_date = bar_ts.date() if hasattr(bar_ts, 'date') else None
+                    if order_date is not None and current_date is not None and current_date > order_date:
+                        observer.on_signal_rejected(
+                            sim_time, Signal(legs=[po.leg]), "day_expired"
+                        )
+                        continue
                 # Resolve the fill bar: prefer the SYMBOL's own data over the
                 # clock bar. The clock may be a different symbol (multi-asset
                 # algo) or synthetic (scraper-only algo with no market deps).

@@ -241,3 +241,46 @@ def test_ioc_order_expires_after_one_bar():
     assert len(obs.fills) == 0
     assert len(obs.rejected) == 1
     assert "no_fill_within_timeout" in obs.rejected[0][2]
+
+
+def test_day_order_expires_at_day_boundary():
+    """DAY limit order placed on Jan 2 that doesn't fill same-day expires
+    before Jan 3 bars are evaluated — even though Jan 3 would cross the limit."""
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
+    clock = pd.DataFrame({
+        "timestamp": pd.to_datetime([
+            "2024-01-02 10:00", "2024-01-02 11:00",
+            "2024-01-02 12:00",
+            "2024-01-03 10:00", "2024-01-03 11:00",
+        ]).tz_localize("UTC"),
+        "open": [100.0]*5, "high": [101.0]*5,
+        # Same-day lows stay above limit; next-day lows would cross it
+        "low": [99.5, 99.5, 99.5, 98.0, 98.0],
+        "close": [100.0]*5, "volume": [1e6]*5,
+    })
+    class DayLimitAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                order_type=OrderType.LIMIT, limit_price=99.0,
+                time_in_force=TimeInForce.DAY,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=DayLimitAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1hour", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    # Signal on bar 0 (Jan 2 10:00). Bars 1-2 (Jan 2) low=99.5 > limit 99.0, no cross.
+    # DAY order expires when clock crosses to Jan 3 — should NOT fill on Jan 3 bars.
+    assert len(obs.fills) == 0
+    assert any("day_expired" in r[2] for r in obs.rejected)
