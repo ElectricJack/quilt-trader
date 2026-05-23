@@ -160,3 +160,44 @@ async def test_full_close_sets_remaining_quantity_to_zero(client, db_session, mo
     assert refreshed.status == "closed"
     assert refreshed.remaining_quantity == 0
     assert refreshed.closed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_partial_close_records_cost_basis_lot(client, db_session, monkeypatch):
+    from worker.broker_adapter import OrderResult
+    from coordinator.api.routes import accounts as accounts_routes
+
+    account = Account(name="A", broker_type="alpaca", environment="paper",
+                      credentials="{}", supported_asset_types=["equities"], pdt_mode="off")
+    db_session.add(account)
+    await db_session.flush()
+
+    pos = Position(account_id=account.id, strategy_type="single",
+                   legs=[{"symbol": "SPY", "asset_type": "equities", "side": "buy", "quantity": 10, "avg_price": 500.0}],
+                   status="open", net_cost=5000.0, remaining_quantity=10, cost_basis_lots=[])
+    db_session.add(pos)
+    await db_session.flush()
+    await db_session.commit()
+    acct_id = account.id
+    pos_id = pos.id
+
+    class FakeAdapter:
+        def supports_multileg_orders(self, legs): return False
+        def compose_symbol(self, leg): return leg.symbol
+        def submit_order(self, symbol, side, quantity, order_type, **kw):
+            return OrderResult(symbol=symbol, side=side, quantity=quantity,
+                               order_type=order_type, filled_price=510.0, broker_order_id="ord-lot")
+        def close(self): pass
+
+    async def fake_adapter(acct): return FakeAdapter()
+    monkeypatch.setattr(accounts_routes, "_adapter_for_account", fake_adapter)
+
+    r = await client.post(f"/api/accounts/{acct_id}/positions/{pos_id}/close", json={"quantity": 3})
+    assert r.status_code == 200
+
+    db_session.expire_all()
+    refreshed = (await db_session.execute(select(Position).where(Position.id == pos_id))).scalar_one()
+    assert refreshed.remaining_quantity == 7
+    assert len(refreshed.cost_basis_lots) == 1
+    assert refreshed.cost_basis_lots[0]["quantity"] == 3
+    assert refreshed.cost_basis_lots[0]["fill_price"] == 510.0

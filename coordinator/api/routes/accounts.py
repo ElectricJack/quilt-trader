@@ -1221,6 +1221,7 @@ async def close_position_by_id(
                 )
 
             # Update remaining_quantity and determine close status
+            close_qty = close_quantity if close_quantity is not None else (position.remaining_quantity or 0)
             if close_quantity is not None and position.remaining_quantity is not None:
                 position.remaining_quantity -= close_quantity
                 if position.remaining_quantity <= 0:
@@ -1236,6 +1237,23 @@ async def close_position_by_id(
             position.net_proceeds = total_proceeds
             position.total_fees = (position.total_fees or 0.0) + total_fees
             position.net_pnl = total_proceeds - (position.net_cost or 0.0)
+
+            # Record cost basis lot for the close
+            filled_prices = [lr.filled_price or 0.0 for lr in result.legs]
+            fill_price = filled_prices[0] if len(filled_prices) == 1 else (
+                sum(fp * ls.quantity for fp, ls in zip(filled_prices, legs_spec))
+                / sum(ls.quantity for ls in legs_spec)
+                if legs_spec else 0.0
+            )
+            lots = list(position.cost_basis_lots or [])
+            lots.append({
+                "quantity": close_qty,
+                "fill_price": fill_price,
+                "timestamp": now.isoformat(),
+                "type": "close",
+            })
+            position.cost_basis_lots = lots
+
             await db.flush()
 
             return {
@@ -1326,6 +1344,7 @@ async def close_position_by_id(
                     )
 
                 # Update remaining_quantity and determine close status
+                close_qty = close_quantity if close_quantity is not None else (position.remaining_quantity or 0)
                 if not partial:
                     if close_quantity is not None and position.remaining_quantity is not None:
                         position.remaining_quantity -= close_quantity
@@ -1341,6 +1360,23 @@ async def close_position_by_id(
                 position.net_proceeds = total_proceeds
                 position.total_fees = (position.total_fees or 0.0) + total_fees
                 position.net_pnl = total_proceeds - (position.net_cost or 0.0)
+
+                # Record cost basis lot for the close
+                filled_prices = [res.filled_price or 0.0 for _, _, res in filled_legs]
+                fill_price = filled_prices[0] if len(filled_prices) == 1 else (
+                    sum(fp * leg.quantity for fp, (_, leg, _) in zip(filled_prices, filled_legs))
+                    / sum(leg.quantity for _, leg, _ in filled_legs)
+                    if filled_legs else 0.0
+                )
+                lots = list(position.cost_basis_lots or [])
+                lots.append({
+                    "quantity": close_qty,
+                    "fill_price": fill_price,
+                    "timestamp": now.isoformat(),
+                    "type": "close",
+                })
+                position.cost_basis_lots = lots
+
                 await db.flush()
 
             if not filled_legs:
