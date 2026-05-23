@@ -24,6 +24,14 @@ TIMEFRAME_MAP = {
     "1day": ("1", "day"),
 }
 
+# Maps common index symbols to the ticker format Polygon expects.
+INDEX_SYMBOL_MAP: dict[str, str] = {
+    "SPX": "I:SPX",
+    "NDX": "I:NDX",
+    "RUT": "I:RUT",
+    "VIX": "I:VIX",
+}
+
 
 class PolygonProvider:
     BASE_URL = "https://api.polygon.io"
@@ -217,3 +225,79 @@ class PolygonProvider:
             logger.info("Polygon pagination: %d bars fetched, following next_url for %s", len(all_bars), symbol)
 
         return all_bars
+
+    async def fetch_option_chain(
+        self,
+        underlying: str,
+        expiration: date,
+        on_status: StatusCallback | None = None,
+    ) -> "pd.DataFrame":
+        """Fetch options chain snapshot for a given underlying + expiration.
+
+        Uses the Polygon /v3/snapshot/options/{underlying} endpoint.
+        Returns a DataFrame with columns: symbol, strike, option_type, bid, ask,
+        last, volume, open_interest, implied_volatility.
+        """
+        import pandas as _pd
+
+        api_ticker = INDEX_SYMBOL_MAP.get(underlying.upper(), underlying)
+        snapshot_url = f"{self.BASE_URL}/v3/snapshot/options/{api_ticker}"
+        params: dict[str, Any] = {
+            "apiKey": self._api_key,
+            "expiration_date": expiration.isoformat(),
+            "limit": 250,
+        }
+
+        snapshot_results: list[dict] = []
+        while True:
+            await self._safe_status(
+                on_status,
+                f"Fetching options snapshot for {underlying} {expiration}",
+            )
+            resp = await self._request_with_retry(
+                snapshot_url, params, on_status=on_status
+            )
+            data = resp.json()
+            for r in data.get("results") or []:
+                snapshot_results.append(r)
+            next_url = data.get("next_url")
+            if not next_url:
+                break
+            snapshot_url = next_url
+            params = {"apiKey": self._api_key}
+
+        if not snapshot_results:
+            return _pd.DataFrame(
+                columns=[
+                    "symbol",
+                    "strike",
+                    "option_type",
+                    "bid",
+                    "ask",
+                    "last",
+                    "volume",
+                    "open_interest",
+                    "implied_volatility",
+                ]
+            )
+
+        rows: list[dict] = []
+        for r in snapshot_results:
+            details = r.get("details", {})
+            quote = r.get("last_quote", {})
+            day = r.get("day", {})
+            rows.append(
+                {
+                    "symbol": details.get("ticker", ""),
+                    "strike": details.get("strike_price", 0.0),
+                    "option_type": details.get("contract_type", ""),
+                    "bid": quote.get("bid", 0.0),
+                    "ask": quote.get("ask", 0.0),
+                    "last": day.get("close", 0.0),
+                    "volume": day.get("volume", 0),
+                    "open_interest": r.get("open_interest", 0),
+                    "implied_volatility": r.get("implied_volatility", 0.0),
+                }
+            )
+
+        return _pd.DataFrame(rows)
