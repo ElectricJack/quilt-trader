@@ -139,7 +139,8 @@ class BacktestEngine:
         # Wrap algorithm lifecycle in try/except so errors propagate via observer
         algorithm.on_start({}, None)
 
-        for bar_idx in range(len(clock)):
+        bar_idx = 0
+        while bar_idx < len(clock):
             if cancel.is_set():
                 logger.info("BacktestEngine cancelled at bar %d", bar_idx)
                 return
@@ -160,6 +161,13 @@ class BacktestEngine:
             # ---- 1. Tick the algorithm ----
             observer.on_tick(sim_time, {"cash": cash})
             signals = algorithm.on_tick(ctx) or []
+
+            # Rebuild clock from real data after first tick if clock was synthetic
+            if bar_idx == 0 and clock_source == "synthetic" and ctx._bars:
+                real_clock = self._build_union_clock(ctx._bars)
+                if not real_clock.empty:
+                    clock = real_clock
+                    tf_duration = timeframe_to_seconds(clock_tf)
 
             if signals:
                 # Validate options asset_type — fast fail per Spec D §12
@@ -257,6 +265,8 @@ class BacktestEngine:
 
             if progress is not None and bar_idx % 100 == 0:
                 progress(bar_idx / max(len(clock), 1))
+
+            bar_idx += 1
 
         algorithm.on_stop()
 
