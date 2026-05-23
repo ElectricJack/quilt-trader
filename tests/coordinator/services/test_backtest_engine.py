@@ -209,3 +209,175 @@ def test_cancel_token_stops_engine_cleanly():
     # Engine should exit early with no fills (cancel was set before run started)
     assert not obs.complete
     assert len(obs.fills) == 0
+
+
+def test_ioc_order_expires_after_one_bar():
+    """IOC limit order that doesn't cross on the fill bar is rejected immediately."""
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
+
+    class IOCAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                order_type=OrderType.LIMIT, limit_price=90.0,
+                time_in_force=TimeInForce.IOC,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _bars("2024-01-01", 5, lows=[99.0]*5, highs=[101.0]*5)
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=IOCAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert len(obs.fills) == 0
+    assert len(obs.rejected) == 1
+    assert "no_fill_within_timeout" in obs.rejected[0][2]
+
+
+def test_day_order_expires_at_day_boundary():
+    """DAY limit order placed on Jan 2 that doesn't fill same-day expires
+    before Jan 3 bars are evaluated — even though Jan 3 would cross the limit."""
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
+    clock = pd.DataFrame({
+        "timestamp": pd.to_datetime([
+            "2024-01-02 10:00", "2024-01-02 11:00",
+            "2024-01-02 12:00",
+            "2024-01-03 10:00", "2024-01-03 11:00",
+        ]).tz_localize("UTC"),
+        "open": [100.0]*5, "high": [101.0]*5,
+        # Same-day lows stay above limit; next-day lows would cross it
+        "low": [99.5, 99.5, 99.5, 98.0, 98.0],
+        "close": [100.0]*5, "volume": [1e6]*5,
+    })
+    class DayLimitAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                order_type=OrderType.LIMIT, limit_price=99.0,
+                time_in_force=TimeInForce.DAY,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=DayLimitAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1hour", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    # Signal on bar 0 (Jan 2 10:00). Bars 1-2 (Jan 2) low=99.5 > limit 99.0, no cross.
+    # DAY order expires when clock crosses to Jan 3 — should NOT fill on Jan 3 bars.
+    assert len(obs.fills) == 0
+    assert any("day_expired" in r[2] for r in obs.rejected)
+
+
+def test_gtc_order_fills_across_days():
+    """GTC limit order persists across multiple bars until the limit is crossed."""
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
+
+    class GTCAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                order_type=OrderType.LIMIT, limit_price=95.0,
+                time_in_force=TimeInForce.GTC,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _bars("2024-01-01", 6, opens=[100]*6, highs=[101]*6,
+                  lows=[99, 99, 99, 99, 94, 99], closes=[100]*6)
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=GTCAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert len(obs.fills) == 1
+    assert obs.fills[0].fill_price == pytest.approx(95.0, abs=1e-6)
+
+
+def test_gtc_order_persists_until_end_if_never_crossed():
+    """GTC order that never fills is rejected at end of backtest with gtc_expired reason."""
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
+
+    class GTCNeverFillAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                order_type=OrderType.LIMIT, limit_price=50.0,
+                time_in_force=TimeInForce.GTC,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _bars("2024-01-01", 5)
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=GTCNeverFillAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert len(obs.fills) == 0
+    assert any("gtc_expired" in r[2] for r in obs.rejected)
+
+
+def test_algorithm_can_cancel_gtc_order():
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
+
+    class CancelAlgo:
+        def __init__(self): self._step = 0
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            self._step += 1
+            if self._step == 1:
+                return [Signal(legs=[SignalLeg(
+                    symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                    order_type=OrderType.LIMIT, limit_price=95.0,
+                    time_in_force=TimeInForce.GTC,
+                )])]
+            if self._step == 3:
+                ctx.cancel_all_orders()
+            return []
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _bars("2024-01-01", 6, lows=[99]*6)  # Never crosses 95
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=CancelAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert len(obs.fills) == 0
+    # Should be cancelled, not gtc_expired
+    assert any("cancelled" in r[2] for r in obs.rejected)

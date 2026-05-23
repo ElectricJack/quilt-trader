@@ -273,3 +273,72 @@ assets:
 """
     m = QuiltManifest.from_string(yaml_text)
     assert m.assets == [{"symbol": "SPY", "asset_class": "equities"}]
+
+
+class TestManifestDataBlock:
+    def test_data_block_parsed(self):
+        yaml_str = """
+name: test-algo
+type: algorithm
+version: 1.0.0
+entry_point: algo.py
+class_name: TestAlgo
+requirements:
+  asset_types: [equities]
+data:
+  - source: alpha-picks-scraper
+    type: scraper
+  - source: sector-weights.csv
+    type: csv
+"""
+        m = QuiltManifest.from_string(yaml_str)
+        assert len(m.data) == 2
+        assert m.data[0] == {"source": "alpha-picks-scraper", "type": "scraper"}
+        assert m.data[1] == {"source": "sector-weights.csv", "type": "csv"}
+
+    def test_data_block_defaults_to_empty_list(self):
+        yaml_str = """
+name: test-algo
+type: algorithm
+version: 1.0.0
+entry_point: algo.py
+class_name: TestAlgo
+requirements:
+  asset_types: [equities]
+"""
+        m = QuiltManifest.from_string(yaml_str)
+        assert m.data == []
+
+    def test_data_block_ignores_entries_without_source(self):
+        yaml_str = """
+name: test-algo
+type: algorithm
+version: 1.0.0
+entry_point: algo.py
+class_name: TestAlgo
+requirements:
+  asset_types: [equities]
+data:
+  - type: csv
+  - source: my-data
+    type: json
+"""
+        m = QuiltManifest.from_string(yaml_str)
+        assert len(m.data) == 1
+        assert m.data[0]["source"] == "my-data"
+
+    def test_data_block_validates_type_field(self):
+        yaml_str = """
+name: test-algo
+type: algorithm
+version: 1.0.0
+entry_point: algo.py
+class_name: TestAlgo
+requirements:
+  asset_types: [equities]
+data:
+  - source: my-data
+    type: invalid_type
+"""
+        with pytest.raises(ManifestError, match="type"):
+            QuiltManifest.from_string(yaml_str)
