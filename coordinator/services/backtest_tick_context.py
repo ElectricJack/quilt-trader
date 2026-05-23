@@ -64,6 +64,7 @@ class BacktestTickContext(TickContext):
         self._on_miss = on_miss
         self._sim_time_now: Optional[datetime] = None
         self._custom_data_cache: Optional[dict[str, pd.DataFrame]] = None
+        self._cancel_orders_requested = False
 
     # ---- mutation hooks called by the engine ----
 
@@ -225,6 +226,10 @@ class BacktestTickContext(TickContext):
         elif suffix == ".parquet":
             return pd.read_parquet(path)
         return None
+
+    def cancel_all_orders(self) -> None:
+        """Request cancellation of all pending orders. The engine checks this flag each bar."""
+        self._cancel_orders_requested = True
 
     def option_chain(self, symbol: str, expiration: Optional[date] = None) -> OptionChain:
         raise NotImplementedError(

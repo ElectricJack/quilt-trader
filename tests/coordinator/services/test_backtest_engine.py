@@ -347,3 +347,37 @@ def test_gtc_order_persists_until_end_if_never_crossed():
     )
     assert len(obs.fills) == 0
     assert any("gtc_expired" in r[2] for r in obs.rejected)
+
+
+def test_algorithm_can_cancel_gtc_order():
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
+
+    class CancelAlgo:
+        def __init__(self): self._step = 0
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            self._step += 1
+            if self._step == 1:
+                return [Signal(legs=[SignalLeg(
+                    symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                    order_type=OrderType.LIMIT, limit_price=95.0,
+                    time_in_force=TimeInForce.GTC,
+                )])]
+            if self._step == 3:
+                ctx.cancel_all_orders()
+            return []
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _bars("2024-01-01", 6, lows=[99]*6)  # Never crosses 95
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=CancelAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert len(obs.fills) == 0
+    # Should be cancelled, not gtc_expired
+    assert any("cancelled" in r[2] for r in obs.rejected)

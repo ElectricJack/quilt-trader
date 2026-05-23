@@ -289,6 +289,13 @@ class BacktestEngine:
                         )
             pending = still_pending
 
+            # Check if algorithm requested order cancellation
+            if getattr(ctx, '_cancel_orders_requested', False):
+                for po in pending:
+                    observer.on_signal_rejected(sim_time, Signal(legs=[po.leg]), "cancelled_by_algorithm")
+                pending = []
+                ctx._cancel_orders_requested = False
+
             # ---- 3. Mark-to-market equity point ----
             mtm_value = cash + self._positions_market_value(positions, bar, ctx=ctx, sim_time=sim_time)
             observer.on_equity_point(
