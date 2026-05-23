@@ -1292,6 +1292,7 @@ async def close_position_by_id(
                         quantity=leg.quantity,
                         order_type=body.order_type,
                         limit_price=body.limit_price,
+                        stop_price=body.stop_price,
                         asset_type=leg.asset_type,
                     )
 
