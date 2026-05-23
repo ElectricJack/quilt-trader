@@ -282,7 +282,7 @@ class BacktestEngine:
             return self._fill_market(po, bar, side, slippage, fees_list, rng, sim_time, ctx=ctx), False
 
         if ot == OrderType.LIMIT:
-            return self._fill_limit(po, bar, side, slippage, fees_list, sim_time), False
+            return self._fill_limit(po, bar, side, slippage, fees_list, sim_time, ctx=ctx), False
 
         if ot == OrderType.STOP:
             triggered = self._stop_triggered(po, bar, side)
@@ -420,11 +420,31 @@ class BacktestEngine:
             signal_id=po.signal_id,
         )
 
-    def _fill_limit(self, po, bar, side, slippage, fees_list, sim_time) -> Optional[FillRecord]:
+    def _fill_limit(self, po, bar, side, slippage, fees_list, sim_time, ctx=None) -> Optional[FillRecord]:
         leg = po.leg
         limit = leg.limit_price
         if limit is None:
             return None
+
+        # Options path: use contract bid/ask from chain data
+        if leg.asset_type == "options" and ctx is not None:
+            option_price = self._lookup_option_price(leg.symbol, side, ctx)
+            if option_price is not None:
+                if side == "buy" and option_price <= limit:
+                    fill_price = min(option_price, limit)
+                elif side == "sell" and option_price >= limit:
+                    fill_price = max(option_price, limit)
+                else:
+                    return None
+                fees, breakdown = self._compute_fees(leg, fill_price, fees_list, order_type=OrderType.LIMIT)
+                return FillRecord(
+                    timestamp=bar["timestamp"].to_pydatetime() if hasattr(bar["timestamp"], "to_pydatetime") else bar["timestamp"],
+                    symbol=leg.symbol, asset_type="options", side=side, quantity=leg.quantity,
+                    requested_price=limit, fill_price=fill_price,
+                    slippage_dollars=0.0, slippage_bps_applied=0.0,
+                    fees=fees, fee_breakdown=breakdown, signal_id=po.signal_id,
+                )
+
         low, high = float(bar["low"]), float(bar["high"])
         # STRICT cross only — see Spec D §3 conservative-by-default rule
         if side == "buy":
