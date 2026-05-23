@@ -47,6 +47,7 @@ class MultilegLegSpec:
     expiry: Optional[str] = None  # YYYY-MM-DD, options only
     strike: Optional[float] = None
     right: Optional[str] = None   # "call" | "put"
+    position_intent: str = "open"  # "open" | "close"
 
 
 @dataclass
