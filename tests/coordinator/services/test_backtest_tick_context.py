@@ -287,3 +287,34 @@ def test_option_chain_returns_empty_when_no_data():
     assert isinstance(chain, OptionChain)
     assert chain.calls == []
     assert chain.puts == []
+
+
+def test_option_chain_finds_nearest_expiration():
+    """When requested expiration is not on disk, find the nearest one."""
+    import pandas as _pd
+
+    chain_df = _pd.DataFrame([
+        {"ticker": "O:SPY260117C00450000", "strike": 450.0, "option_type": "call",
+         "bid": 5.1, "ask": 5.3, "last": 5.2, "volume": 1200,
+         "open_interest": 8000, "implied_volatility": 0.25},
+    ])
+
+    class MockDS:
+        def load_market_data(self, s, sym, tf): return None
+        def load_option_chain(self, p, s, e):
+            if e == date(2026, 1, 17):
+                return chain_df
+            return None
+        def list_option_chain_expirations(self, p, s):
+            return [date(2026, 1, 17)]
+
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=100_000.0,
+        data_service=MockDS(), default_source="polygon",
+    )
+    ctx.set_sim_time(datetime(2026, 1, 10, tzinfo=timezone.utc))
+
+    # Request Jan 20 -- should fall back to the nearest available (Jan 17)
+    chain = ctx.option_chain("SPY", expiration=date(2026, 1, 20))
+    assert len(chain.calls) == 1
+    assert chain.expiration == date(2026, 1, 17)

@@ -241,10 +241,21 @@ class BacktestTickContext(TickContext):
             if df is not None and not df.empty:
                 self._option_chain_cache[cache_key] = df
             else:
-                self._option_chain_cache[cache_key] = pd.DataFrame()
                 df = pd.DataFrame()
         else:
             df = pd.DataFrame()
+
+        # Nearest-expiration fallback: if exact expiration not found,
+        # try the closest available within 7 days
+        if (df is None or df.empty) and self._data_service is not None and hasattr(self._data_service, "list_option_chain_expirations"):
+            available = self._data_service.list_option_chain_expirations(source, symbol)
+            if available:
+                nearest = min(available, key=lambda d: abs((d - exp).days))
+                if abs((nearest - exp).days) <= 7:
+                    df = self._data_service.load_option_chain(source, symbol, nearest)
+                    exp = nearest  # update expiration to the one we actually found
+                    if df is not None and not df.empty:
+                        self._option_chain_cache[cache_key] = df
 
         if df is None or df.empty:
             return OptionChain(underlying=symbol, expiration=exp, calls=[], puts=[])
