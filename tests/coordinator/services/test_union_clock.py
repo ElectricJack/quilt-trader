@@ -116,3 +116,51 @@ def test_synthetic_clock_rebuilt_after_first_tick():
     # Should have fills at real prices (not $0)
     assert len(obs.fills) > 0
     assert obs.fills[0].fill_price > 0
+
+
+class _BuyOnFirstTickAlgo:
+    """Loads SPY dynamically, then buys on second tick."""
+    def __init__(self): self._tick = 0
+    def on_start(self, config, restored_state): pass
+    def on_tick(self, ctx):
+        self._tick += 1
+        if self._tick == 1:
+            ctx.market_data("SPY", "1day", bars=5)
+            return []
+        if self._tick == 2:
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY", signal_type=SignalType.BUY, quantity=10,
+                asset_type="equities", order_type=OrderType.MARKET,
+            )])]
+        return []
+    def on_stop(self): return {}
+    def save_state(self): return {}
+
+
+def test_no_zero_price_fills_with_dynamic_load():
+    """Fills must use real prices even when the clock started synthetic."""
+    import numpy as np
+    dates = pd.date_range("2024-01-01", periods=10, freq="B")
+    synthetic_clock = pd.DataFrame({
+        "timestamp": dates,
+        "open": np.zeros(10), "high": np.zeros(10),
+        "low": np.zeros(10), "close": np.zeros(10),
+        "volume": np.zeros(10),
+    })
+    spy_bars = _make_bars("SPY", dates, price_base=450.0)
+    ctx = BacktestTickContext(
+        bars={("polygon", "SPY", "1day"): spy_bars},
+        positions={}, cash=100_000.0,
+    )
+    obs = _RecordingObserver()
+    BacktestEngine().run(
+        algorithm=_BuyOnFirstTickAlgo(), ctx=ctx,
+        clock_series=synthetic_clock,
+        clock_timeframe="1day", clock_source="synthetic", clock_symbol="_clock",
+        slippage=SlippageModel(market_bps=0),
+        buy_fees=[], sell_fees=[],
+        initial_cash=100_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert obs.complete
+    assert len(obs.fills) == 1
+    assert obs.fills[0].fill_price > 1.0
