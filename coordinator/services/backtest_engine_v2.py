@@ -84,6 +84,7 @@ class _PendingOrder:
     scheduled_for_bar_index: int   # Index in clock_series; fill attempted at this bar (and possibly later for stops)
     is_stop_triggered: bool = False  # Stop-to-market two-stage tracking
     created_date: object = None  # date when order was placed (for DAY expiry)
+    fill_attempted: bool = False  # True after first fill attempt (used for DAY expiry guard)
 
 
 @dataclass
@@ -199,11 +200,11 @@ class BacktestEngine:
                     still_pending.append(po)
                     continue
                 # DAY order expiry: reject before attempting fill if day has changed.
-                # Only applies to orders being retried (scheduled bar already passed);
-                # on the first fill attempt (scheduled_for == bar_idx), always try to fill.
+                # Only applies after the first fill attempt — the first attempt
+                # always proceeds regardless of date (signal on bar T fills at T+1).
                 from sdk.signals import TimeInForce as _TIF
                 tif = getattr(po.leg, 'time_in_force', None)
-                if tif == _TIF.DAY and po.scheduled_for_bar_index < bar_idx:
+                if tif == _TIF.DAY and po.fill_attempted:
                     order_date = po.created_date
                     bar_ts = bar["timestamp"].to_pydatetime()
                     current_date = bar_ts.date() if hasattr(bar_ts, 'date') else None
@@ -227,6 +228,7 @@ class BacktestEngine:
                             fill_bar = df.loc[at_time].iloc[-1]
                         break
                 # Try to fill against THIS bar
+                po.fill_attempted = True
                 fill, advance_for_stop = self._try_fill(
                     po, bar=fill_bar, slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
                     cash=cash, positions=positions, rng=rng, sim_time=bar["timestamp"].to_pydatetime(),
@@ -275,7 +277,11 @@ class BacktestEngine:
                         observer.on_signal_rejected(
                             sim_time, Signal(legs=[po.leg]), "no_fill_within_timeout"
                         )
-                    elif tif in (TimeInForce.DAY, TimeInForce.GTC):
+                    elif tif == TimeInForce.DAY:
+                        po.scheduled_for_bar_index = bar_idx + 1
+                        still_pending.append(po)
+                    elif tif == TimeInForce.GTC:
+                        po.scheduled_for_bar_index = bar_idx + 1
                         still_pending.append(po)
                     else:
                         observer.on_signal_rejected(
@@ -295,6 +301,12 @@ class BacktestEngine:
             bar_idx += 1
 
         algorithm.on_stop()
+
+        # Reject any remaining pending GTC orders at end of backtest
+        for po in pending:
+            observer.on_signal_rejected(
+                sim_time, Signal(legs=[po.leg]), "gtc_expired_end_of_backtest"
+            )
 
         observer.on_complete(EngineSummary(
             total_bars=len(clock),
