@@ -1353,7 +1353,12 @@ async def close_position_by_id(
 
                 # Update remaining_quantity and determine close status
                 close_qty = close_quantity if close_quantity is not None else (position.remaining_quantity or 0)
-                if not partial:
+
+                # If any leg returned filled_price=None, order is pending (limit/stop not yet filled)
+                if any(lo.get("filled_price") is None for lo in leg_outcomes if lo.get("status") != "rejected"):
+                    position.status = "closing"
+                    # Don't decrement remaining_quantity until fill confirmed
+                elif not partial:
                     if close_quantity is not None and position.remaining_quantity is not None:
                         position.remaining_quantity -= close_quantity
                         if position.remaining_quantity <= 0:
