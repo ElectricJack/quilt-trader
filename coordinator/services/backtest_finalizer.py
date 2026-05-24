@@ -28,6 +28,18 @@ logger = logging.getLogger(__name__)
 ROLLING_WINDOW_DAYS = 90
 
 
+def _sanitize_json(obj):
+    """Replace NaN/Infinity with None so the result is valid JSON."""
+    import math
+    if isinstance(obj, dict):
+        return {k: _sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
+
+
 # ---- Resample / read helpers ----
 
 def resample_to_daily(equity_native_path: Path) -> pd.DataFrame:
@@ -277,9 +289,9 @@ async def finalize_run(
         if trades_path.exists():
             trades_df = pd.read_parquet(trades_path)
             trades_list = trades_df.to_dict(orient="records")
-        r.key_metrics = build_key_metrics(
+        r.key_metrics = _sanitize_json(build_key_metrics(
             daily_df, bench_daily_df, initial_cash=r.initial_cash, trades=trades_list,
-        )
+        ))
         # Top-10 drawdowns
         from coordinator.services.backtest_metrics_qs import top_n_drawdowns
         r.drawdown_periods = top_n_drawdowns(_with_return(daily_df), n=10)
