@@ -183,3 +183,48 @@ def test_options_fill_never_uses_equity_price():
     assert len(obs.fills) == 0, f"Should not fill at equity price, got {len(obs.fills)} fills"
     assert len(obs.rejected) == 1
     assert "no_option_price" in obs.rejected[0][2]
+
+
+def test_option_chain_reprices_with_underlying():
+    """Option prices should change as the underlying moves."""
+    from coordinator.services.backtest_tick_context import BacktestTickContext
+
+    chain_df = _make_chain()  # call bid=8.00 at underlying ~500, strike 500
+
+    class MockDS:
+        def load_market_data(self, s, sym, tf): return None
+        def load_option_chain(self, p, s, e): return chain_df.copy()
+        def list_option_chain_expirations(self, p, s): return [date(2025, 5, 16)]
+
+    # Scenario 1: underlying at $500 (ATM)
+    ctx1 = BacktestTickContext(
+        bars={("polygon", "QQQ", "1day"): pd.DataFrame({
+            "timestamp": [pd.Timestamp("2025-04-15", tz="UTC")],
+            "open": [500.0], "high": [505.0], "low": [495.0], "close": [500.0], "volume": [1e6],
+        })},
+        positions={}, cash=100_000.0,
+        data_service=MockDS(), default_source="polygon",
+    )
+    ctx1.set_sim_time(pd.Timestamp("2025-04-15", tz="UTC").to_pydatetime())
+    ctx1._option_chain_cache[("polygon", "QQQ", date(2025, 5, 16))] = chain_df.copy()
+    chain1 = ctx1.option_chain("QQQ", date(2025, 5, 16))
+    call_price_1 = chain1.calls[0].bid
+
+    # Scenario 2: underlying at $520 (+4%, call goes deeper ITM)
+    ctx2 = BacktestTickContext(
+        bars={("polygon", "QQQ", "1day"): pd.DataFrame({
+            "timestamp": [pd.Timestamp("2025-04-16", tz="UTC")],
+            "open": [520.0], "high": [525.0], "low": [515.0], "close": [520.0], "volume": [1e6],
+        })},
+        positions={}, cash=100_000.0,
+        data_service=MockDS(), default_source="polygon",
+    )
+    ctx2.set_sim_time(pd.Timestamp("2025-04-16", tz="UTC").to_pydatetime())
+    ctx2._option_chain_cache[("polygon", "QQQ", date(2025, 5, 16))] = chain_df.copy()
+    chain2 = ctx2.option_chain("QQQ", date(2025, 5, 16))
+    call_price_2 = chain2.calls[0].bid
+
+    # Call at strike 500 should be more expensive when underlying is at 520 vs 500
+    assert call_price_2 > call_price_1, (
+        f"Call price should increase when underlying rises: was {call_price_1}, now {call_price_2}"
+    )
