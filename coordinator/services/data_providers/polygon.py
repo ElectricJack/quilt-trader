@@ -191,13 +191,17 @@ class PolygonProvider:
                 break
             data = response.json()
             results = data.get("results") or []
-            page_bars = [
-                {
+            page_bars = []
+            for r in results:
+                bar = {
                     "timestamp": datetime.fromtimestamp(r["t"] / 1000, tz=timezone.utc).isoformat(),
                     "open": r["o"], "high": r["h"], "low": r["l"], "close": r["c"], "volume": r["v"],
                 }
-                for r in results
-            ]
+                if "bid" in r:
+                    bar["bid"] = r["bid"]
+                if "ask" in r:
+                    bar["ask"] = r["ask"]
+                page_bars.append(bar)
             all_bars.extend(page_bars)
             if results:
                 last_raw_t = results[-1].get("t")
