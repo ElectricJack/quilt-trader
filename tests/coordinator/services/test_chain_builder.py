@@ -75,3 +75,70 @@ def test_build_chain_from_bars_filters_by_as_of():
 def test_build_chain_from_bars_empty():
     chain = build_chain_from_bars({}, as_of=pd.Timestamp("2024-10-28"))
     assert chain.empty
+
+
+def test_build_chain_computes_implied_volatility():
+    """IV should be non-zero for reasonably priced options."""
+    bars = {
+        "SPY250620C00500000": pd.DataFrame({
+            "timestamp": pd.to_datetime(["2025-03-01"]),
+            "open": [12.0], "high": [13.0], "low": [11.0], "close": [12.5],
+            "volume": [5000],
+        }),
+    }
+    chain = build_chain_from_bars(bars, as_of=pd.Timestamp("2025-03-01"), underlying_price=500.0)
+    assert len(chain) == 1
+    iv = chain.iloc[0]["implied_volatility"]
+    assert iv > 0.05
+    assert iv < 2.0
+
+
+def test_build_chain_spread_varies_with_volume():
+    """Higher volume should produce tighter spreads."""
+    high_vol = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2025-03-01"]),
+        "open": [5.0], "high": [5.5], "low": [4.5], "close": [5.0],
+        "volume": [10000],
+    })
+    low_vol = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2025-03-01"]),
+        "open": [5.0], "high": [5.5], "low": [4.5], "close": [5.0],
+        "volume": [1],
+    })
+    chain_high = build_chain_from_bars(
+        {"SPY250620C00500000": high_vol}, as_of=pd.Timestamp("2025-03-01"),
+    )
+    chain_low = build_chain_from_bars(
+        {"SPY250620C00500000": low_vol}, as_of=pd.Timestamp("2025-03-01"),
+    )
+    spread_high = chain_high.iloc[0]["ask"] - chain_high.iloc[0]["bid"]
+    spread_low = chain_low.iloc[0]["ask"] - chain_low.iloc[0]["bid"]
+    assert spread_low > spread_high
+
+
+def test_build_chain_passes_through_real_bid_ask():
+    """When bar data has bid/ask columns, use them instead of estimating."""
+    bars = {
+        "SPY250620C00500000": pd.DataFrame({
+            "timestamp": pd.to_datetime(["2025-03-01"]),
+            "open": [12.0], "high": [13.0], "low": [11.0], "close": [12.5],
+            "volume": [5000],
+            "bid": [12.30], "ask": [12.70],
+        }),
+    }
+    chain = build_chain_from_bars(bars, as_of=pd.Timestamp("2025-03-01"))
+    assert chain.iloc[0]["bid"] == pytest.approx(12.30)
+    assert chain.iloc[0]["ask"] == pytest.approx(12.70)
+
+
+def test_build_chain_iv_zero_for_expired_contract():
+    """Contracts at or past expiration should have IV=0."""
+    bars = {
+        "SPY250301C00500000": pd.DataFrame({
+            "timestamp": pd.to_datetime(["2025-03-01"]),
+            "open": [5.0], "high": [5.5], "low": [4.5], "close": [5.0],
+            "volume": [100],
+        }),
+    }
+    chain = build_chain_from_bars(bars, as_of=pd.Timestamp("2025-03-01"), underlying_price=500.0)
+    assert chain.iloc[0]["implied_volatility"] == pytest.approx(0.0, abs=0.01)

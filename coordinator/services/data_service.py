@@ -222,7 +222,20 @@ class DataService:
                 bars[sym] = df
         if as_of is None:
             as_of = pd.Timestamp.now()
-        return build_chain_from_bars(bars, as_of=pd.Timestamp(as_of))
+        # Look up underlying price for IV computation
+        underlying_price = None
+        underlying_bars = self.load_market_data(provider, underlying, "1day")
+        if underlying_bars is not None and not underlying_bars.empty:
+            ts = pd.to_datetime(underlying_bars["timestamp"])
+            if ts.dt.tz is not None:
+                ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+            cutoff = pd.Timestamp(as_of)
+            if cutoff.tz is not None:
+                cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+            visible = underlying_bars[ts <= cutoff]
+            if not visible.empty:
+                underlying_price = float(visible.iloc[-1]["close"])
+        return build_chain_from_bars(bars, as_of=pd.Timestamp(as_of), underlying_price=underlying_price)
 
     # -- Market data listing ----------------------------------------------------
 
