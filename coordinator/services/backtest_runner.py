@@ -459,64 +459,43 @@ class BacktestRunner:
         return expirations
 
     async def _download_option_chains(self, underlyings, date_start, date_end, run_id) -> list[str]:
-        """Pre-download option chain snapshots for each monthly expiration.
+        """Pre-download option chain snapshots via the DownloadManager.
 
-        Returns a list of error messages for any chains that failed to download.
+        Creates a download job with data_type='option_chain' for each underlying,
+        so chain downloads appear on the Downloads page alongside bar downloads.
         """
         from coordinator.database.models import BacktestRun
         errors: list[str] = []
 
-        provider = self._dm._providers.get("polygon") if hasattr(self._dm, "_providers") else None
-        if provider is None or not hasattr(provider, "fetch_option_chain"):
-            errors.append("No data provider with options chain support is configured.")
-            return errors
-
         start_d = date_start.date() if hasattr(date_start, "date") else date_start
         end_d = date_end.date() if hasattr(date_end, "date") else date_end
-        expirations = self._monthly_expirations(start_d, end_d)
 
         for underlying in underlyings:
-            for exp in expirations:
-                existing = self._ds.load_option_chain("polygon", underlying, exp)
-                if existing is not None and not existing.empty:
-                    continue
-                try:
-                    _last_db_msg = [None]
-                    async def _chain_status(msg: str) -> None:
-                        if "Pacing" in msg or "Rate limited" in msg or "Fetching…" in msg:
-                            return
-                        if msg == _last_db_msg[0]:
-                            return
-                        _last_db_msg[0] = msg
-                        try:
-                            async with self._sf() as s:
-                                row = (await s.execute(
-                                    select(BacktestRun).where(BacktestRun.id == run_id)
-                                )).scalar_one()
-                                row.progress_message = f"Options chain {underlying} {exp}: {msg}"
-                                await s.commit()
-                        except Exception:
-                            pass
+            try:
+                async with self._sf() as session:
+                    r = (await session.execute(
+                        select(BacktestRun).where(BacktestRun.id == run_id)
+                    )).scalar_one()
+                    r.progress_message = f"Downloading options chains for {underlying}"
+                    await session.commit()
 
-                    df = await provider.fetch_option_chain(underlying, exp, on_status=_chain_status)
-                    if df is not None and not df.empty:
-                        self._ds.save_option_chain("polygon", underlying, exp, df)
-                except Exception as exc:
-                    error_msg = f"Failed to download option chain for {underlying} {exp}: {exc}"
+                dl = await self._dm.create_download(
+                    symbols=[underlying],
+                    date_range_start=start_d,
+                    date_range_end=end_d,
+                    provider="polygon",
+                    data_type="option_chain",
+                )
+                try:
+                    await self._wait_for_download(dl["id"])
+                except RuntimeError as exc:
+                    error_msg = f"Options chain download failed for {underlying}: {exc}"
                     errors.append(error_msg)
-                    logger.warning(error_msg, exc_info=True)
-                    async with self._sf() as session:
-                        r = (await session.execute(
-                            select(BacktestRun).where(BacktestRun.id == run_id)
-                        )).scalar_one()
-                        r.progress_message = error_msg
-                        await session.commit()
-                    if "403" in str(exc) or "Forbidden" in str(exc):
-                        errors.append(
-                            f"Polygon options data not available for {underlying} (403 Forbidden). "
-                            f"Options backtesting requires a Polygon Options subscription."
-                        )
-                        break
+                    logger.warning(error_msg)
+            except Exception as exc:
+                errors.append(f"Failed to start options chain download for {underlying}: {exc}")
+                logger.warning("Options chain download error for %s: %s", underlying, exc)
+
         return errors
 
     async def _progress_pump(
