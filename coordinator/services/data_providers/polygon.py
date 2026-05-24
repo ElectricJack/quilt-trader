@@ -226,6 +226,70 @@ class PolygonProvider:
 
         return all_bars
 
+    async def discover_option_contracts(
+        self,
+        underlying: str,
+        expiration: date,
+        on_status: StatusCallback | None = None,
+        strike_range_pct: float = 0.05,
+        max_contracts: int = 0,
+    ) -> list[dict]:
+        """Discover option contracts for a given underlying + expiration.
+
+        Returns a list of contract dicts with keys: ticker, strike_price, contract_type.
+        Does NOT fetch bars — callers use fetch_bars() per contract.
+        """
+        from datetime import timedelta
+
+        await self._safe_status(on_status, f"Fetching {underlying} price for ATM filtering")
+        underlying_price = None
+        try:
+            price_url = (
+                f"{self.BASE_URL}/v2/aggs/ticker/{underlying}/range"
+                f"/1/day/{(expiration - timedelta(days=7)).isoformat()}/{expiration.isoformat()}"
+            )
+            price_resp = await self._request_with_retry(
+                price_url, {"apiKey": self._api_key, "limit": 5, "sort": "desc"},
+                on_status=on_status,
+            )
+            price_bars = price_resp.json().get("results") or []
+            if price_bars:
+                underlying_price = price_bars[0].get("c")
+        except Exception:
+            pass
+
+        await self._safe_status(on_status, f"Discovering {underlying} contracts for {expiration}")
+        contracts: list[dict] = []
+        url = f"{self.BASE_URL}/v3/reference/options/contracts"
+        params: dict = {
+            "apiKey": self._api_key,
+            "underlying_ticker": underlying,
+            "expiration_date": expiration.isoformat(),
+            "as_of": expiration.isoformat(),
+            "limit": 1000,
+            "sort": "strike_price",
+            "order": "asc",
+        }
+        if underlying_price is not None:
+            params["strike_price.gte"] = round(underlying_price * (1 - strike_range_pct))
+            params["strike_price.lte"] = round(underlying_price * (1 + strike_range_pct))
+        while True:
+            resp = await self._request_with_retry(url, params, on_status=on_status)
+            data = resp.json()
+            for c in data.get("results") or []:
+                contracts.append(c)
+            next_url = data.get("next_url")
+            if not next_url:
+                break
+            url = next_url
+            params = {"apiKey": self._api_key}
+
+        if max_contracts > 0 and underlying_price is not None and len(contracts) > max_contracts:
+            contracts.sort(key=lambda c: abs(c.get("strike_price", 0) - underlying_price))
+            contracts = contracts[:max_contracts]
+
+        return contracts
+
     async def fetch_option_chain(
         self,
         underlying: str,
