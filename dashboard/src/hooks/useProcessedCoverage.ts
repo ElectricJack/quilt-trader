@@ -204,7 +204,7 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     }
   }
 
-  // Options groups
+  // Options groups (OCC-style individual contracts)
   for (const [underlying, contracts] of optionsByUnderlying) {
     const allRanges = contracts.flatMap((c) => c.ranges);
     const allTimeframes = [...new Set(contracts.flatMap((c) => c.timeframes_on_disk))];

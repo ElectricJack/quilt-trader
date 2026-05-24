@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -73,34 +74,41 @@ class AccountLifecycleService:
     async def _fetch_prices_inline(
         self, symbols: set[str], start: date, end: date, account_id: str,
     ) -> None:
-        """Fetch daily bars directly from providers and save to disk."""
-        import os
-        import pandas as pd
-
-        provider = self._get_default_provider()
-        if provider is None:
-            logger.warning("No data provider available for inline price fetch")
+        """Download daily bars through the download manager."""
+        if self._download_manager is None:
             return
-
-        for i, symbol in enumerate(sorted(symbols)):
-            path = self._data_service.market_data_path(self._default_provider, symbol, "1day")
+        from coordinator.services.chain_builder import parse_occ_symbol
+        active = []
+        for sym in sorted(symbols):
+            parsed = parse_occ_symbol(sym)
+            if parsed:
+                exp = date.fromisoformat(parsed["expiration"])
+                if exp < start:
+                    continue
+            path = self._data_service.market_data_path(self._default_provider, sym, "1day")
             if os.path.exists(path):
                 continue
-            try:
-                await self._push_progress(
-                    account_id,
-                    f"Downloading {symbol} ({i+1}/{len(symbols)})...",
-                )
-                bars = await provider.fetch_bars(symbol, "1day", start, end)
-                if bars:
-                    df = pd.DataFrame(bars)
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    df.to_parquet(path, index=False)
-                    logger.info("Fetched %d bars for %s", len(bars), symbol)
-                else:
-                    logger.warning("No bars returned for %s", symbol)
-            except Exception:
-                logger.warning("Failed to download %s", symbol, exc_info=True)
+            active.append(sym)
+
+        if not active:
+            return
+
+        await self._push_progress(
+            account_id,
+            f"Downloading price data for {len(active)} symbol(s)...",
+        )
+        dl = await self._download_manager.create_download(
+            symbols=active,
+            date_range_start=start,
+            date_range_end=end,
+            provider=self._default_provider,
+            timeframe="1day",
+        )
+        while True:
+            status = await self._download_manager.get_download(dl["id"])
+            if status and status.get("status") in ("completed", "failed", "cancelled"):
+                break
+            await asyncio.sleep(1.0)
 
     def _get_default_provider(self):
         """Get the default history provider from the download manager."""

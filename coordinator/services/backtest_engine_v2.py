@@ -141,12 +141,18 @@ class BacktestEngine:
 
         algorithm.on_start(config if config is not None else {}, None)
 
+        import time as _time
+        _t_engine_start = _time.monotonic()
+        _n_bars = 0
+        self._ts_cache: dict[int, tuple] = {}
+
         bar_idx = 0
         while bar_idx < len(clock):
             if cancel.is_set():
                 logger.info("BacktestEngine cancelled at bar %d", bar_idx)
                 return
 
+            _n_bars += 1
             bar = clock.iloc[bar_idx]
             sim_time = (bar["timestamp"].to_pydatetime() +
                         pd.Timedelta(seconds=tf_duration).to_pytimedelta())
@@ -210,15 +216,27 @@ class BacktestEngine:
                 # algo) or synthetic (scraper-only algo with no market deps).
                 fill_bar = bar
                 sym = po.leg.symbol
-                for (src, s, tf), df in ctx._bars.items():
-                    if s == sym and not df.empty:
-                        ts_col = pd.to_datetime(df["timestamp"])
-                        if ts_col.dt.tz is not None:
-                            ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                        at_time = ts_col <= pd.Timestamp(sim_time).tz_localize(None)
-                        if at_time.any():
-                            fill_bar = df.loc[at_time].iloc[-1]
-                        break
+                if sym != clock_symbol:
+                    for (src, s, tf), df in ctx._bars.items():
+                        if s == sym and not df.empty:
+                            import numpy as np
+                            cache_key = id(df)
+                            if cache_key not in self._ts_cache:
+                                ts_col = pd.to_datetime(df["timestamp"])
+                                if ts_col.dt.tz is not None:
+                                    ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                                ns = ts_col.values.astype("int64")
+                                closes = df["close"].values.astype(float)
+                                self._ts_cache[cache_key] = (ns, closes)
+                            ns, _ = self._ts_cache[cache_key]
+                            cutoff = pd.Timestamp(sim_time)
+                            if cutoff.tz is not None:
+                                cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                            cutoff_ns = cutoff.value
+                            idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
+                            if idx >= 0:
+                                fill_bar = df.iloc[idx]
+                            break
                 # Try to fill against THIS bar
                 po.fill_attempted = True
                 fill, advance_for_stop = self._try_fill(
@@ -310,6 +328,8 @@ class BacktestEngine:
 
             bar_idx += 1
 
+        _t_engine_total = _time.monotonic() - _t_engine_start
+        logger.info("[ENGINE_TIMING] bars=%d total=%.3fs", _n_bars, _t_engine_total)
         algorithm.on_stop()
 
         # Reject any remaining pending GTC orders at end of backtest
@@ -393,14 +413,13 @@ class BacktestEngine:
 
         # Cache miss: try loading chain from data_service.
         # Extract underlying from OCC symbol, e.g. "O:SPY260117C00450000" → "SPY"
-        if ctx._data_service is not None and hasattr(ctx._data_service, "load_option_chain"):
+        if ctx._data_service is not None and hasattr(ctx._data_service, "build_chain"):
             underlying = self._extract_underlying(contract_symbol)
             if underlying:
-                # Use sim_time date as the expiration guess
                 exp = ctx._sim_time_now.date() if ctx._sim_time_now else None
                 source = ctx._default_source or "polygon"
                 try:
-                    chain_df = ctx._data_service.load_option_chain(source, underlying, exp)
+                    chain_df = ctx._data_service.build_chain(source, underlying, exp, as_of=ctx._sim_time_now)
                     if chain_df is not None and not chain_df.empty:
                         cache_key = (source, underlying, exp)
                         ctx._option_chain_cache[cache_key] = chain_df
@@ -411,7 +430,7 @@ class BacktestEngine:
                                     row = match_rows.iloc[0]
                                     return float(row.get("ask", 0)) if side == "buy" else float(row.get("bid", 0))
                 except Exception:
-                    logger.debug("Failed to load option chain for %s", underlying, exc_info=True)
+                    logger.debug("Failed to build chain for %s", underlying, exc_info=True)
 
         return None
 
@@ -620,15 +639,25 @@ class BacktestEngine:
         """Get the most recent close price for a symbol from its own data series.
         Falls back to the clock bar's close (which may be 0 for synthetic clocks)."""
         if ctx is not None:
+            import numpy as np
             for (src, s, tf), df in ctx._bars.items():
                 if s == sym and not df.empty:
-                    ts_col = pd.to_datetime(df["timestamp"])
-                    if ts_col.dt.tz is not None:
-                        ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                    cutoff = pd.Timestamp(sim_time).tz_localize(None) if hasattr(sim_time, 'tzinfo') and sim_time.tzinfo else pd.Timestamp(sim_time)
-                    at_time = ts_col <= cutoff
-                    if at_time.any():
-                        return float(df.loc[at_time].iloc[-1]["close"])
+                    cache_key = id(df)
+                    if cache_key not in self._ts_cache:
+                        ts_col = pd.to_datetime(df["timestamp"])
+                        if ts_col.dt.tz is not None:
+                            ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                        ns = ts_col.values.astype("int64")
+                        closes = df["close"].values.astype(float)
+                        self._ts_cache[cache_key] = (ns, closes)
+                    ns, closes = self._ts_cache[cache_key]
+                    cutoff = pd.Timestamp(sim_time)
+                    if cutoff.tz is not None:
+                        cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                    cutoff_ns = cutoff.value
+                    idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
+                    if idx >= 0:
+                        return float(closes[idx])
                     break
         return float(fallback_bar["close"]) if fallback_bar is not None else 0.0
 

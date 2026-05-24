@@ -137,10 +137,32 @@ class QuiltManifest:
                 symbol = a.get("symbol")
                 if not symbol:
                     continue
-                assets.append({
+                entry = {
                     "symbol": symbol,
                     "asset_class": a.get("asset_class", "equities"),
-                })
+                }
+                if a.get("timeframe"):
+                    entry["timeframe"] = a["timeframe"]
+                if a.get("source"):
+                    entry["source"] = a["source"]
+                assets.append(entry)
+
+        raw_data = data.get("data") or []
+        data_deps: list[dict] = []
+        valid_data_types = {"scraper", "csv", "json", "parquet"}
+        if isinstance(raw_data, list):
+            for d in raw_data:
+                if not isinstance(d, dict):
+                    continue
+                source = d.get("source")
+                if not source:
+                    continue
+                dtype = d.get("type", "csv")
+                if dtype not in valid_data_types:
+                    raise ManifestError(
+                        f"data entry type must be one of {valid_data_types}, got {dtype!r}"
+                    )
+                data_deps.append({"source": source, "type": dtype})
 
         raw_data = data.get("data") or []
         data_deps: list[dict] = []

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,6 +170,7 @@ class BacktestRunner:
             await session.commit()
 
         try:
+            t_phase = time.monotonic()
             pkg_dir_name = _package_dir_name(algo_repo_url, algo_name)
             manifest = _load_manifest(pkg_dir_name)
             # Read from manifest.assets (new format) with fallback to
@@ -237,15 +239,21 @@ class BacktestRunner:
                         download_ids.append(dl["id"])
                         await self._wait_for_download(dl["id"])
 
+            logger.info("[TIMING] Stage 1 (market data download) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
+
             # Stage 1b: option chain pre-download for options algorithms
             options_chain_errors: list[str] = []
             if "options" in (manifest.requirements.asset_types or []):
                 option_underlyings = [
                     dep.get("symbol") for dep in deps if dep.get("symbol")
                 ]
-                options_chain_errors = await self._download_option_chains(
+                options_chain_errors = await self._download_option_contracts(
                     option_underlyings, date_range_start, date_range_end, run_id,
                 )
+
+            logger.info("[TIMING] Stage 1b (option chains download) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
 
             # Stage 2: run engine
             async with self._sf() as session:
@@ -309,6 +317,10 @@ class BacktestRunner:
                     "volume": np.zeros(len(dates)),
                 })
 
+            bar_counts = {k: len(v) for k, v in bars.items()}
+            logger.info("[TIMING] Stage 2a (build context / load bars) took %.2fs, bars=%s", time.monotonic() - t_phase, bar_counts)
+            t_phase = time.monotonic()
+
             on_miss = self._make_on_miss(date_range_start, date_range_end)
             # Use a real provider as the default source for on-demand downloads,
             # not "synthetic" (which is only used for the clock when no market
@@ -326,11 +338,15 @@ class BacktestRunner:
                 for dep in deps:
                     symbol = dep.get("symbol")
                     if symbol and self._ds:
-                        expirations = self._ds.list_option_chain_expirations("polygon", symbol)
+                        expirations = self._ds.list_option_expirations("polygon", symbol)
                         for exp in expirations:
-                            df = self._ds.load_option_chain("polygon", symbol, exp)
-                            if df is not None and not df.empty:
-                                ctx._option_chain_cache[("polygon", symbol, exp)] = df
+                            chain_df = self._ds.build_chain("polygon", symbol, exp, as_of=date_range_end)
+                            if chain_df is not None and not chain_df.empty:
+                                ctx._option_chain_cache[("polygon", symbol, exp)] = chain_df
+
+            logger.info("[TIMING] Stage 2b (warm option chain cache) took %.2fs, cached %d chains",
+                        time.monotonic() - t_phase, len(ctx._option_chain_cache))
+            t_phase = time.monotonic()
 
             AlgoClass = _load_algorithm_class(pkg_dir_name, manifest)
             algorithm = AlgoClass()
@@ -356,6 +372,9 @@ class BacktestRunner:
                 queue=chunk_queue, equity_path=equity_native_path, trades_path=trades_path,
             )
             writer.start()
+
+            logger.info("[TIMING] Stage 2c (setup writer/observer) took %.2fs, clock=%d bars (%s)", time.monotonic() - t_phase, len(clock_series), clock_tf)
+            t_phase = time.monotonic()
 
             cancel = CancelToken()
             loop = asyncio.get_running_loop()
@@ -385,6 +404,9 @@ class BacktestRunner:
                 chunk_queue.put(None)
                 writer.join(timeout=30)
 
+            logger.info("[TIMING] Stage 2d (engine execution) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
+
             if writer.is_alive():
                 raise RuntimeError("ParquetWriterThread did not finish within 30s")
             if writer.error:
@@ -403,6 +425,9 @@ class BacktestRunner:
                 if bdf is not None and not bdf.empty:
                     benchmark_bar_df = bdf
 
+            logger.info("[TIMING] Stage 3a (load benchmark) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
+
             # Finalize: resample, compute metrics, persist row.
             # equity_native.parquet may not exist if the mock engine emitted no chunks.
             if equity_native_path.exists():
@@ -410,6 +435,9 @@ class BacktestRunner:
                     run_id=run_id, run_dir=run_dir,
                     session_factory=self._sf, benchmark_bar_df=benchmark_bar_df,
                 )
+
+            logger.info("[TIMING] Stage 3b (finalize) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
 
             # Mark complete + clear progress fields
             async with self._sf() as session:
@@ -460,53 +488,64 @@ class BacktestRunner:
                 current = _date(current.year, current.month + 1, 1)
         return expirations
 
-    async def _download_option_chains(self, underlyings, date_start, date_end, run_id) -> list[str]:
-        """Pre-download option chain snapshots via the DownloadManager.
+    async def _download_option_contracts(self, underlyings, date_start, date_end, run_id) -> list[str]:
+        """Pre-download option contract bars for options algorithms.
 
-        Creates a download job with data_type='option_chain' for each underlying,
-        so chain downloads appear on the Downloads page alongside bar downloads.
+        Discovers contracts via the provider's reference endpoint, then downloads
+        bars for each through the standard fetch_bars pipeline.
         """
         from coordinator.database.models import BacktestRun
         errors: list[str] = []
 
         start_d = date_start.date() if hasattr(date_start, "date") else date_start
         end_d = date_end.date() if hasattr(date_end, "date") else date_end
+        provider_name = "polygon"
+        provider = self._dm._providers.get(provider_name)
+        if provider is None or not hasattr(provider, "discover_option_contracts"):
+            return errors
 
         for underlying in underlyings:
             try:
-                # Skip if all monthly expirations are already cached
                 expirations = self._monthly_expirations(start_d, end_d)
-                all_cached = all(
-                    self._ds.load_option_chain("polygon", underlying, exp) is not None
-                    for exp in expirations
-                )
-                if all_cached:
-                    logger.info("All option chains for %s already cached, skipping download", underlying)
-                    continue
+                for exp in expirations:
+                    existing = self._ds.list_option_contracts(provider_name, underlying, exp)
+                    if existing:
+                        continue
 
-                async with self._sf() as session:
-                    r = (await session.execute(
-                        select(BacktestRun).where(BacktestRun.id == run_id)
-                    )).scalar_one()
-                    r.progress_message = f"Downloading options chains for {underlying}"
-                    await session.commit()
+                    async with self._sf() as session:
+                        r = (await session.execute(
+                            select(BacktestRun).where(BacktestRun.id == run_id)
+                        )).scalar_one()
+                        r.progress_message = f"Discovering {underlying} contracts for {exp}"
+                        await session.commit()
 
-                dl = await self._dm.create_download(
-                    symbols=[underlying],
-                    date_range_start=start_d,
-                    date_range_end=end_d,
-                    provider="polygon",
-                    data_type="option_chain",
-                )
-                try:
-                    await self._wait_for_download(dl["id"])
-                except RuntimeError as exc:
-                    error_msg = f"Options chain download failed for {underlying}: {exc}"
-                    errors.append(error_msg)
-                    logger.warning(error_msg)
+                    contracts = await provider.discover_option_contracts(underlying, exp)
+                    if not contracts:
+                        continue
+
+                    # Strip O: prefix for storage
+                    symbols = [c["ticker"].removeprefix("O:") for c in contracts]
+
+                    async with self._sf() as session:
+                        r = (await session.execute(
+                            select(BacktestRun).where(BacktestRun.id == run_id)
+                        )).scalar_one()
+                        r.progress_message = f"Downloading {len(symbols)} {underlying} contracts for {exp}"
+                        await session.commit()
+
+                    dl = await self._dm.create_download(
+                        symbols=symbols,
+                        date_range_start=exp,
+                        date_range_end=exp,
+                        provider=provider_name,
+                        timeframe="1day",
+                    )
+                    try:
+                        await self._wait_for_download(dl["id"])
+                    except RuntimeError as exc:
+                        errors.append(f"Contract bars download failed for {underlying} {exp}: {exc}")
             except Exception as exc:
-                errors.append(f"Failed to start options chain download for {underlying}: {exc}")
-                logger.warning("Options chain download error for %s: %s", underlying, exc)
+                errors.append(f"Failed option contract download for {underlying}: {exc}")
 
         return errors
 

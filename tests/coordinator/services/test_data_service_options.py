@@ -1,44 +1,71 @@
-import pytest
+import os
+import tempfile
 import pandas as pd
+import pytest
 from datetime import date
 from coordinator.services.data_service import DataService
 
+
 @pytest.fixture
-def data_service(tmp_path):
-    return DataService(
-        market_data_dir=str(tmp_path / "market"),
-        custom_data_dir=str(tmp_path / "custom"),
-    )
+def svc(tmp_path):
+    market = tmp_path / "market"
+    custom = tmp_path / "custom"
+    market.mkdir()
+    custom.mkdir()
+    return DataService(market_data_dir=str(market), custom_data_dir=str(custom))
 
-def _sample_chain_df():
-    return pd.DataFrame([
-        {"ticker": "O:SPY250620C00450000", "strike": 450.0, "option_type": "call",
-         "bid": 5.1, "ask": 5.3, "last": 5.2, "volume": 1200,
-         "open_interest": 8000, "implied_volatility": 0.25},
-        {"ticker": "O:SPY250620P00450000", "strike": 450.0, "option_type": "put",
-         "bid": 4.1, "ask": 4.3, "last": 4.2, "volume": 900,
-         "open_interest": 6000, "implied_volatility": 0.27},
-    ])
 
-def test_option_chain_path(data_service):
-    path = data_service.option_chain_path("polygon", "SPY", date(2025, 6, 20))
-    assert path.endswith("polygon/SPY/options/2025-06-20/chain.parquet")
+def _write_contract_bars(svc, provider, symbol, df):
+    svc.save_market_data(provider, symbol, "1day", df)
 
-def test_save_and_load_option_chain(data_service):
-    df = _sample_chain_df()
-    data_service.save_option_chain("polygon", "SPY", date(2025, 6, 20), df)
-    loaded = data_service.load_option_chain("polygon", "SPY", date(2025, 6, 20))
-    assert loaded is not None
-    assert len(loaded) == 2
-    assert set(loaded.columns) == set(df.columns)
 
-def test_load_option_chain_missing_returns_none(data_service):
-    result = data_service.load_option_chain("polygon", "SPY", date(2025, 6, 20))
-    assert result is None
+def test_list_option_contracts_finds_matching_contracts(svc):
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2024-10-25"]),
+        "open": [5.0], "high": [6.0], "low": [4.0], "close": [5.5], "volume": [100],
+    })
+    _write_contract_bars(svc, "polygon", "SPY241029C00580000", df)
+    _write_contract_bars(svc, "polygon", "SPY241029P00580000", df)
+    _write_contract_bars(svc, "polygon", "SPY241115C00580000", df)  # different expiration
+    _write_contract_bars(svc, "polygon", "QQQ241029C00400000", df)  # different underlying
 
-def test_list_option_chain_expirations(data_service):
-    df = _sample_chain_df()
-    data_service.save_option_chain("polygon", "SPY", date(2025, 6, 20), df)
-    data_service.save_option_chain("polygon", "SPY", date(2025, 7, 18), df)
-    expirations = data_service.list_option_chain_expirations("polygon", "SPY")
-    assert sorted(expirations) == [date(2025, 6, 20), date(2025, 7, 18)]
+    contracts = svc.list_option_contracts("polygon", "SPY", date(2024, 10, 29))
+    assert sorted(contracts) == ["SPY241029C00580000", "SPY241029P00580000"]
+
+
+def test_list_option_contracts_empty(svc):
+    assert svc.list_option_contracts("polygon", "SPY", date(2024, 10, 29)) == []
+
+
+def test_list_option_expirations(svc):
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2024-10-25"]),
+        "open": [5.0], "high": [6.0], "low": [4.0], "close": [5.5], "volume": [100],
+    })
+    _write_contract_bars(svc, "polygon", "SPY241029C00580000", df)
+    _write_contract_bars(svc, "polygon", "SPY241115C00580000", df)
+    _write_contract_bars(svc, "polygon", "SPY241115P00580000", df)
+
+    exps = svc.list_option_expirations("polygon", "SPY")
+    assert exps == [date(2024, 10, 29), date(2024, 11, 15)]
+
+
+def test_build_chain_loads_and_builds(svc):
+    df1 = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2024-10-25", "2024-10-28"]),
+        "open": [5.0, 5.5], "high": [6.0, 6.5], "low": [4.0, 4.5],
+        "close": [5.5, 6.0], "volume": [100, 150],
+    })
+    df2 = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2024-10-25", "2024-10-28"]),
+        "open": [3.0, 3.5], "high": [4.0, 4.5], "low": [2.0, 2.5],
+        "close": [3.5, 4.0], "volume": [80, 120],
+    })
+    _write_contract_bars(svc, "polygon", "SPY241029C00580000", df1)
+    _write_contract_bars(svc, "polygon", "SPY241029P00580000", df2)
+
+    chain = svc.build_chain("polygon", "SPY", date(2024, 10, 29), as_of=pd.Timestamp("2024-10-28"))
+    assert len(chain) == 2
+    call = chain[chain["option_type"] == "call"].iloc[0]
+    assert call["last"] == pytest.approx(6.0)
+    assert call["strike"] == 580.0

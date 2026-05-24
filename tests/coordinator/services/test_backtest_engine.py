@@ -193,10 +193,11 @@ def test_options_leg_without_chain_data_falls_back_to_bar():
         slippage=SlippageModel(market_bps=0), buy_fees=[], sell_fees=[],
         initial_cash=50_000.0, observer=obs, cancel_token=CancelToken(),
     )
-    # No error — options are now supported; without chain data, falls back to bar OHLCV
+    # No error — options are now supported; without chain data, the order is
+    # rejected with "no_option_price" (never fall back to equity bar prices).
     assert obs.error is None
-    assert len(obs.fills) == 1
-    assert obs.fills[0].asset_type == "options"
+    assert len(obs.fills) == 0
+    assert any("no_option_price" in r[2] for r in obs.rejected)
 
 
 def test_cancel_token_stops_engine_cleanly():
@@ -250,7 +251,7 @@ def test_ioc_order_expires_after_one_bar():
 
 def test_options_fill_uses_contract_bid_ask():
     """Options legs fill at contract ask (buy) / bid (sell), not underlying OHLCV."""
-    from sdk.signals import Signal, SignalLeg, SignalType, OrderType
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
     import pandas as _pd
 
     class OptionsBuyAlgo:
@@ -263,9 +264,6 @@ def test_options_fill_uses_contract_bid_ask():
                 symbol="SPY", signal_type=SignalType.BUY, quantity=1,
                 order_type=OrderType.LIMIT, limit_price=90.0,
                 time_in_force=TimeInForce.IOC,
-                symbol="O:SPY260117C00450000",
-                signal_type=SignalType.BUY, quantity=1,
-                asset_type="options", order_type=OrderType.MARKET,
             )])]
         def on_stop(self): return {}
         def save_state(self): return {}
@@ -274,7 +272,7 @@ def test_options_fill_uses_contract_bid_ask():
     ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
     obs = RecordingObserver()
     BacktestEngine().run(
-        algorithm=IOCAlgo(), ctx=ctx, clock_series=clock,
+        algorithm=OptionsBuyAlgo(), ctx=ctx, clock_series=clock,
         clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
         slippage=SlippageModel(), buy_fees=[], sell_fees=[],
         initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
@@ -365,43 +363,34 @@ def test_gtc_order_persists_until_end_if_never_crossed():
 
     class GTCNeverFillAlgo:
         def __init__(self): self._fired = False
-    clock = _bars("2024-01-01", 5, opens=[450, 452, 455, 460, 465])
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                order_type=OrderType.LIMIT, limit_price=50.0,
+                time_in_force=TimeInForce.GTC,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
 
-    chain_df = _pd.DataFrame([
-        {"ticker": "O:SPY260117C00450000", "strike": 450.0, "option_type": "call",
-         "bid": 5.0, "ask": 5.4, "last": 5.2, "volume": 1000,
-         "open_interest": 5000, "implied_volatility": 0.25},
-    ])
-
-    class MockDS:
-        def load_market_data(self, s, sym, tf): return None
-        def load_option_chain(self, p, s, e): return chain_df
-        def list_option_chain_expirations(self, p, s): return []
-
-    ctx = BacktestTickContext(
-        bars={("polygon", "SPY", "1day"): clock},
-        positions={}, cash=10_000.0,
-        data_service=MockDS(), default_source="polygon",
-    )
+    clock = _bars("2024-01-01", 5)
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
     obs = RecordingObserver()
     BacktestEngine().run(
-        algorithm=OptionsBuyAlgo(), ctx=ctx, clock_series=clock,
+        algorithm=GTCNeverFillAlgo(), ctx=ctx, clock_series=clock,
         clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
-        slippage=SlippageModel(market_bps=0),
-        buy_fees=[], sell_fees=[],
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
         initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
     )
-    assert obs.error is None
-    assert len(obs.fills) == 1
-    fill = obs.fills[0]
-    # Buy fills at ask price for options
-    assert fill.fill_price == pytest.approx(5.4, abs=0.1)
-    assert fill.asset_type == "options"
+    assert len(obs.fills) == 0
+    assert any("gtc_expired" in r[2] for r in obs.rejected)
 
 
 def test_options_limit_fill_uses_contract_bid_ask():
     """Options limit orders fill using contract bid/ask from chain data."""
-    from sdk.signals import Signal, SignalLeg, SignalType, OrderType
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
     import pandas as _pd
 
     class OptionsLimitAlgo:
@@ -416,10 +405,6 @@ def test_options_limit_fill_uses_contract_bid_ask():
                 symbol="SPY", signal_type=SignalType.BUY, quantity=1,
                 order_type=OrderType.LIMIT, limit_price=50.0,
                 time_in_force=TimeInForce.GTC,
-                symbol="O:SPY260117C00450000",
-                signal_type=SignalType.BUY, quantity=1,
-                asset_type="options", order_type=OrderType.LIMIT,
-                limit_price=self.limit_price,
             )])]
         def on_stop(self): return {}
         def save_state(self): return {}
@@ -428,7 +413,7 @@ def test_options_limit_fill_uses_contract_bid_ask():
     ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
     obs = RecordingObserver()
     BacktestEngine().run(
-        algorithm=GTCNeverFillAlgo(), ctx=ctx, clock_series=clock,
+        algorithm=OptionsLimitAlgo(limit_price=50.0), ctx=ctx, clock_series=clock,
         clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
         slippage=SlippageModel(), buy_fees=[], sell_fees=[],
         initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
@@ -469,43 +454,3 @@ def test_algorithm_can_cancel_gtc_order():
     assert len(obs.fills) == 0
     # Should be cancelled, not gtc_expired
     assert any("cancelled" in r[2] for r in obs.rejected)
-    chain_df = _pd.DataFrame([
-        {"ticker": "O:SPY260117C00450000", "strike": 450.0, "option_type": "call",
-         "bid": 5.0, "ask": 5.4, "last": 5.2, "volume": 1000,
-         "open_interest": 5000, "implied_volatility": 0.25},
-    ])
-
-    class MockDS:
-        def load_market_data(self, s, sym, tf): return None
-        def load_option_chain(self, p, s, e): return chain_df
-        def list_option_chain_expirations(self, p, s): return []
-
-    def _run(limit_price):
-        clock = _bars("2024-01-01", 5, opens=[450, 452, 455, 460, 465])
-        ctx = BacktestTickContext(
-            bars={("polygon", "SPY", "1day"): clock},
-            positions={}, cash=10_000.0,
-            data_service=MockDS(), default_source="polygon",
-        )
-        obs = RecordingObserver()
-        BacktestEngine().run(
-            algorithm=OptionsLimitAlgo(limit_price=limit_price),
-            ctx=ctx, clock_series=clock,
-            clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
-            slippage=SlippageModel(market_bps=0),
-            buy_fees=[], sell_fees=[],
-            initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
-        )
-        return obs
-
-    # Limit at 6.0 (above ask 5.4) — should fill at ask price
-    obs_fill = _run(limit_price=6.0)
-    assert obs_fill.error is None
-    assert len(obs_fill.fills) == 1
-    assert obs_fill.fills[0].fill_price == pytest.approx(5.4, abs=0.01)
-    assert obs_fill.fills[0].asset_type == "options"
-
-    # Limit at 4.0 (below ask 5.4) — should NOT fill
-    obs_no_fill = _run(limit_price=4.0)
-    assert obs_no_fill.error is None
-    assert len(obs_no_fill.fills) == 0
