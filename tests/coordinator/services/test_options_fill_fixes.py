@@ -228,3 +228,53 @@ def test_option_chain_reprices_with_underlying():
     assert call_price_2 > call_price_1, (
         f"Call price should increase when underlying rises: was {call_price_1}, now {call_price_2}"
     )
+
+
+def test_short_option_mtm_reflects_liability():
+    """A short option position should show as a LIABILITY in portfolio value."""
+    class SellAndHoldAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="O:QQQ250516C00500000",
+                signal_type=SignalType.SELL, quantity=1,
+                asset_type="options", order_type=OrderType.MARKET,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _make_clock()
+    chain_df = _make_chain()  # call bid=8.00, ask=8.50
+    class MockDS:
+        def load_market_data(self, s, sym, tf): return None
+        def load_option_chain(self, p, s, e): return chain_df
+        def list_option_chain_expirations(self, p, s): return [date(2025, 5, 16)]
+
+    ctx = BacktestTickContext(
+        bars={("polygon", "QQQ", "1day"): clock}, positions={}, cash=100_000.0,
+        data_service=MockDS(), default_source="polygon",
+    )
+    ctx._option_chain_cache[("polygon", "QQQ", date(2025, 5, 16))] = chain_df
+
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=SellAndHoldAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="QQQ",
+        slippage=SlippageModel(market_bps=0), buy_fees=[], sell_fees=[],
+        initial_cash=100_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert obs.error is None
+    # After selling 1 call at $8 bid, received $800 premium.
+    # Cash = 100,000 + 800 = 100,800
+    # But we OWE the option — liability at mid price ~$8.25 * 100 = $825
+    # Portfolio = cash + positions_value = 100,800 + (-825) ≈ $99,975
+    # Should be LESS than starting capital (small loss from bid/mid spread)
+    final_pv = obs.equity[-1]["pv"]
+    final_cash = obs.equity[-1]["cash"]
+    assert final_cash == pytest.approx(100_800.0, abs=10.0), f"Cash should be ~100,800, got {final_cash}"
+    assert final_pv < final_cash, f"Portfolio {final_pv} should be less than cash {final_cash} (short liability)"
+    # Portfolio should be close to starting value, slightly less due to bid/mid spread
+    assert 99_000 < final_pv < 100_100, f"Portfolio should be ~$99,975, got {final_pv}"
