@@ -206,6 +206,58 @@ class DataService:
                     continue
         return sorted(expirations)
 
+    def list_option_contracts(
+        self, provider: str, underlying: str, expiration: "date",
+    ) -> list[str]:
+        """List OCC symbols on disk for a given underlying + expiration."""
+        from coordinator.services.chain_builder import parse_occ_symbol
+        provider_dir = os.path.join(self._market_dir, provider)
+        if not os.path.isdir(provider_dir):
+            return []
+        exp_str = expiration.isoformat()
+        result = []
+        for name in os.listdir(provider_dir):
+            parsed = parse_occ_symbol(name)
+            if parsed and parsed["underlying"] == underlying and parsed["expiration"] == exp_str:
+                if os.path.exists(os.path.join(provider_dir, name, "1day.parquet")):
+                    result.append(name)
+        return sorted(result)
+
+    def list_option_expirations(self, provider: str, underlying: str) -> list:
+        """List unique expiration dates for an underlying from OCC bar files on disk."""
+        from datetime import date as _date
+        from coordinator.services.chain_builder import parse_occ_symbol
+        provider_dir = os.path.join(self._market_dir, provider)
+        if not os.path.isdir(provider_dir):
+            return []
+        expirations = set()
+        for name in os.listdir(provider_dir):
+            parsed = parse_occ_symbol(name)
+            if parsed and parsed["underlying"] == underlying:
+                if os.path.exists(os.path.join(provider_dir, name, "1day.parquet")):
+                    expirations.add(_date.fromisoformat(parsed["expiration"]))
+        return sorted(expirations)
+
+    def build_chain(
+        self, provider: str, underlying: str, expiration, as_of=None,
+    ) -> pd.DataFrame:
+        """Build an option chain from stored contract bar files."""
+        from datetime import date as _date
+        from coordinator.services.chain_builder import build_chain_from_bars
+        if isinstance(expiration, str):
+            expiration = _date.fromisoformat(expiration)
+        contracts = self.list_option_contracts(provider, underlying, expiration)
+        if not contracts:
+            return pd.DataFrame()
+        bars = {}
+        for sym in contracts:
+            df = self.load_market_data(provider, sym, "1day")
+            if df is not None and not df.empty:
+                bars[sym] = df
+        if as_of is None:
+            as_of = pd.Timestamp.now()
+        return build_chain_from_bars(bars, as_of=pd.Timestamp(as_of))
+
     # -- Market data listing ----------------------------------------------------
 
     def list_available_market_data(self) -> list[dict]:
