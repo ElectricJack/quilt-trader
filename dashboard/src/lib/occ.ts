@@ -1,5 +1,5 @@
 // OCC format: 1-6 letter underlying + 6 digit date (YYMMDD) + C/P + 8 digit strike
-const OCC_RE = /^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/;
+const OCC_RE = /^(?:O:)?([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/;
 
 export interface ParsedOCC {
   underlying: string;
