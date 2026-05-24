@@ -317,6 +317,26 @@ class BacktestEngine:
                 pending = []
                 ctx._cancel_orders_requested = False
 
+            # ---- 2b. Expire options at expiration ----
+            cash, positions = self._settle_expired_options(
+                cash, positions, sim_time, ctx, observer, all_fills,
+            )
+            # Also cancel pending orders for expired contracts
+            still_pending2 = []
+            for po in pending:
+                if po.leg.asset_type == "options":
+                    from coordinator.services.chain_builder import parse_occ_symbol
+                    parsed = parse_occ_symbol(po.leg.symbol)
+                    if parsed:
+                        from datetime import date as _date
+                        exp = _date.fromisoformat(parsed["expiration"])
+                        sim_date = sim_time.date() if hasattr(sim_time, "date") else sim_time
+                        if sim_date > exp:
+                            observer.on_signal_rejected(sim_time, Signal(legs=[po.leg]), "contract_expired")
+                            continue
+                still_pending2.append(po)
+            pending = still_pending2
+
             # ---- 3. Mark-to-market equity point ----
             mtm_value = cash + self._positions_market_value(positions, bar, ctx=ctx, sim_time=sim_time)
             observer.on_equity_point(
@@ -634,6 +654,84 @@ class BacktestEngine:
         if ps.quantity == 0:
             del positions[key]
         return cash
+
+    def _settle_expired_options(
+        self, cash, positions, sim_time, ctx, observer, all_fills,
+    ) -> tuple[float, dict]:
+        """Auto-settle expired option positions.
+
+        ITM options are exercised/assigned at intrinsic value.
+        OTM options expire worthless.
+        """
+        from coordinator.services.chain_builder import parse_occ_symbol
+        from datetime import date as _date
+
+        sim_date = sim_time.date() if hasattr(sim_time, "date") else sim_time
+        expired = []
+        for (sym,), ps in list(positions.items()):
+            if ps.asset_type != "options":
+                continue
+            parsed = parse_occ_symbol(sym)
+            if parsed is None:
+                continue
+            exp = _date.fromisoformat(parsed["expiration"])
+            if sim_date <= exp:
+                continue
+            expired.append((sym, ps, parsed))
+
+        for sym, ps, parsed in expired:
+            exp = _date.fromisoformat(parsed["expiration"])
+            underlying_price = self._lookup_symbol_close(
+                parsed["underlying"], sim_time, ctx, None,
+            )
+            if underlying_price == 0.0:
+                underlying_price = parsed["strike"]
+
+            if parsed["option_type"] == "call":
+                intrinsic = max(0.0, underlying_price - parsed["strike"])
+            else:
+                intrinsic = max(0.0, parsed["strike"] - underlying_price)
+
+            multiplier = 100
+            qty = abs(ps.quantity)
+            is_short = ps.quantity < 0
+
+            if intrinsic > 0:
+                # ITM settlement
+                if is_short:
+                    settlement = intrinsic * qty * multiplier
+                    realized = (ps.avg_price - intrinsic) * qty * multiplier
+                    cash -= settlement
+                    side = "buy"
+                else:
+                    settlement = intrinsic * qty * multiplier
+                    realized = (intrinsic - ps.avg_price) * qty * multiplier
+                    cash += settlement
+                    side = "sell"
+            else:
+                # OTM — expires worthless
+                settlement = 0.0
+                if is_short:
+                    realized = ps.avg_price * qty * multiplier
+                else:
+                    realized = -(ps.avg_price * qty * multiplier)
+                side = "buy" if is_short else "sell"
+
+            fill = FillRecord(
+                timestamp=sim_time,
+                symbol=sym, asset_type="options",
+                side=side, quantity=qty,
+                requested_price=intrinsic, fill_price=intrinsic,
+                slippage_dollars=0.0, slippage_bps_applied=0.0,
+                fees=0.0, fee_breakdown=[],
+                signal_id=f"expiry-{sym}",
+                realized_pnl=realized,
+            )
+            all_fills.append(fill)
+            observer.on_fill(fill)
+            del positions[(sym,)]
+
+        return cash, positions
 
     def _lookup_symbol_close(self, sym: str, sim_time, ctx, fallback_bar) -> float:
         """Get the most recent close price for a symbol from its own data series.

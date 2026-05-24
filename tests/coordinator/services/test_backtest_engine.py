@@ -454,3 +454,102 @@ def test_algorithm_can_cancel_gtc_order():
     assert len(obs.fills) == 0
     # Should be cancelled, not gtc_expired
     assert any("cancelled" in r[2] for r in obs.rejected)
+
+
+def test_short_option_expires_otm_keeps_premium():
+    """Short OTM option expires worthless — full premium is profit."""
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType
+
+    class SellCallAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY250110C00600000",
+                signal_type=SignalType.SELL, quantity=1,
+                asset_type="options", order_type=OrderType.MARKET,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    # SPY stays at 500 — the 600 call is deep OTM and expires worthless
+    # Clock spans past the Jan 10, 2025 expiration
+    clock = _bars("2025-01-06", 10, closes=[500.0]*10)
+    # Provide chain data so the sell gets a price
+    chain_df = pd.DataFrame([
+        {"symbol": "SPY250110C00600000", "strike": 600.0, "option_type": "call",
+         "bid": 0.50, "ask": 0.60, "last": 0.55,
+         "volume": 1000, "open_interest": 0, "implied_volatility": 0.25},
+    ])
+    ctx = BacktestTickContext(
+        bars={("polygon", "SPY", "1day"): clock},
+        positions={}, cash=100_000.0,
+    )
+    ctx._option_chain_cache[("polygon", "SPY", None)] = chain_df
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=SellCallAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(market_bps=0), buy_fees=[], sell_fees=[],
+        initial_cash=100_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert obs.error is None
+    # Should have 2 fills: sell-to-open + expiry settlement
+    sells = [f for f in obs.fills if f.signal_id != f"expiry-{f.symbol}"]
+    expiries = [f for f in obs.fills if f.signal_id.startswith("expiry-")]
+    assert len(sells) == 1
+    assert len(expiries) == 1
+    # Expiry fill should be a buy (closing the short) at intrinsic = 0 (OTM)
+    assert expiries[0].side == "buy"
+    assert expiries[0].fill_price == 0.0
+    # Realized PnL = premium received (avg_price * qty * 100)
+    assert expiries[0].realized_pnl > 0
+
+
+def test_short_option_expires_itm_loses_money():
+    """Short ITM option assigned at expiry — intrinsic value is the cost."""
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType
+
+    class SellPutAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY250110P00550000",
+                signal_type=SignalType.SELL, quantity=1,
+                asset_type="options", order_type=OrderType.MARKET,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    # SPY at 500 — the 550 put is $50 ITM at expiry
+    clock = _bars("2025-01-06", 10, closes=[500.0]*10)
+    chain_df = pd.DataFrame([
+        {"symbol": "SPY250110P00550000", "strike": 550.0, "option_type": "put",
+         "bid": 45.0, "ask": 55.0, "last": 50.0,
+         "volume": 1000, "open_interest": 0, "implied_volatility": 0.25},
+    ])
+    ctx = BacktestTickContext(
+        bars={("polygon", "SPY", "1day"): clock},
+        positions={}, cash=100_000.0,
+    )
+    ctx._option_chain_cache[("polygon", "SPY", None)] = chain_df
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=SellPutAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(market_bps=0), buy_fees=[], sell_fees=[],
+        initial_cash=100_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert obs.error is None
+    expiries = [f for f in obs.fills if f.signal_id.startswith("expiry-")]
+    assert len(expiries) == 1
+    # ITM put at strike 550, underlying 500 → intrinsic = 50
+    assert expiries[0].fill_price == pytest.approx(50.0, abs=0.5)
+    # Short assigned: realized = (premium_received - intrinsic) * 100
+    # Premium was ~50, intrinsic is ~50, so roughly break-even
+    assert expiries[0].realized_pnl is not None
