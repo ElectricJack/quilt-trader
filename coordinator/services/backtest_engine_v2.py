@@ -558,23 +558,48 @@ class BacktestEngine:
         ps = positions.get(key) or _PositionState(asset_type=fill.asset_type)
         multiplier = 100 if fill.asset_type == "options" else 1
         notional = fill.fill_price * fill.quantity * multiplier
+
         if fill.side == "buy":
-            # Weighted average price update
-            total_qty = ps.quantity + fill.quantity
-            if total_qty == 0:
-                ps.avg_price = 0.0
+            if ps.quantity < 0:
+                # Buy-to-close: covering a short position
+                close_qty = min(fill.quantity, abs(ps.quantity))
+                realized = (ps.avg_price - fill.fill_price) * close_qty * multiplier - fill.fees
+                fill.realized_pnl = realized
+                ps.quantity += fill.quantity
+                if ps.quantity == 0:
+                    ps.avg_price = 0.0
+                cash -= notional + fill.fees
             else:
-                ps.avg_price = (ps.avg_price * ps.quantity + fill.fill_price * fill.quantity) / total_qty
-            ps.quantity = total_qty
-            cash -= notional + fill.fees
+                # Buy-to-open: adding to long position
+                total_qty = ps.quantity + fill.quantity
+                if total_qty == 0:
+                    ps.avg_price = 0.0
+                else:
+                    ps.avg_price = (ps.avg_price * ps.quantity + fill.fill_price * fill.quantity) / total_qty
+                ps.quantity = total_qty
+                cash -= notional + fill.fees
         else:  # sell
-            # Realized PnL on the sold portion
-            realized = (fill.fill_price - ps.avg_price) * fill.quantity * multiplier - fill.fees
-            fill.realized_pnl = realized
-            ps.quantity -= fill.quantity
-            if ps.quantity == 0:
-                ps.avg_price = 0.0
-            cash += notional - fill.fees
+            if ps.quantity > 0:
+                # Sell-to-close: closing a long position
+                close_qty = min(fill.quantity, ps.quantity)
+                realized = (fill.fill_price - ps.avg_price) * close_qty * multiplier - fill.fees
+                fill.realized_pnl = realized
+                ps.quantity -= fill.quantity
+                if ps.quantity == 0:
+                    ps.avg_price = 0.0
+                cash += notional - fill.fees
+            else:
+                # Sell-to-open: creating/adding to short position
+                existing_short = abs(ps.quantity)
+                new_short = existing_short + fill.quantity
+                if existing_short == 0:
+                    ps.avg_price = fill.fill_price
+                else:
+                    ps.avg_price = (ps.avg_price * existing_short + fill.fill_price * fill.quantity) / new_short
+                ps.quantity = -new_short  # negative = short
+                fill.realized_pnl = None  # No realized PnL on opening
+                cash += notional - fill.fees  # Receive premium
+
         positions[key] = ps
         if ps.quantity == 0:
             del positions[key]
