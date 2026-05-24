@@ -474,6 +474,16 @@ class BacktestRunner:
 
         for underlying in underlyings:
             try:
+                # Skip if all monthly expirations are already cached
+                expirations = self._monthly_expirations(start_d, end_d)
+                all_cached = all(
+                    self._ds.load_option_chain("polygon", underlying, exp) is not None
+                    for exp in expirations
+                )
+                if all_cached:
+                    logger.info("All option chains for %s already cached, skipping download", underlying)
+                    continue
+
                 async with self._sf() as session:
                     r = (await session.execute(
                         select(BacktestRun).where(BacktestRun.id == run_id)
