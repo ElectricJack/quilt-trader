@@ -269,44 +269,87 @@ class BacktestTickContext(TickContext):
         return float(atm_row["strike"])
 
     def _reprice_chain(self, chain_df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-        """Adjust cached option prices based on current underlying price.
+        """Reprice option chain using Black-Scholes.
 
-        Vectorized: computes intrinsic value shift for all contracts at once.
+        Accounts for delta (underlying movement), theta (time decay),
+        and vega (volatility). Uses the chain's implied_volatility column
+        if available; falls back to 25% vol if IV is zero.
         """
-        import numpy as np
+        from coordinator.services.options_math import bs_price
+        from coordinator.services.chain_builder import parse_occ_symbol
+        from datetime import date as _date
 
         underlying_price = self._get_underlying_price(symbol)
         if underlying_price is None:
             return chain_df
 
         ref_key = "_ref_price_" + symbol
+        ref_time_key = "_ref_time_" + symbol
         ref_price = getattr(self, ref_key, None)
+        ref_time = getattr(self, ref_time_key, None)
         if ref_price is None:
             ref_price = self._infer_snapshot_underlying(chain_df)
             if ref_price is None:
                 return chain_df
             setattr(self, ref_key, ref_price)
+        if ref_time is None:
+            ref_time = pd.Timestamp(self._sim_time_now)
+            setattr(self, ref_time_key, ref_time)
 
-        if abs(underlying_price - ref_price) < 0.01:
+        now = pd.Timestamp(self._sim_time_now)
+        if abs(underlying_price - ref_price) < 0.01 and ref_time == now:
             return chain_df
 
         repriced = chain_df.copy()
-        strikes = repriced["strike"].values.astype(float)
-        is_call = (repriced["option_type"] == "call").values
+        risk_free = 0.04
 
-        old_call_intrinsic = np.maximum(0.0, ref_price - strikes)
-        new_call_intrinsic = np.maximum(0.0, underlying_price - strikes)
-        old_put_intrinsic = np.maximum(0.0, strikes - ref_price)
-        new_put_intrinsic = np.maximum(0.0, strikes - underlying_price)
+        new_last = []
+        new_bid = []
+        new_ask = []
+        for _, row in repriced.iterrows():
+            strike = float(row["strike"])
+            opt_type = str(row["option_type"])
+            old_last = float(row.get("last", 0))
+            old_bid = float(row.get("bid", 0))
+            old_ask = float(row.get("ask", 0))
+            iv = float(row.get("implied_volatility", 0))
+            if iv <= 0:
+                iv = 0.25
 
-        delta = np.where(is_call,
-                         new_call_intrinsic - old_call_intrinsic,
-                         new_put_intrinsic - old_put_intrinsic)
+            parsed = parse_occ_symbol(str(row.get("symbol", "")))
+            if parsed is None:
+                new_last.append(old_last)
+                new_bid.append(old_bid)
+                new_ask.append(old_ask)
+                continue
 
-        for col in ("bid", "ask", "last"):
-            if col in repriced.columns:
-                repriced[col] = np.maximum(0.0, repriced[col].values.astype(float) + delta)
+            exp_date = _date.fromisoformat(parsed["expiration"])
+            days_to_exp = (exp_date - now.date()).days
+            T = max(days_to_exp, 0) / 365.0
 
+            if T <= 0:
+                intrinsic = max(0.0, underlying_price - strike) if opt_type == "call" else max(0.0, strike - underlying_price)
+                new_last.append(intrinsic)
+                new_bid.append(max(0.0, intrinsic - 0.01))
+                new_ask.append(intrinsic + 0.01)
+                continue
+
+            price = bs_price(S=underlying_price, K=strike, T=T, r=risk_free, sigma=iv, option_type=opt_type)
+            price = max(0.0, price)
+
+            old_mid = (old_bid + old_ask) / 2 if (old_bid + old_ask) > 0 else old_last
+            if old_mid > 0:
+                spread_ratio = (old_ask - old_bid) / old_mid
+            else:
+                spread_ratio = 0.02
+            half_spread = price * spread_ratio / 2
+            new_last.append(price)
+            new_bid.append(max(0.0, price - half_spread))
+            new_ask.append(price + half_spread)
+
+        repriced["last"] = new_last
+        repriced["bid"] = new_bid
+        repriced["ask"] = new_ask
         return repriced
 
     def option_chain(self, symbol: str, expiration: Optional[date] = None) -> OptionChain:
