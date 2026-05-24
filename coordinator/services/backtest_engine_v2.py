@@ -266,6 +266,13 @@ class BacktestEngine:
                     po.scheduled_for_bar_index = bar_idx + 1
                     still_pending.append(po)
                 else:
+                    # Options with no price should be rejected immediately,
+                    # never carried forward to retry (the chain won't change).
+                    if po.leg.asset_type == "options":
+                        observer.on_signal_rejected(
+                            sim_time, Signal(legs=[po.leg]), "no_option_price"
+                        )
+                        continue
                     # Not filled, not stop-trigger — apply TIF-aware expiry
                     from sdk.signals import TimeInForce
                     tif = getattr(po.leg, 'time_in_force', None)
@@ -427,7 +434,7 @@ class BacktestEngine:
                 return sym[:i] if i > 0 else None
         return None
 
-    def _fill_market(self, po, bar, side, slippage, fees_list, rng, sim_time, ctx=None) -> FillRecord:
+    def _fill_market(self, po, bar, side, slippage, fees_list, rng, sim_time, ctx=None) -> Optional[FillRecord]:
         leg = po.leg
 
         # Options: use contract bid/ask from cached option chain data
@@ -448,6 +455,8 @@ class BacktestEngine:
                     slippage_dollars=0.0, slippage_bps_applied=slippage.market_bps,
                     fees=fees, fee_breakdown=breakdown, signal_id=po.signal_id,
                 )
+            else:
+                return None  # No option price — don't fall through to equity
 
         if slippage.use_bar_range:
             fill_price = rng.uniform(float(bar["low"]), float(bar["high"]))
@@ -501,6 +510,8 @@ class BacktestEngine:
                     slippage_dollars=0.0, slippage_bps_applied=0.0,
                     fees=fees, fee_breakdown=breakdown, signal_id=po.signal_id,
                 )
+            else:
+                return None  # No option price — don't fall through to equity
 
         low, high = float(bar["low"]), float(bar["high"])
         # STRICT cross only — see Spec D §3 conservative-by-default rule

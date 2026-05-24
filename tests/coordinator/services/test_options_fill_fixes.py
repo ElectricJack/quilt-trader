@@ -141,3 +141,45 @@ def test_straddle_round_trip():
     buy_fill = obs.fills[1]
     assert sell_fill.realized_pnl is None  # sell-to-open
     assert buy_fill.realized_pnl == pytest.approx(-50.0, abs=1.0)  # (8.00 - 8.50) * 1 * 100
+
+
+def test_options_fill_never_uses_equity_price():
+    """When option chain lookup fails, reject the fill — never use the underlying's bar price."""
+    class BuyUnknownOptionAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="O:QQQ250516C00999000",  # strike 999 — not in chain
+                signal_type=SignalType.BUY, quantity=1,
+                asset_type="options", order_type=OrderType.MARKET,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _make_clock()
+    chain_df = _make_chain()  # only has strike 500
+    class MockDS:
+        def load_market_data(self, s, sym, tf): return None
+        def load_option_chain(self, p, s, e): return chain_df
+        def list_option_chain_expirations(self, p, s): return [date(2025, 5, 16)]
+
+    ctx = BacktestTickContext(
+        bars={("polygon", "QQQ", "1day"): clock}, positions={}, cash=100_000.0,
+        data_service=MockDS(), default_source="polygon",
+    )
+    ctx._option_chain_cache[("polygon", "QQQ", date(2025, 5, 16))] = chain_df
+
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=BuyUnknownOptionAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="QQQ",
+        slippage=SlippageModel(market_bps=0), buy_fees=[], sell_fees=[],
+        initial_cash=100_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert obs.error is None
+    assert len(obs.fills) == 0, f"Should not fill at equity price, got {len(obs.fills)} fills"
+    assert len(obs.rejected) == 1
+    assert "no_option_price" in obs.rejected[0][2]
