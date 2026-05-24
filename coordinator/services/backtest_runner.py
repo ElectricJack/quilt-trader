@@ -481,7 +481,13 @@ class BacktestRunner:
                 if existing is not None and not existing.empty:
                     continue
                 try:
+                    _last_db_msg = [None]
                     async def _chain_status(msg: str) -> None:
+                        if "Pacing" in msg or "Rate limited" in msg or "Fetching…" in msg:
+                            return
+                        if msg == _last_db_msg[0]:
+                            return
+                        _last_db_msg[0] = msg
                         try:
                             async with self._sf() as s:
                                 row = (await s.execute(
