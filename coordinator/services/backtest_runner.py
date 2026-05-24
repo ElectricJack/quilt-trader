@@ -165,6 +165,7 @@ class BacktestRunner:
             slippage_cfg = run.slippage_model
             buy_fees_cfg = run.buy_trading_fees
             sell_fees_cfg = run.sell_trading_fees
+            config_overrides = run.config_overrides or {}
             await session.commit()
 
         try:
