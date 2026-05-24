@@ -310,8 +310,8 @@ class DownloadManager:
                     logger.info("Downloaded %d bars for %s/%s", bar_count, symbol, timeframe)
                     await _update_progress_message(f"{symbol}: saved {bar_count:,} bars")
                 else:
-                    logger.warning("No data returned for %s/%s/%s (%s to %s)", provider_name, symbol, timeframe, effective_start, end)
-                    errors.append(f"{symbol}: no data returned by {provider_name} for {effective_start} to {end}")
+                    logger.warning("No data returned for %s/%s/%s (%s to %s)", provider_name, symbol, timeframe, start, end)
+                    errors.append(f"{symbol}: no data returned by {provider_name} for {start} to {end}")
             except NotImplementedError as e:
                 logger.warning("%s", e)
                 errors.append(f"{symbol}: {e}")

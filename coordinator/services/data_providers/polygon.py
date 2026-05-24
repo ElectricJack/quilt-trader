@@ -156,8 +156,15 @@ class PolygonProvider:
         on_bars: BarsCallback | None = None,
     ) -> list[dict]:
         multiplier, span = self._timeframe_params(timeframe)
+        # Polygon requires the O: prefix for option contract symbols
+        api_symbol = symbol
+        if not symbol.startswith("O:") and len(symbol) > 10:
+            from coordinator.services.chain_builder import parse_occ_symbol
+            if parse_occ_symbol(symbol) is not None:
+                api_symbol = f"O:{symbol}"
+        api_symbol = INDEX_SYMBOL_MAP.get(api_symbol, api_symbol)
         url = (
-            f"{self.BASE_URL}/v2/aggs/ticker/{symbol}/range"
+            f"{self.BASE_URL}/v2/aggs/ticker/{api_symbol}/range"
             f"/{multiplier}/{span}/{start.isoformat()}/{end.isoformat()}"
         )
         params = {"apiKey": self._api_key, "limit": 50000, "sort": "asc"}
