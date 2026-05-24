@@ -221,6 +221,33 @@ def test_ioc_order_expires_after_one_bar():
     from sdk.signals import Signal, SignalLeg, SignalType, OrderType, TimeInForce
 
     class IOCAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): pass
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY", signal_type=SignalType.BUY, quantity=1,
+                order_type=OrderType.LIMIT, limit_price=90.0,
+                time_in_force=TimeInForce.IOC,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _bars("2024-01-01", 5, lows=[99.0]*5, highs=[101.0]*5)
+    ctx = BacktestTickContext(bars={("polygon", "SPY", "1day"): clock}, positions={}, cash=10_000.0)
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=IOCAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert len(obs.fills) == 0
+    assert len(obs.rejected) == 1
+    assert "no_fill_within_timeout" in obs.rejected[0][2]
+
+
 def test_options_fill_uses_contract_bid_ask():
     """Options legs fill at contract ask (buy) / bid (sell), not underlying OHLCV."""
     from sdk.signals import Signal, SignalLeg, SignalType, OrderType
