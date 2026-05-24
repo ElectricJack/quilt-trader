@@ -271,9 +271,10 @@ class BacktestTickContext(TickContext):
     def _reprice_chain(self, chain_df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """Adjust cached option prices based on current underlying price.
 
-        Uses intrinsic value shift: if underlying moved since the snapshot,
-        adjust call/put prices by the change in intrinsic value.
+        Vectorized: computes intrinsic value shift for all contracts at once.
         """
+        import numpy as np
+
         underlying_price = self._get_underlying_price(symbol)
         if underlying_price is None:
             return chain_df
@@ -281,31 +282,30 @@ class BacktestTickContext(TickContext):
         ref_key = "_ref_price_" + symbol
         ref_price = getattr(self, ref_key, None)
         if ref_price is None:
-            # Infer what the underlying was when the chain was snapshotted
             ref_price = self._infer_snapshot_underlying(chain_df)
             if ref_price is None:
                 return chain_df
             setattr(self, ref_key, ref_price)
 
-        price_change = underlying_price - ref_price
-        if abs(price_change) < 0.01:
+        if abs(underlying_price - ref_price) < 0.01:
             return chain_df
 
         repriced = chain_df.copy()
-        for idx, row in repriced.iterrows():
-            strike = float(row["strike"])
-            if row["option_type"] == "call":
-                old_intrinsic = max(0.0, ref_price - strike)
-                new_intrinsic = max(0.0, underlying_price - strike)
-                delta = new_intrinsic - old_intrinsic
-            else:
-                old_intrinsic = max(0.0, strike - ref_price)
-                new_intrinsic = max(0.0, strike - underlying_price)
-                delta = new_intrinsic - old_intrinsic
+        strikes = repriced["strike"].values.astype(float)
+        is_call = (repriced["option_type"] == "call").values
 
-            for col in ("bid", "ask", "last"):
-                if col in repriced.columns:
-                    repriced.at[idx, col] = max(0.0, float(row[col]) + delta)
+        old_call_intrinsic = np.maximum(0.0, ref_price - strikes)
+        new_call_intrinsic = np.maximum(0.0, underlying_price - strikes)
+        old_put_intrinsic = np.maximum(0.0, strikes - ref_price)
+        new_put_intrinsic = np.maximum(0.0, strikes - underlying_price)
+
+        delta = np.where(is_call,
+                         new_call_intrinsic - old_call_intrinsic,
+                         new_put_intrinsic - old_put_intrinsic)
+
+        for col in ("bid", "ask", "last"):
+            if col in repriced.columns:
+                repriced[col] = np.maximum(0.0, repriced[col].values.astype(float) + delta)
 
         return repriced
 
@@ -349,9 +349,11 @@ class BacktestTickContext(TickContext):
 
         calls: list[OptionContract] = []
         puts: list[OptionContract] = []
-        for _, row in df.iterrows():
+        sym_col = "ticker" if "ticker" in df.columns else "symbol"
+        records = df.to_dict("records")
+        for row in records:
             contract = OptionContract(
-                symbol=str(row.get("ticker", row.get("symbol", ""))),
+                symbol=str(row.get(sym_col, "")),
                 underlying=symbol,
                 expiration=exp,
                 strike=float(row.get("strike", 0)),
