@@ -236,7 +236,7 @@ async def finalize_run(
     write_daily_parquet(daily_df, run_dir / "equity_1day.parquet")
 
     bench_daily_df: Optional[pd.DataFrame] = None
-    if benchmark_bar_df is not None and not benchmark_bar_df.empty:
+    if benchmark_bar_df is not None and not benchmark_bar_df.empty and not daily_df.empty:
         bench_pv_normalized = _normalize_benchmark(benchmark_bar_df, daily_df)
         bench_daily_df = pd.DataFrame({
             "timestamp": bench_pv_normalized.index,

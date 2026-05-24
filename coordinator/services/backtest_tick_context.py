@@ -235,6 +235,8 @@ class BacktestTickContext(TickContext):
     def option_chain(self, symbol: str, expiration: Optional[date] = None) -> OptionChain:
         from sdk.models import OptionContract
 
+        if isinstance(expiration, str):
+            expiration = date.fromisoformat(expiration)
         exp = expiration or (self._sim_time_now.date() if self._sim_time_now else date.today())
         source = self._default_source or "polygon"
 
