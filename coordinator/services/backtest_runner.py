@@ -523,7 +523,6 @@ class BacktestRunner:
                     if not contracts:
                         continue
 
-                    # Strip O: prefix for storage
                     symbols = [c["ticker"].removeprefix("O:") for c in contracts]
 
                     async with self._sf() as session:
@@ -533,17 +532,22 @@ class BacktestRunner:
                         r.progress_message = f"Downloading {len(symbols)} {underlying} contracts for {exp}"
                         await session.commit()
 
-                    dl = await self._dm.create_download(
-                        symbols=symbols,
-                        date_range_start=exp,
-                        date_range_end=exp,
-                        provider=provider_name,
-                        timeframe="1day",
-                    )
-                    try:
-                        await self._wait_for_download(dl["id"])
-                    except RuntimeError as exc:
-                        errors.append(f"Contract bars download failed for {underlying} {exp}: {exc}")
+                    dl_ids = []
+                    for sym in symbols:
+                        dl = await self._dm.create_download(
+                            symbols=[sym],
+                            date_range_start=start_d,
+                            date_range_end=end_d,
+                            provider=provider_name,
+                            timeframe="1day",
+                        )
+                        dl_ids.append(dl["id"])
+
+                    for dl_id in dl_ids:
+                        try:
+                            await self._wait_for_download(dl_id)
+                        except RuntimeError as exc:
+                            errors.append(f"Contract download failed: {exc}")
             except Exception as exc:
                 errors.append(f"Failed option contract download for {underlying}: {exc}")
 
