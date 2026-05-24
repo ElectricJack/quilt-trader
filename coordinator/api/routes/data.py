@@ -298,15 +298,10 @@ async def get_coverage():
 
     # Deduplicate to one entry per (provider, symbol) — collect unique timeframes on disk.
     seen: dict[str, dict] = {}
-    # Track option chain expirations separately
-    option_chains: dict[str, list[str]] = {}  # "provider/symbol" -> [expirations]
     for item in available:
         provider = item["provider"]
         symbol = item["symbol"]
         key = f"{provider}/{symbol}"
-        if item.get("data_type") == "option_chain":
-            option_chains.setdefault(key, []).append(item["expiration"])
-            continue
         if key not in seen:
             ranges = coverage.get_ranges(provider, symbol) if coverage else []
             seen[key] = {
@@ -316,20 +311,6 @@ async def get_coverage():
                 "timeframes_on_disk": [],
             }
         seen[key]["timeframes_on_disk"].append(item["timeframe"])
-
-    # Attach option chain info to the symbol entry
-    for key, expirations in option_chains.items():
-        if key not in seen:
-            provider, symbol = key.split("/", 1)
-            seen[key] = {
-                "provider": provider,
-                "symbol": symbol,
-                "ranges": [],
-                "timeframes_on_disk": [],
-            }
-        seen[key]["option_expirations"] = sorted(expirations)
-        if "options" not in seen[key]["timeframes_on_disk"]:
-            seen[key]["timeframes_on_disk"].append("options")
 
     # Group by provider
     grouped: dict[str, list] = {}

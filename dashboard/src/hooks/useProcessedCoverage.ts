@@ -57,7 +57,6 @@ export interface OptionsGroupRow {
   ranges: CoverageRange[];
   timeframes: string[];
   children: OptionsGroupChild[];
-  optionExpirations?: string[];
   assetType: "options";
   sortKey: string;
 }
@@ -108,9 +107,6 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     if (existing) {
       existing.ranges = [...existing.ranges, ...asset.ranges];
       existing.timeframes_on_disk = [...new Set([...existing.timeframes_on_disk, ...asset.timeframes_on_disk])];
-      if (asset.option_expirations) {
-        existing.option_expirations = [...new Set([...(existing.option_expirations ?? []), ...asset.option_expirations])].sort();
-      }
     } else {
       deduped.set(key, { ...asset, ranges: [...asset.ranges], timeframes_on_disk: [...asset.timeframes_on_disk] });
     }
@@ -232,35 +228,6 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
       ranges: mergeRanges(allRanges),
       timeframes: allTimeframes,
       children,
-      assetType: "options",
-      sortKey: `${underlying}\x01`,
-    });
-  }
-
-  // Option chain groups (underlying symbols with cached chain snapshots)
-  for (const asset of mergedAssets) {
-    const expirations = (asset as any).option_expirations as string[] | undefined;
-    if (!expirations || expirations.length === 0) continue;
-    const underlying = asset.symbol;
-    if (optionsByUnderlying.has(underlying)) continue;
-    const children: OptionsGroupChild[] = expirations.map((exp) => ({
-      symbol: `${underlying}/options/${exp}`,
-      readableLabel: `Chain ${exp}`,
-      provider: asset.normalizedProvider,
-      ranges: [{ start: exp, end: exp }],
-      timeframes: ["chain"],
-    }));
-    rows.push({
-      kind: "options-group",
-      underlying,
-      label: `${underlying} Options (${expirations.length} chains)`,
-      provider: asset.normalizedProvider,
-      ranges: expirations.length > 0
-        ? [{ start: expirations[0], end: expirations[expirations.length - 1] }]
-        : [],
-      timeframes: ["options"],
-      children,
-      optionExpirations: expirations,
       assetType: "options",
       sortKey: `${underlying}\x01`,
     });

@@ -196,7 +196,6 @@ export interface CoverageAsset {
   symbol: string;
   ranges: CoverageRange[];
   timeframes_on_disk: string[];
-  option_expirations?: string[];
 }
 
 export interface CoverageResponse {
