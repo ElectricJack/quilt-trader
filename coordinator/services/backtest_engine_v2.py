@@ -112,6 +112,7 @@ class BacktestEngine:
         cancel_token: CancelToken,
         progress_callback: Optional[Callable[[float], None]] = None,
         rng_seed: int = 12345,
+        config: Optional[dict] = None,
     ) -> None:
         try:
             self._run_internal(
@@ -119,7 +120,7 @@ class BacktestEngine:
                 clock_tf=clock_timeframe, clock_source=clock_source, clock_symbol=clock_symbol,
                 slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
                 initial_cash=initial_cash, observer=observer, cancel=cancel_token,
-                progress=progress_callback, rng_seed=rng_seed,
+                progress=progress_callback, rng_seed=rng_seed, config=config or {},
             )
         except Exception as exc:
             logger.exception("BacktestEngine.run failed")
@@ -128,7 +129,7 @@ class BacktestEngine:
     def _run_internal(
         self, *, algorithm, ctx, clock, clock_tf, clock_source, clock_symbol,
         slippage, buy_fees, sell_fees, initial_cash, observer, cancel,
-        progress, rng_seed,
+        progress, rng_seed, config=None,
     ):
         cash = initial_cash
         positions: dict[tuple, _PositionState] = {}
@@ -138,8 +139,7 @@ class BacktestEngine:
         tf_duration = timeframe_to_seconds(clock_tf)
         rng = random.Random(rng_seed)
 
-        # Wrap algorithm lifecycle in try/except so errors propagate via observer
-        algorithm.on_start({}, None)
+        algorithm.on_start(config if config is not None else {}, None)
 
         bar_idx = 0
         while bar_idx < len(clock):

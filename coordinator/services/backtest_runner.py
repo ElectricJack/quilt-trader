@@ -371,6 +371,7 @@ class BacktestRunner:
                         initial_cash=initial_cash, observer=observer,
                         cancel_token=cancel,
                         progress_callback=lambda p: setattr(observer, "progress", p),
+                        config=config_overrides,
                     ),
                 )
             finally:
