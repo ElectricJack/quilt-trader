@@ -313,11 +313,10 @@ class PolygonProvider:
             strike = c.get("strike_price", 0.0)
             contract_type = c.get("contract_type", "")
 
-            if i % 20 == 0:
-                await self._safe_status(
-                    on_status,
-                    f"Fetching bars: {i}/{len(contracts)} contracts ({underlying} {expiration})",
-                )
+            await self._safe_status(
+                on_status,
+                f"Fetching bars: {i+1}/{len(contracts)} contracts ({underlying} {expiration})",
+            )
 
             bar_url = (
                 f"{self.BASE_URL}/v2/aggs/ticker/{ticker}/range"

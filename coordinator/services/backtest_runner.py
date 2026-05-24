@@ -481,13 +481,18 @@ class BacktestRunner:
                 if existing is not None and not existing.empty:
                     continue
                 try:
-                    async with self._sf() as session:
-                        r = (await session.execute(
-                            select(BacktestRun).where(BacktestRun.id == run_id)
-                        )).scalar_one()
-                        r.progress_message = f"Downloading options chain: {underlying} exp {exp}"
-                        await session.commit()
-                    df = await provider.fetch_option_chain(underlying, exp)
+                    async def _chain_status(msg: str) -> None:
+                        try:
+                            async with self._sf() as s:
+                                row = (await s.execute(
+                                    select(BacktestRun).where(BacktestRun.id == run_id)
+                                )).scalar_one()
+                                row.progress_message = f"Options chain {underlying} {exp}: {msg}"
+                                await s.commit()
+                        except Exception:
+                            pass
+
+                    df = await provider.fetch_option_chain(underlying, exp, on_status=_chain_status)
                     if df is not None and not df.empty:
                         self._ds.save_option_chain("polygon", underlying, exp, df)
                 except Exception as exc:
