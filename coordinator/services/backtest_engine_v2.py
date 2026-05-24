@@ -413,14 +413,13 @@ class BacktestEngine:
 
         # Cache miss: try loading chain from data_service.
         # Extract underlying from OCC symbol, e.g. "O:SPY260117C00450000" → "SPY"
-        if ctx._data_service is not None and hasattr(ctx._data_service, "load_option_chain"):
+        if ctx._data_service is not None and hasattr(ctx._data_service, "build_chain"):
             underlying = self._extract_underlying(contract_symbol)
             if underlying:
-                # Use sim_time date as the expiration guess
                 exp = ctx._sim_time_now.date() if ctx._sim_time_now else None
                 source = ctx._default_source or "polygon"
                 try:
-                    chain_df = ctx._data_service.load_option_chain(source, underlying, exp)
+                    chain_df = ctx._data_service.build_chain(source, underlying, exp, as_of=ctx._sim_time_now)
                     if chain_df is not None and not chain_df.empty:
                         cache_key = (source, underlying, exp)
                         ctx._option_chain_cache[cache_key] = chain_df
@@ -431,7 +430,7 @@ class BacktestEngine:
                                     row = match_rows.iloc[0]
                                     return float(row.get("ask", 0)) if side == "buy" else float(row.get("bid", 0))
                 except Exception:
-                    logger.debug("Failed to load option chain for %s", underlying, exc_info=True)
+                    logger.debug("Failed to build chain for %s", underlying, exc_info=True)
 
         return None
 
