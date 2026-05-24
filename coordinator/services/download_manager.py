@@ -249,14 +249,6 @@ class DownloadManager:
                 await session.commit()
 
             try:
-                if data_type == "option_chain":
-                    await self._download_option_chain_symbol(
-                        download_id, provider, provider_name, symbol, start, end,
-                        _update_progress_message, i,
-                    )
-                    any_bars_saved = True
-                    continue
-
                 if data_type != "bars":
                     raise NotImplementedError(
                         f"data_type '{data_type}' is not yet supported by provider '{provider_name}'"
@@ -358,64 +350,6 @@ class DownloadManager:
                 self._on_download_complete(provider_name, symbols)
             except Exception:
                 logger.exception("on_download_complete callback failed")
-
-    async def _download_option_chain_symbol(
-        self,
-        download_id: str,
-        provider,
-        provider_name: str,
-        symbol: str,
-        start: date,
-        end: date,
-        update_progress,
-        symbol_index: int,
-    ) -> None:
-        """Download option chain snapshots for one underlying across monthly expirations."""
-        from coordinator.services.backtest_runner import BacktestRunner
-
-        if not hasattr(provider, "fetch_option_chain"):
-            raise NotImplementedError(f"{provider_name} does not support fetch_option_chain")
-
-        expirations = BacktestRunner._monthly_expirations(start, end)
-        total_exps = len(expirations)
-
-        for exp_idx, exp in enumerate(expirations):
-            existing = self._data_service.load_option_chain(provider_name, symbol, exp)
-            if existing is not None and not existing.empty:
-                await update_progress(f"{symbol}: chain {exp} already cached ({exp_idx+1}/{total_exps})")
-                continue
-
-            async def _on_status(msg: str, _sym=symbol, _exp=exp, _ei=exp_idx, _te=total_exps) -> None:
-                if "Pacing" in msg or "Rate limited" in msg or "Fetching…" in msg:
-                    return
-                await update_progress(f"{_sym} chain {_exp} ({_ei+1}/{_te}): {msg}")
-
-            await update_progress(f"{symbol}: downloading chain {exp} ({exp_idx+1}/{total_exps})")
-            try:
-                df = await provider.fetch_option_chain(
-                    symbol, exp, on_status=_on_status, max_contracts=60,
-                )
-                if df is not None and not df.empty:
-                    await asyncio.to_thread(
-                        self._data_service.save_option_chain,
-                        provider_name, symbol, exp, df,
-                    )
-                    await update_progress(f"{symbol}: saved chain {exp} ({len(df)} contracts)")
-                else:
-                    await update_progress(f"{symbol}: no contracts for {exp}")
-            except Exception as e:
-                logger.warning("Failed to download option chain %s %s: %s", symbol, exp, e)
-                await update_progress(f"{symbol}: chain {exp} failed: {e}")
-
-            # Update progress fraction
-            fraction = (exp_idx + 1) / max(total_exps, 1)
-            async with self._session_factory() as session:
-                await session.execute(
-                    update(MarketDataDownload)
-                    .where(MarketDataDownload.id == download_id)
-                    .values(current_symbol_pct=fraction)
-                )
-                await session.commit()
 
     @staticmethod
     def _to_dict(dl: MarketDataDownload) -> dict:
