@@ -243,18 +243,20 @@ class BacktestEngine:
                             )
                             continue
                     elif fill.side == "sell":
-                        # Block accidental short via over-selling beyond current position.
-                        key = (fill.symbol,)
-                        held = positions.get(key)
-                        held_qty = held.quantity if held else 0.0
-                        if fill.quantity > held_qty + 1e-9:
-                            observer.on_signal_rejected(
-                                sim_time,
-                                Signal(legs=[po.leg]),
-                                f"insufficient_position: sell {fill.quantity} but "
-                                f"holding {held_qty}",
-                            )
-                            continue
+                        # Block accidental short for equities/crypto (can't sell what you don't own).
+                        # Options can be sold to open (writing), so allow short sells for options.
+                        if fill.asset_type != "options":
+                            key = (fill.symbol,)
+                            held = positions.get(key)
+                            held_qty = held.quantity if held else 0.0
+                            if fill.quantity > held_qty + 1e-9:
+                                observer.on_signal_rejected(
+                                    sim_time,
+                                    Signal(legs=[po.leg]),
+                                    f"insufficient_position: sell {fill.quantity} but "
+                                    f"holding {held_qty}",
+                                )
+                                continue
                     cash = self._apply_fill(cash, positions, fill)
                     all_fills.append(fill)
                     observer.on_fill(fill)
