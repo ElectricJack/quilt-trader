@@ -36,8 +36,8 @@ class DataService:
             # Keep new on collision: put existing first, then new; drop_duplicates keeps the last.
             # If "timestamp" column missing in either df, fall back to overwrite.
             if "timestamp" in df.columns and "timestamp" in existing.columns:
-                existing["timestamp"] = pd.to_datetime(existing["timestamp"])
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
+                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
                 combined = pd.concat([existing, df], ignore_index=True)
                 combined = combined.drop_duplicates(subset="timestamp", keep="last")
                 combined = combined.sort_values("timestamp").reset_index(drop=True)
