@@ -29,12 +29,14 @@ ROLLING_WINDOW_DAYS = 90
 
 
 def _sanitize_json(obj):
-    """Replace NaN/Infinity with None so the result is valid JSON."""
+    """Replace NaN/Infinity/complex with None so the result is valid JSON."""
     import math
     if isinstance(obj, dict):
         return {k: _sanitize_json(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_sanitize_json(v) for v in obj]
+    if isinstance(obj, complex):
+        return None
     if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
         return None
     return obj
