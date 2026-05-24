@@ -248,7 +248,7 @@ class BacktestRunner:
                 option_underlyings = [
                     dep.get("symbol") for dep in deps if dep.get("symbol")
                 ]
-                options_chain_errors = await self._download_option_chains(
+                options_chain_errors = await self._download_option_contracts(
                     option_underlyings, date_range_start, date_range_end, run_id,
                 )
 
@@ -338,11 +338,11 @@ class BacktestRunner:
                 for dep in deps:
                     symbol = dep.get("symbol")
                     if symbol and self._ds:
-                        expirations = self._ds.list_option_chain_expirations("polygon", symbol)
+                        expirations = self._ds.list_option_expirations("polygon", symbol)
                         for exp in expirations:
-                            df = self._ds.load_option_chain("polygon", symbol, exp)
-                            if df is not None and not df.empty:
-                                ctx._option_chain_cache[("polygon", symbol, exp)] = df
+                            chain_df = self._ds.build_chain("polygon", symbol, exp, as_of=date_range_end)
+                            if chain_df is not None and not chain_df.empty:
+                                ctx._option_chain_cache[("polygon", symbol, exp)] = chain_df
 
             logger.info("[TIMING] Stage 2b (warm option chain cache) took %.2fs, cached %d chains",
                         time.monotonic() - t_phase, len(ctx._option_chain_cache))
@@ -488,53 +488,64 @@ class BacktestRunner:
                 current = _date(current.year, current.month + 1, 1)
         return expirations
 
-    async def _download_option_chains(self, underlyings, date_start, date_end, run_id) -> list[str]:
-        """Pre-download option chain snapshots via the DownloadManager.
+    async def _download_option_contracts(self, underlyings, date_start, date_end, run_id) -> list[str]:
+        """Pre-download option contract bars for options algorithms.
 
-        Creates a download job with data_type='option_chain' for each underlying,
-        so chain downloads appear on the Downloads page alongside bar downloads.
+        Discovers contracts via the provider's reference endpoint, then downloads
+        bars for each through the standard fetch_bars pipeline.
         """
         from coordinator.database.models import BacktestRun
         errors: list[str] = []
 
         start_d = date_start.date() if hasattr(date_start, "date") else date_start
         end_d = date_end.date() if hasattr(date_end, "date") else date_end
+        provider_name = "polygon"
+        provider = self._dm._providers.get(provider_name)
+        if provider is None or not hasattr(provider, "discover_option_contracts"):
+            return errors
 
         for underlying in underlyings:
             try:
-                # Skip if all monthly expirations are already cached
                 expirations = self._monthly_expirations(start_d, end_d)
-                all_cached = all(
-                    self._ds.load_option_chain("polygon", underlying, exp) is not None
-                    for exp in expirations
-                )
-                if all_cached:
-                    logger.info("All option chains for %s already cached, skipping download", underlying)
-                    continue
+                for exp in expirations:
+                    existing = self._ds.list_option_contracts(provider_name, underlying, exp)
+                    if existing:
+                        continue
 
-                async with self._sf() as session:
-                    r = (await session.execute(
-                        select(BacktestRun).where(BacktestRun.id == run_id)
-                    )).scalar_one()
-                    r.progress_message = f"Downloading options chains for {underlying}"
-                    await session.commit()
+                    async with self._sf() as session:
+                        r = (await session.execute(
+                            select(BacktestRun).where(BacktestRun.id == run_id)
+                        )).scalar_one()
+                        r.progress_message = f"Discovering {underlying} contracts for {exp}"
+                        await session.commit()
 
-                dl = await self._dm.create_download(
-                    symbols=[underlying],
-                    date_range_start=start_d,
-                    date_range_end=end_d,
-                    provider="polygon",
-                    data_type="option_chain",
-                )
-                try:
-                    await self._wait_for_download(dl["id"])
-                except RuntimeError as exc:
-                    error_msg = f"Options chain download failed for {underlying}: {exc}"
-                    errors.append(error_msg)
-                    logger.warning(error_msg)
+                    contracts = await provider.discover_option_contracts(underlying, exp)
+                    if not contracts:
+                        continue
+
+                    # Strip O: prefix for storage
+                    symbols = [c["ticker"].removeprefix("O:") for c in contracts]
+
+                    async with self._sf() as session:
+                        r = (await session.execute(
+                            select(BacktestRun).where(BacktestRun.id == run_id)
+                        )).scalar_one()
+                        r.progress_message = f"Downloading {len(symbols)} {underlying} contracts for {exp}"
+                        await session.commit()
+
+                    dl = await self._dm.create_download(
+                        symbols=symbols,
+                        date_range_start=exp,
+                        date_range_end=exp,
+                        provider=provider_name,
+                        timeframe="1day",
+                    )
+                    try:
+                        await self._wait_for_download(dl["id"])
+                    except RuntimeError as exc:
+                        errors.append(f"Contract bars download failed for {underlying} {exp}: {exc}")
             except Exception as exc:
-                errors.append(f"Failed to start options chain download for {underlying}: {exc}")
-                logger.warning("Options chain download error for %s: %s", underlying, exc)
+                errors.append(f"Failed option contract download for {underlying}: {exc}")
 
         return errors
 
