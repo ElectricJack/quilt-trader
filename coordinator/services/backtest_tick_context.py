@@ -258,7 +258,7 @@ class BacktestTickContext(TickContext):
             available = self._data_service.list_option_chain_expirations(source, symbol)
             if available:
                 nearest = min(available, key=lambda d: abs((d - exp).days))
-                if abs((nearest - exp).days) <= 7:
+                if abs((nearest - exp).days) <= 45:
                     df = self._data_service.load_option_chain(source, symbol, nearest)
                     exp = nearest  # update expiration to the one we actually found
                     if df is not None and not df.empty:
