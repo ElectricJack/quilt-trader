@@ -3,6 +3,8 @@ import contextlib
 import logging
 from contextlib import asynccontextmanager
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse

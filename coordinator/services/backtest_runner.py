@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,7 @@ from coordinator.services.backtest_tick_context import BacktestTickContext
 logger = logging.getLogger(__name__)
 
 
-def _package_dir_name(repo_url: str) -> str:
+def _package_dir_name(repo_url: str, algo_name: str = "") -> str:
     """Return the on-disk package directory name for an installed algorithm.
 
     Matches the convention used by the install flow (coordinator/api/routes/
@@ -37,9 +38,16 @@ def _package_dir_name(repo_url: str) -> str:
     the GitHub repo (last URL segment), NOT after the manifest's `name` field.
     Algorithm.name in the DB comes from the manifest, so it can differ —
     don't use it for filesystem lookups.
+
+    For locally-installed algorithms (empty repo_url), the package directory
+    matches the algorithm name.
     """
     import re
-    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url or "")
+    if not repo_url:
+        if algo_name:
+            return algo_name
+        raise ValueError("Cannot derive package directory: both repo_url and algo_name are empty")
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url)
     if not m:
         raise ValueError(f"Cannot derive package directory from repo_url: {repo_url!r}")
     return m.group(1).split("/", 1)[1]
@@ -91,6 +99,38 @@ def _load_algorithm_class(pkg_dir_name: str, manifest) -> type:
     return getattr(mod, manifest.class_name)
 
 
+def _validate_custom_data_deps(data_deps: list[dict], custom_dir: Path) -> None:
+    """Check that every declared custom data dependency exists on disk.
+
+    Raises FileNotFoundError for the first missing dependency.
+    """
+    for dep in data_deps:
+        source = dep.get("source", "")
+        if not source:
+            continue
+        if (custom_dir / source).is_file():
+            continue
+        found = False
+        for ext in (".csv", ".parquet", ".json"):
+            if (custom_dir / f"{source}{ext}").is_file():
+                found = True
+                break
+        if found:
+            continue
+        subdir = custom_dir / source
+        if subdir.is_dir() and (any(subdir.glob("*.csv")) or any(subdir.glob("*.parquet")) or any(subdir.glob("*.json"))):
+            continue
+        stem = Path(source).stem
+        if stem != source:
+            subdir2 = custom_dir / stem
+            if subdir2.is_dir() and (any(subdir2.glob("*.csv")) or any(subdir2.glob("*.parquet")) or any(subdir2.glob("*.json"))):
+                continue
+        raise FileNotFoundError(
+            f"Missing data dependency: {source!r}. "
+            f"Expected file or directory at {custom_dir / source}."
+        )
+
+
 class BacktestRunner:
     """One-shot orchestrator: walks manifest deps, downloads missing data,
     runs the engine, computes metrics, persists everything to the BacktestRun row.
@@ -126,14 +166,20 @@ class BacktestRunner:
             slippage_cfg = run.slippage_model
             buy_fees_cfg = run.buy_trading_fees
             sell_fees_cfg = run.sell_trading_fees
+            config_overrides = run.config_overrides or {}
             await session.commit()
 
         try:
-            pkg_dir_name = _package_dir_name(algo_repo_url)
+            t_phase = time.monotonic()
+            pkg_dir_name = _package_dir_name(algo_repo_url, algo_name)
             manifest = _load_manifest(pkg_dir_name)
             # Read from manifest.assets (new format) with fallback to
             # requirements.data_dependencies (legacy).
             deps = manifest.assets or manifest.requirements.data_dependencies or []
+
+            # Validate custom data dependencies exist before starting
+            if manifest.data:
+                _validate_custom_data_deps(manifest.data, Path("data/custom"))
 
             # Stage 1: data coverage — download only missing gaps
             from coordinator.services.coverage_utils import ensure_coverage
@@ -192,6 +238,22 @@ class BacktestRunner:
                         )
                         download_ids.append(dl["id"])
                         await self._wait_for_download(dl["id"])
+
+            logger.info("[TIMING] Stage 1 (market data download) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
+
+            # Stage 1b: option chain pre-download for options algorithms
+            options_chain_errors: list[str] = []
+            if "options" in (manifest.requirements.asset_types or []):
+                option_underlyings = [
+                    dep.get("symbol") for dep in deps if dep.get("symbol")
+                ]
+                options_chain_errors = await self._download_option_chains(
+                    option_underlyings, date_range_start, date_range_end, run_id,
+                )
+
+            logger.info("[TIMING] Stage 1b (option chains download) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
 
             # Stage 2: run engine
             async with self._sf() as session:
@@ -255,6 +317,10 @@ class BacktestRunner:
                     "volume": np.zeros(len(dates)),
                 })
 
+            bar_counts = {k: len(v) for k, v in bars.items()}
+            logger.info("[TIMING] Stage 2a (build context / load bars) took %.2fs, bars=%s", time.monotonic() - t_phase, bar_counts)
+            t_phase = time.monotonic()
+
             on_miss = self._make_on_miss(date_range_start, date_range_end)
             # Use a real provider as the default source for on-demand downloads,
             # not "synthetic" (which is only used for the clock when no market
@@ -266,6 +332,21 @@ class BacktestRunner:
                 data_service=self._ds,
                 on_miss=on_miss,
             )
+
+            # Warm option chain cache for options algorithms
+            if "options" in (manifest.requirements.asset_types or []):
+                for dep in deps:
+                    symbol = dep.get("symbol")
+                    if symbol and self._ds:
+                        expirations = self._ds.list_option_chain_expirations("polygon", symbol)
+                        for exp in expirations:
+                            df = self._ds.load_option_chain("polygon", symbol, exp)
+                            if df is not None and not df.empty:
+                                ctx._option_chain_cache[("polygon", symbol, exp)] = df
+
+            logger.info("[TIMING] Stage 2b (warm option chain cache) took %.2fs, cached %d chains",
+                        time.monotonic() - t_phase, len(ctx._option_chain_cache))
+            t_phase = time.monotonic()
 
             AlgoClass = _load_algorithm_class(pkg_dir_name, manifest)
             algorithm = AlgoClass()
@@ -292,6 +373,9 @@ class BacktestRunner:
             )
             writer.start()
 
+            logger.info("[TIMING] Stage 2c (setup writer/observer) took %.2fs, clock=%d bars (%s)", time.monotonic() - t_phase, len(clock_series), clock_tf)
+            t_phase = time.monotonic()
+
             cancel = CancelToken()
             loop = asyncio.get_running_loop()
             pump = asyncio.create_task(self._progress_pump(run_id, observer))
@@ -307,6 +391,7 @@ class BacktestRunner:
                         initial_cash=initial_cash, observer=observer,
                         cancel_token=cancel,
                         progress_callback=lambda p: setattr(observer, "progress", p),
+                        config=config_overrides,
                     ),
                 )
             finally:
@@ -318,6 +403,9 @@ class BacktestRunner:
                 # Signal writer to drain & exit
                 chunk_queue.put(None)
                 writer.join(timeout=30)
+
+            logger.info("[TIMING] Stage 2d (engine execution) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
 
             if writer.is_alive():
                 raise RuntimeError("ParquetWriterThread did not finish within 30s")
@@ -337,6 +425,9 @@ class BacktestRunner:
                 if bdf is not None and not bdf.empty:
                     benchmark_bar_df = bdf
 
+            logger.info("[TIMING] Stage 3a (load benchmark) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
+
             # Finalize: resample, compute metrics, persist row.
             # equity_native.parquet may not exist if the mock engine emitted no chunks.
             if equity_native_path.exists():
@@ -345,6 +436,9 @@ class BacktestRunner:
                     session_factory=self._sf, benchmark_bar_df=benchmark_bar_df,
                 )
 
+            logger.info("[TIMING] Stage 3b (finalize) took %.2fs", time.monotonic() - t_phase)
+            t_phase = time.monotonic()
+
             # Mark complete + clear progress fields
             async with self._sf() as session:
                 r = (await session.execute(
@@ -352,9 +446,13 @@ class BacktestRunner:
                 )).scalar_one()
                 r.status = "completed"
                 r.completed_at = datetime.now(timezone.utc)
-                r.progress_message = "Backtest complete"
                 r.progress_pct = 1.0
                 r.download_ids = download_ids
+                if options_chain_errors:
+                    r.progress_message = "Backtest complete (options data issues)"
+                    r.error_message = "\n".join(options_chain_errors)
+                else:
+                    r.progress_message = "Backtest complete"
                 await session.commit()
         except Exception as exc:
             logger.exception("BacktestRunner failed for %s", run_id)
@@ -366,6 +464,79 @@ class BacktestRunner:
                 r.error_message = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
                 r.completed_at = datetime.now(timezone.utc)
                 await session.commit()
+
+    @staticmethod
+    def _monthly_expirations(start, end) -> list:
+        """Generate 3rd-Friday-of-month expiration dates within [start, end]."""
+        from datetime import date as _date, timedelta
+        expirations = []
+        # Start from the 1st of start's month
+        current = _date(start.year, start.month, 1)
+        while current <= end:
+            # Find 3rd Friday: first day of month, find first Friday, add 14 days
+            first_day = _date(current.year, current.month, 1)
+            # weekday(): Monday=0, Friday=4
+            days_to_friday = (4 - first_day.weekday()) % 7
+            first_friday = first_day + timedelta(days=days_to_friday)
+            third_friday = first_friday + timedelta(days=14)
+            if start <= third_friday <= end:
+                expirations.append(third_friday)
+            # Next month
+            if current.month == 12:
+                current = _date(current.year + 1, 1, 1)
+            else:
+                current = _date(current.year, current.month + 1, 1)
+        return expirations
+
+    async def _download_option_chains(self, underlyings, date_start, date_end, run_id) -> list[str]:
+        """Pre-download option chain snapshots via the DownloadManager.
+
+        Creates a download job with data_type='option_chain' for each underlying,
+        so chain downloads appear on the Downloads page alongside bar downloads.
+        """
+        from coordinator.database.models import BacktestRun
+        errors: list[str] = []
+
+        start_d = date_start.date() if hasattr(date_start, "date") else date_start
+        end_d = date_end.date() if hasattr(date_end, "date") else date_end
+
+        for underlying in underlyings:
+            try:
+                # Skip if all monthly expirations are already cached
+                expirations = self._monthly_expirations(start_d, end_d)
+                all_cached = all(
+                    self._ds.load_option_chain("polygon", underlying, exp) is not None
+                    for exp in expirations
+                )
+                if all_cached:
+                    logger.info("All option chains for %s already cached, skipping download", underlying)
+                    continue
+
+                async with self._sf() as session:
+                    r = (await session.execute(
+                        select(BacktestRun).where(BacktestRun.id == run_id)
+                    )).scalar_one()
+                    r.progress_message = f"Downloading options chains for {underlying}"
+                    await session.commit()
+
+                dl = await self._dm.create_download(
+                    symbols=[underlying],
+                    date_range_start=start_d,
+                    date_range_end=end_d,
+                    provider="polygon",
+                    data_type="option_chain",
+                )
+                try:
+                    await self._wait_for_download(dl["id"])
+                except RuntimeError as exc:
+                    error_msg = f"Options chain download failed for {underlying}: {exc}"
+                    errors.append(error_msg)
+                    logger.warning(error_msg)
+            except Exception as exc:
+                errors.append(f"Failed to start options chain download for {underlying}: {exc}")
+                logger.warning("Options chain download error for %s: %s", underlying, exc)
+
+        return errors
 
     async def _progress_pump(
         self, run_id: str, observer, interval_s: float = 2.0,

@@ -83,6 +83,8 @@ class _PendingOrder:
     leg: SignalLeg
     scheduled_for_bar_index: int   # Index in clock_series; fill attempted at this bar (and possibly later for stops)
     is_stop_triggered: bool = False  # Stop-to-market two-stage tracking
+    created_date: object = None  # date when order was placed (for DAY expiry)
+    fill_attempted: bool = False  # True after first fill attempt (used for DAY expiry guard)
 
 
 @dataclass
@@ -110,6 +112,7 @@ class BacktestEngine:
         cancel_token: CancelToken,
         progress_callback: Optional[Callable[[float], None]] = None,
         rng_seed: int = 12345,
+        config: Optional[dict] = None,
     ) -> None:
         try:
             self._run_internal(
@@ -117,7 +120,7 @@ class BacktestEngine:
                 clock_tf=clock_timeframe, clock_source=clock_source, clock_symbol=clock_symbol,
                 slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
                 initial_cash=initial_cash, observer=observer, cancel=cancel_token,
-                progress=progress_callback, rng_seed=rng_seed,
+                progress=progress_callback, rng_seed=rng_seed, config=config or {},
             )
         except Exception as exc:
             logger.exception("BacktestEngine.run failed")
@@ -126,7 +129,7 @@ class BacktestEngine:
     def _run_internal(
         self, *, algorithm, ctx, clock, clock_tf, clock_source, clock_symbol,
         slippage, buy_fees, sell_fees, initial_cash, observer, cancel,
-        progress, rng_seed,
+        progress, rng_seed, config=None,
     ):
         cash = initial_cash
         positions: dict[tuple, _PositionState] = {}
@@ -136,14 +139,20 @@ class BacktestEngine:
         tf_duration = timeframe_to_seconds(clock_tf)
         rng = random.Random(rng_seed)
 
-        # Wrap algorithm lifecycle in try/except so errors propagate via observer
-        algorithm.on_start({}, None)
+        algorithm.on_start(config if config is not None else {}, None)
 
-        for bar_idx in range(len(clock)):
+        import time as _time
+        _t_engine_start = _time.monotonic()
+        _n_bars = 0
+        self._ts_cache: dict[int, tuple] = {}
+
+        bar_idx = 0
+        while bar_idx < len(clock):
             if cancel.is_set():
                 logger.info("BacktestEngine cancelled at bar %d", bar_idx)
                 return
 
+            _n_bars += 1
             bar = clock.iloc[bar_idx]
             sim_time = (bar["timestamp"].to_pydatetime() +
                         pd.Timedelta(seconds=tf_duration).to_pytimedelta())
@@ -161,24 +170,25 @@ class BacktestEngine:
             observer.on_tick(sim_time, {"cash": cash})
             signals = algorithm.on_tick(ctx) or []
 
+            # Rebuild clock from real data after first tick if clock was synthetic
+            if bar_idx == 0 and clock_source == "synthetic" and ctx._bars:
+                real_clock = self._build_union_clock(ctx._bars)
+                if not real_clock.empty:
+                    clock = real_clock
+                    tf_duration = timeframe_to_seconds(clock_tf)
+
             if signals:
-                # Validate options asset_type — fast fail per Spec D §12
-                for sig in signals:
-                    for leg in sig.legs:
-                        if leg.asset_type == "options":
-                            raise UnsupportedAssetTypeError(
-                                f"Options backtest not yet supported (leg: {leg.symbol}). "
-                                f"Tracked as a follow-up; see Spec D §12."
-                            )
                 all_signals_count += len(signals)
                 observer.on_signals_emitted(sim_time, signals)
                 # Schedule pending orders for the NEXT bar
                 for sig in signals:
                     sig_id = str(uuid.uuid4())
                     for leg in sig.legs:
+                        bar_date = bar["timestamp"].to_pydatetime().date() if hasattr(bar["timestamp"].to_pydatetime(), 'date') else None
                         pending.append(_PendingOrder(
                             signal_id=sig_id, leg=leg,
                             scheduled_for_bar_index=bar_idx + 1,
+                            created_date=bar_date,
                         ))
 
             # ---- 2. Process pending orders that target THIS bar ----
@@ -187,24 +197,52 @@ class BacktestEngine:
                 if po.scheduled_for_bar_index > bar_idx:
                     still_pending.append(po)
                     continue
+                # DAY order expiry: reject before attempting fill if day has changed.
+                # Only applies after the first fill attempt — the first attempt
+                # always proceeds regardless of date (signal on bar T fills at T+1).
+                from sdk.signals import TimeInForce as _TIF
+                tif = getattr(po.leg, 'time_in_force', None)
+                if tif == _TIF.DAY and po.fill_attempted:
+                    order_date = po.created_date
+                    bar_ts = bar["timestamp"].to_pydatetime()
+                    current_date = bar_ts.date() if hasattr(bar_ts, 'date') else None
+                    if order_date is not None and current_date is not None and current_date > order_date:
+                        observer.on_signal_rejected(
+                            sim_time, Signal(legs=[po.leg]), "day_expired"
+                        )
+                        continue
                 # Resolve the fill bar: prefer the SYMBOL's own data over the
                 # clock bar. The clock may be a different symbol (multi-asset
                 # algo) or synthetic (scraper-only algo with no market deps).
                 fill_bar = bar
                 sym = po.leg.symbol
-                for (src, s, tf), df in ctx._bars.items():
-                    if s == sym and not df.empty:
-                        ts_col = pd.to_datetime(df["timestamp"])
-                        if ts_col.dt.tz is not None:
-                            ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                        at_time = ts_col <= pd.Timestamp(sim_time).tz_localize(None)
-                        if at_time.any():
-                            fill_bar = df.loc[at_time].iloc[-1]
-                        break
+                if sym != clock_symbol:
+                    for (src, s, tf), df in ctx._bars.items():
+                        if s == sym and not df.empty:
+                            import numpy as np
+                            cache_key = id(df)
+                            if cache_key not in self._ts_cache:
+                                ts_col = pd.to_datetime(df["timestamp"])
+                                if ts_col.dt.tz is not None:
+                                    ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                                ns = ts_col.values.astype("int64")
+                                closes = df["close"].values.astype(float)
+                                self._ts_cache[cache_key] = (ns, closes)
+                            ns, _ = self._ts_cache[cache_key]
+                            cutoff = pd.Timestamp(sim_time)
+                            if cutoff.tz is not None:
+                                cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                            cutoff_ns = cutoff.value
+                            idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
+                            if idx >= 0:
+                                fill_bar = df.iloc[idx]
+                            break
                 # Try to fill against THIS bar
+                po.fill_attempted = True
                 fill, advance_for_stop = self._try_fill(
                     po, bar=fill_bar, slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
                     cash=cash, positions=positions, rng=rng, sim_time=bar["timestamp"].to_pydatetime(),
+                    ctx=ctx,
                 )
                 if fill is not None:
                     # Buying-power check for buys: paper equities/crypto have no
@@ -212,7 +250,8 @@ class BacktestEngine:
                     # Sells / shorts on existing positions are allowed; opening a
                     # short with no position is also rejected (no margin in v1).
                     if fill.side == "buy":
-                        notional_plus_fees = fill.fill_price * fill.quantity + fill.fees
+                        bp_multiplier = 100 if fill.asset_type == "options" else 1
+                        notional_plus_fees = fill.fill_price * fill.quantity * bp_multiplier + fill.fees
                         if notional_plus_fees > cash + 1e-6:
                             observer.on_signal_rejected(
                                 sim_time,
@@ -222,18 +261,20 @@ class BacktestEngine:
                             )
                             continue
                     elif fill.side == "sell":
-                        # Block accidental short via over-selling beyond current position.
-                        key = (fill.symbol,)
-                        held = positions.get(key)
-                        held_qty = held.quantity if held else 0.0
-                        if fill.quantity > held_qty + 1e-9:
-                            observer.on_signal_rejected(
-                                sim_time,
-                                Signal(legs=[po.leg]),
-                                f"insufficient_position: sell {fill.quantity} but "
-                                f"holding {held_qty}",
-                            )
-                            continue
+                        # Block accidental short for equities/crypto (can't sell what you don't own).
+                        # Options can be sold to open (writing), so allow short sells for options.
+                        if fill.asset_type != "options":
+                            key = (fill.symbol,)
+                            held = positions.get(key)
+                            held_qty = held.quantity if held else 0.0
+                            if fill.quantity > held_qty + 1e-9:
+                                observer.on_signal_rejected(
+                                    sim_time,
+                                    Signal(legs=[po.leg]),
+                                    f"insufficient_position: sell {fill.quantity} but "
+                                    f"holding {held_qty}",
+                                )
+                                continue
                     cash = self._apply_fill(cash, positions, fill)
                     all_fills.append(fill)
                     observer.on_fill(fill)
@@ -243,11 +284,38 @@ class BacktestEngine:
                     po.scheduled_for_bar_index = bar_idx + 1
                     still_pending.append(po)
                 else:
-                    # Not filled, not stop-trigger — apply expiry (v1 = 1 bar)
-                    observer.on_signal_rejected(
-                        sim_time, Signal(legs=[po.leg]), "no_fill_within_timeout"
-                    )
+                    # Options with no price should be rejected immediately,
+                    # never carried forward to retry (the chain won't change).
+                    if po.leg.asset_type == "options":
+                        observer.on_signal_rejected(
+                            sim_time, Signal(legs=[po.leg]), "no_option_price"
+                        )
+                        continue
+                    # Not filled, not stop-trigger — apply TIF-aware expiry
+                    from sdk.signals import TimeInForce
+                    tif = getattr(po.leg, 'time_in_force', None)
+                    if tif is None or tif == TimeInForce.IOC:
+                        observer.on_signal_rejected(
+                            sim_time, Signal(legs=[po.leg]), "no_fill_within_timeout"
+                        )
+                    elif tif == TimeInForce.DAY:
+                        po.scheduled_for_bar_index = bar_idx + 1
+                        still_pending.append(po)
+                    elif tif == TimeInForce.GTC:
+                        po.scheduled_for_bar_index = bar_idx + 1
+                        still_pending.append(po)
+                    else:
+                        observer.on_signal_rejected(
+                            sim_time, Signal(legs=[po.leg]), f"unknown_time_in_force:{tif}"
+                        )
             pending = still_pending
+
+            # Check if algorithm requested order cancellation
+            if getattr(ctx, '_cancel_orders_requested', False):
+                for po in pending:
+                    observer.on_signal_rejected(sim_time, Signal(legs=[po.leg]), "cancelled_by_algorithm")
+                pending = []
+                ctx._cancel_orders_requested = False
 
             # ---- 3. Mark-to-market equity point ----
             mtm_value = cash + self._positions_market_value(positions, bar, ctx=ctx, sim_time=sim_time)
@@ -258,7 +326,17 @@ class BacktestEngine:
             if progress is not None and bar_idx % 100 == 0:
                 progress(bar_idx / max(len(clock), 1))
 
+            bar_idx += 1
+
+        _t_engine_total = _time.monotonic() - _t_engine_start
+        logger.info("[ENGINE_TIMING] bars=%d total=%.3fs", _n_bars, _t_engine_total)
         algorithm.on_stop()
+
+        # Reject any remaining pending GTC orders at end of backtest
+        for po in pending:
+            observer.on_signal_rejected(
+                sim_time, Signal(legs=[po.leg]), "gtc_expired_end_of_backtest"
+            )
 
         observer.on_complete(EngineSummary(
             total_bars=len(clock),
@@ -272,7 +350,7 @@ class BacktestEngine:
 
     def _try_fill(
         self, po: _PendingOrder, *, bar, slippage: SlippageModel,
-        buy_fees, sell_fees, cash, positions, rng, sim_time,
+        buy_fees, sell_fees, cash, positions, rng, sim_time, ctx=None,
     ) -> tuple[Optional[FillRecord], bool]:
         """Returns (fill_or_none, stop_triggered).
 
@@ -285,10 +363,10 @@ class BacktestEngine:
         fees_list = buy_fees if side == "buy" else sell_fees
 
         if ot == OrderType.MARKET or po.is_stop_triggered:
-            return self._fill_market(po, bar, side, slippage, fees_list, rng, sim_time), False
+            return self._fill_market(po, bar, side, slippage, fees_list, rng, sim_time, ctx=ctx), False
 
         if ot == OrderType.LIMIT:
-            return self._fill_limit(po, bar, side, slippage, fees_list, sim_time), False
+            return self._fill_limit(po, bar, side, slippage, fees_list, sim_time, ctx=ctx), False
 
         if ot == OrderType.STOP:
             triggered = self._stop_triggered(po, bar, side)
@@ -315,8 +393,91 @@ class BacktestEngine:
 
         raise ValueError(f"Unsupported order_type: {ot}")
 
-    def _fill_market(self, po, bar, side, slippage, fees_list, rng, sim_time) -> FillRecord:
+    def _lookup_option_price(self, contract_symbol: str, side: str, ctx) -> float | None:
+        """Find bid/ask for a contract from the cached option chain data.
+
+        Searches all cached chain DataFrames for the contract symbol.
+        If no cache hit, attempts to load the chain from data_service using
+        the underlying symbol extracted from the OCC-style contract symbol.
+        """
+        # First, search existing cache
+        for key, df in ctx._option_chain_cache.items():
+            if df is None or (hasattr(df, 'empty') and df.empty):
+                continue
+            for col in ("ticker", "symbol"):
+                if col in df.columns:
+                    match = df[df[col] == contract_symbol]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        return float(row.get("ask", 0)) if side == "buy" else float(row.get("bid", 0))
+
+        # Cache miss: try loading chain from data_service.
+        # Extract underlying from OCC symbol, e.g. "O:SPY260117C00450000" → "SPY"
+        if ctx._data_service is not None and hasattr(ctx._data_service, "load_option_chain"):
+            underlying = self._extract_underlying(contract_symbol)
+            if underlying:
+                # Use sim_time date as the expiration guess
+                exp = ctx._sim_time_now.date() if ctx._sim_time_now else None
+                source = ctx._default_source or "polygon"
+                try:
+                    chain_df = ctx._data_service.load_option_chain(source, underlying, exp)
+                    if chain_df is not None and not chain_df.empty:
+                        cache_key = (source, underlying, exp)
+                        ctx._option_chain_cache[cache_key] = chain_df
+                        for col in ("ticker", "symbol"):
+                            if col in chain_df.columns:
+                                match_rows = chain_df[chain_df[col] == contract_symbol]
+                                if not match_rows.empty:
+                                    row = match_rows.iloc[0]
+                                    return float(row.get("ask", 0)) if side == "buy" else float(row.get("bid", 0))
+                except Exception:
+                    logger.debug("Failed to load option chain for %s", underlying, exc_info=True)
+
+        return None
+
+    @staticmethod
+    def _extract_underlying(contract_symbol: str) -> str | None:
+        """Extract the underlying ticker from an OCC-style option symbol.
+
+        Examples:
+            "O:SPY260117C00450000" → "SPY"
+            "O:AAPL250620P00175000" → "AAPL"
+            "SPY260117C00450000" → "SPY"
+        """
+        sym = contract_symbol
+        if sym.startswith("O:"):
+            sym = sym[2:]
+        # OCC format: SYMBOL + 6-digit date + C/P + 8-digit strike
+        # Find where the date digits start (first digit after letters)
+        for i, ch in enumerate(sym):
+            if ch.isdigit():
+                return sym[:i] if i > 0 else None
+        return None
+
+    def _fill_market(self, po, bar, side, slippage, fees_list, rng, sim_time, ctx=None) -> Optional[FillRecord]:
         leg = po.leg
+
+        # Options: use contract bid/ask from cached option chain data
+        if leg.asset_type == "options" and ctx is not None:
+            option_price = self._lookup_option_price(leg.symbol, side, ctx)
+            if option_price is not None and option_price > 0:
+                if slippage.market_bps > 0:
+                    sign = 1 if side == "buy" else -1
+                    option_price += option_price * (slippage.market_bps / 10000) * sign
+                fees, breakdown = self._compute_fees(leg, option_price, fees_list, order_type=OrderType.MARKET)
+                ts = bar["timestamp"]
+                if hasattr(ts, "to_pydatetime"):
+                    ts = ts.to_pydatetime()
+                return FillRecord(
+                    timestamp=ts,
+                    symbol=leg.symbol, asset_type="options", side=side, quantity=leg.quantity,
+                    requested_price=option_price, fill_price=option_price,
+                    slippage_dollars=0.0, slippage_bps_applied=slippage.market_bps,
+                    fees=fees, fee_breakdown=breakdown, signal_id=po.signal_id,
+                )
+            else:
+                return None  # No option price — don't fall through to equity
+
         if slippage.use_bar_range:
             fill_price = rng.uniform(float(bar["low"]), float(bar["high"]))
             slip_bps = abs(fill_price - float(bar["open"])) / float(bar["open"]) * 10000
@@ -345,11 +506,33 @@ class BacktestEngine:
             signal_id=po.signal_id,
         )
 
-    def _fill_limit(self, po, bar, side, slippage, fees_list, sim_time) -> Optional[FillRecord]:
+    def _fill_limit(self, po, bar, side, slippage, fees_list, sim_time, ctx=None) -> Optional[FillRecord]:
         leg = po.leg
         limit = leg.limit_price
         if limit is None:
             return None
+
+        # Options path: use contract bid/ask from chain data
+        if leg.asset_type == "options" and ctx is not None:
+            option_price = self._lookup_option_price(leg.symbol, side, ctx)
+            if option_price is not None:
+                if side == "buy" and option_price <= limit:
+                    fill_price = min(option_price, limit)
+                elif side == "sell" and option_price >= limit:
+                    fill_price = max(option_price, limit)
+                else:
+                    return None
+                fees, breakdown = self._compute_fees(leg, fill_price, fees_list, order_type=OrderType.LIMIT)
+                return FillRecord(
+                    timestamp=bar["timestamp"].to_pydatetime() if hasattr(bar["timestamp"], "to_pydatetime") else bar["timestamp"],
+                    symbol=leg.symbol, asset_type="options", side=side, quantity=leg.quantity,
+                    requested_price=limit, fill_price=fill_price,
+                    slippage_dollars=0.0, slippage_bps_applied=0.0,
+                    fees=fees, fee_breakdown=breakdown, signal_id=po.signal_id,
+                )
+            else:
+                return None  # No option price — don't fall through to equity
+
         low, high = float(bar["low"]), float(bar["high"])
         # STRICT cross only — see Spec D §3 conservative-by-default rule
         if side == "buy":
@@ -404,24 +587,50 @@ class BacktestEngine:
     def _apply_fill(self, cash: float, positions: dict, fill: FillRecord) -> float:
         key = (fill.symbol,)  # Equities/crypto key for v1
         ps = positions.get(key) or _PositionState(asset_type=fill.asset_type)
-        notional = fill.fill_price * fill.quantity
+        multiplier = 100 if fill.asset_type == "options" else 1
+        notional = fill.fill_price * fill.quantity * multiplier
+
         if fill.side == "buy":
-            # Weighted average price update
-            total_qty = ps.quantity + fill.quantity
-            if total_qty == 0:
-                ps.avg_price = 0.0
+            if ps.quantity < 0:
+                # Buy-to-close: covering a short position
+                close_qty = min(fill.quantity, abs(ps.quantity))
+                realized = (ps.avg_price - fill.fill_price) * close_qty * multiplier - fill.fees
+                fill.realized_pnl = realized
+                ps.quantity += fill.quantity
+                if ps.quantity == 0:
+                    ps.avg_price = 0.0
+                cash -= notional + fill.fees
             else:
-                ps.avg_price = (ps.avg_price * ps.quantity + fill.fill_price * fill.quantity) / total_qty
-            ps.quantity = total_qty
-            cash -= notional + fill.fees
+                # Buy-to-open: adding to long position
+                total_qty = ps.quantity + fill.quantity
+                if total_qty == 0:
+                    ps.avg_price = 0.0
+                else:
+                    ps.avg_price = (ps.avg_price * ps.quantity + fill.fill_price * fill.quantity) / total_qty
+                ps.quantity = total_qty
+                cash -= notional + fill.fees
         else:  # sell
-            # Realized PnL on the sold portion
-            realized = (fill.fill_price - ps.avg_price) * fill.quantity - fill.fees
-            fill.realized_pnl = realized
-            ps.quantity -= fill.quantity
-            if ps.quantity == 0:
-                ps.avg_price = 0.0
-            cash += notional - fill.fees
+            if ps.quantity > 0:
+                # Sell-to-close: closing a long position
+                close_qty = min(fill.quantity, ps.quantity)
+                realized = (fill.fill_price - ps.avg_price) * close_qty * multiplier - fill.fees
+                fill.realized_pnl = realized
+                ps.quantity -= fill.quantity
+                if ps.quantity == 0:
+                    ps.avg_price = 0.0
+                cash += notional - fill.fees
+            else:
+                # Sell-to-open: creating/adding to short position
+                existing_short = abs(ps.quantity)
+                new_short = existing_short + fill.quantity
+                if existing_short == 0:
+                    ps.avg_price = fill.fill_price
+                else:
+                    ps.avg_price = (ps.avg_price * existing_short + fill.fill_price * fill.quantity) / new_short
+                ps.quantity = -new_short  # negative = short
+                fill.realized_pnl = None  # No realized PnL on opening
+                cash += notional - fill.fees  # Receive premium
+
         positions[key] = ps
         if ps.quantity == 0:
             del positions[key]
@@ -431,40 +640,112 @@ class BacktestEngine:
         """Get the most recent close price for a symbol from its own data series.
         Falls back to the clock bar's close (which may be 0 for synthetic clocks)."""
         if ctx is not None:
+            import numpy as np
             for (src, s, tf), df in ctx._bars.items():
                 if s == sym and not df.empty:
-                    ts_col = pd.to_datetime(df["timestamp"])
-                    if ts_col.dt.tz is not None:
-                        ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                    cutoff = pd.Timestamp(sim_time).tz_localize(None) if hasattr(sim_time, 'tzinfo') and sim_time.tzinfo else pd.Timestamp(sim_time)
-                    at_time = ts_col <= cutoff
-                    if at_time.any():
-                        return float(df.loc[at_time].iloc[-1]["close"])
+                    cache_key = id(df)
+                    if cache_key not in self._ts_cache:
+                        ts_col = pd.to_datetime(df["timestamp"])
+                        if ts_col.dt.tz is not None:
+                            ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                        ns = ts_col.values.astype("int64")
+                        closes = df["close"].values.astype(float)
+                        self._ts_cache[cache_key] = (ns, closes)
+                    ns, closes = self._ts_cache[cache_key]
+                    cutoff = pd.Timestamp(sim_time)
+                    if cutoff.tz is not None:
+                        cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                    cutoff_ns = cutoff.value
+                    idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
+                    if idx >= 0:
+                        return float(closes[idx])
                     break
         return float(fallback_bar["close"]) if fallback_bar is not None else 0.0
+
+    def _lookup_option_mtm_price(self, sym: str, ctx) -> float | None:
+        """Get current mid-price for an option from cached chain data."""
+        if ctx is None:
+            return None
+        for key, df in ctx._option_chain_cache.items():
+            if df is None or (hasattr(df, 'empty') and df.empty):
+                continue
+            for col in ("ticker", "symbol"):
+                if col in df.columns:
+                    match = df[df[col] == sym]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        bid = float(row.get("bid", 0))
+                        ask = float(row.get("ask", 0))
+                        if bid > 0 and ask > 0:
+                            return (bid + ask) / 2
+                        return ask if ask > 0 else bid
+        return None
 
     def _positions_market_value(self, positions: dict, bar, ctx=None, sim_time=None) -> float:
         total = 0.0
         for (sym,), ps in positions.items():
-            price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
-            total += ps.quantity * price
+            multiplier = 100 if ps.asset_type == "options" else 1
+            if ps.asset_type == "options":
+                option_price = self._lookup_option_mtm_price(sym, ctx)
+                price = option_price if option_price is not None else ps.avg_price
+            else:
+                price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            total += ps.quantity * price * multiplier
         return total
 
     def _positions_snapshot(self, positions: dict, bar, ctx=None, sim_time=None) -> list[dict]:
-        return [
-            {"symbol": k[0], "quantity": ps.quantity, "avg_price": ps.avg_price,
-             "current_price": self._lookup_symbol_close(k[0], sim_time, ctx, bar),
-             "market_value": ps.quantity * self._lookup_symbol_close(k[0], sim_time, ctx, bar),
-             "asset_type": ps.asset_type}
-            for k, ps in positions.items()
-        ]
+        result = []
+        for k, ps in positions.items():
+            sym = k[0]
+            multiplier = 100 if ps.asset_type == "options" else 1
+            if ps.asset_type == "options":
+                option_price = self._lookup_option_mtm_price(sym, ctx)
+                current_price = option_price if option_price is not None else ps.avg_price
+            else:
+                current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            result.append({
+                "symbol": sym, "quantity": ps.quantity, "avg_price": ps.avg_price,
+                "current_price": current_price,
+                "market_value": ps.quantity * current_price * multiplier,
+                "asset_type": ps.asset_type,
+            })
+        return result
+
+    @staticmethod
+    def _build_union_clock(bars: dict[tuple, pd.DataFrame]) -> pd.DataFrame:
+        """Merge all symbol timelines into a sorted, deduplicated clock DataFrame.
+
+        Each row carries real OHLCV data from whichever symbol contributed that
+        timestamp first (never zeros).  Used by the engine to tick through a
+        unified timeline when backtesting multi-asset algorithms.
+        """
+        if not bars:
+            return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        frames = []
+        for key, df in bars.items():
+            if df is not None and not df.empty:
+                sub = df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+                sub["timestamp"] = pd.to_datetime(sub["timestamp"])
+                if sub["timestamp"].dt.tz is not None:
+                    sub["timestamp"] = sub["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+                frames.append(sub)
+        if not frames:
+            return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        combined = pd.concat(frames, ignore_index=True)
+        combined = combined.drop_duplicates(subset=["timestamp"], keep="first")
+        combined = combined.sort_values("timestamp").reset_index(drop=True)
+        return combined
 
     def _positions_for_context(self, positions: dict, bar=None, ctx=None, sim_time=None) -> dict:
         """Convert internal state to sdk.models.Position dict the algorithm reads via ctx.positions."""
         from sdk.models import Position
         out: dict = {}
         for (sym,), ps in positions.items():
-            current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            if ps.asset_type == "options":
+                option_price = self._lookup_option_mtm_price(sym, ctx)
+                current_price = option_price if option_price is not None else ps.avg_price
+            else:
+                current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
             if current_price == 0.0:
                 current_price = ps.avg_price
             try:

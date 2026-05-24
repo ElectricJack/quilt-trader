@@ -64,6 +64,8 @@ class BacktestTickContext(TickContext):
         self._on_miss = on_miss
         self._sim_time_now: Optional[datetime] = None
         self._custom_data_cache: Optional[dict[str, pd.DataFrame]] = None
+        self._cancel_orders_requested = False
+        self._option_chain_cache: dict[tuple, "pd.DataFrame"] = {}
 
     # ---- mutation hooks called by the engine ----
 
@@ -226,8 +228,146 @@ class BacktestTickContext(TickContext):
             return pd.read_parquet(path)
         return None
 
+    def cancel_all_orders(self) -> None:
+        """Request cancellation of all pending orders. The engine checks this flag each bar."""
+        self._cancel_orders_requested = True
+
+    def _get_underlying_price(self, symbol: str) -> float | None:
+        """Get the current underlying price from market data bars."""
+        for (src, sym, tf), df in self._bars.items():
+            if sym == symbol and df is not None and not df.empty:
+                ts = pd.to_datetime(df["timestamp"])
+                if ts.dt.tz is not None:
+                    ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+                cutoff = pd.Timestamp(self._sim_time_now)
+                if cutoff.tz is not None:
+                    cutoff = cutoff.tz_localize(None)
+                visible = df[ts <= cutoff]
+                if not visible.empty:
+                    return float(visible.iloc[-1]["close"])
+        return None
+
+    @staticmethod
+    def _infer_snapshot_underlying(chain_df: pd.DataFrame) -> float | None:
+        """Infer the underlying price when the chain was snapshotted.
+
+        Uses put-call parity: at the ATM strike, call and put prices are
+        closest. Returns the strike where |call_bid - put_bid| is minimised,
+        which is a good proxy for the underlying at snapshot time.
+        """
+        calls = chain_df[chain_df["option_type"] == "call"]
+        puts = chain_df[chain_df["option_type"] == "put"]
+        if calls.empty or puts.empty:
+            # Fallback: median strike
+            return float(chain_df["strike"].median()) if not chain_df.empty else None
+        # Match by strike
+        merged = calls.merge(puts, on="strike", suffixes=("_c", "_p"))
+        if merged.empty:
+            return float(chain_df["strike"].median())
+        merged["diff"] = (merged["bid_c"] - merged["bid_p"]).abs()
+        atm_row = merged.loc[merged["diff"].idxmin()]
+        return float(atm_row["strike"])
+
+    def _reprice_chain(self, chain_df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Adjust cached option prices based on current underlying price.
+
+        Vectorized: computes intrinsic value shift for all contracts at once.
+        """
+        import numpy as np
+
+        underlying_price = self._get_underlying_price(symbol)
+        if underlying_price is None:
+            return chain_df
+
+        ref_key = "_ref_price_" + symbol
+        ref_price = getattr(self, ref_key, None)
+        if ref_price is None:
+            ref_price = self._infer_snapshot_underlying(chain_df)
+            if ref_price is None:
+                return chain_df
+            setattr(self, ref_key, ref_price)
+
+        if abs(underlying_price - ref_price) < 0.01:
+            return chain_df
+
+        repriced = chain_df.copy()
+        strikes = repriced["strike"].values.astype(float)
+        is_call = (repriced["option_type"] == "call").values
+
+        old_call_intrinsic = np.maximum(0.0, ref_price - strikes)
+        new_call_intrinsic = np.maximum(0.0, underlying_price - strikes)
+        old_put_intrinsic = np.maximum(0.0, strikes - ref_price)
+        new_put_intrinsic = np.maximum(0.0, strikes - underlying_price)
+
+        delta = np.where(is_call,
+                         new_call_intrinsic - old_call_intrinsic,
+                         new_put_intrinsic - old_put_intrinsic)
+
+        for col in ("bid", "ask", "last"):
+            if col in repriced.columns:
+                repriced[col] = np.maximum(0.0, repriced[col].values.astype(float) + delta)
+
+        return repriced
+
     def option_chain(self, symbol: str, expiration: Optional[date] = None) -> OptionChain:
-        raise NotImplementedError(
-            "option_chain not yet available in backtest contexts; tracked as a follow-up. "
-            "Options backtest support is documented in Spec D §12."
-        )
+        from sdk.models import OptionContract
+
+        if isinstance(expiration, str):
+            expiration = date.fromisoformat(expiration)
+        exp = expiration or (self._sim_time_now.date() if self._sim_time_now else date.today())
+        source = self._default_source or "polygon"
+
+        cache_key = (source, symbol, exp)
+        if cache_key in self._option_chain_cache:
+            df = self._option_chain_cache[cache_key]
+        elif self._data_service is not None and hasattr(self._data_service, "load_option_chain"):
+            df = self._data_service.load_option_chain(source, symbol, exp)
+            if df is not None and not df.empty:
+                self._option_chain_cache[cache_key] = df
+            else:
+                df = pd.DataFrame()
+        else:
+            df = pd.DataFrame()
+
+        # Nearest-expiration fallback: if exact expiration not found,
+        # try the closest available within 7 days
+        if (df is None or df.empty) and self._data_service is not None and hasattr(self._data_service, "list_option_chain_expirations"):
+            available = self._data_service.list_option_chain_expirations(source, symbol)
+            if available:
+                nearest = min(available, key=lambda d: abs((d - exp).days))
+                if abs((nearest - exp).days) <= 45:
+                    df = self._data_service.load_option_chain(source, symbol, nearest)
+                    exp = nearest  # update expiration to the one we actually found
+                    if df is not None and not df.empty:
+                        self._option_chain_cache[cache_key] = df
+
+        if df is None or df.empty:
+            return OptionChain(underlying=symbol, expiration=exp, calls=[], puts=[])
+
+        if df is not None and not df.empty:
+            df = self._reprice_chain(df, symbol)
+
+        calls: list[OptionContract] = []
+        puts: list[OptionContract] = []
+        sym_col = "ticker" if "ticker" in df.columns else "symbol"
+        records = df.to_dict("records")
+        for row in records:
+            contract = OptionContract(
+                symbol=str(row.get(sym_col, "")),
+                underlying=symbol,
+                expiration=exp,
+                strike=float(row.get("strike", 0)),
+                option_type=str(row.get("option_type", "")),
+                bid=float(row.get("bid", 0)),
+                ask=float(row.get("ask", 0)),
+                last=float(row.get("last", 0)),
+                volume=int(row.get("volume", 0)),
+                open_interest=int(row.get("open_interest", 0)),
+                implied_volatility=float(row.get("implied_volatility", 0)),
+            )
+            if contract.option_type == "call":
+                calls.append(contract)
+            elif contract.option_type == "put":
+                puts.append(contract)
+
+        return OptionChain(underlying=symbol, expiration=exp, calls=calls, puts=puts)
