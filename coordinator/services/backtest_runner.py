@@ -306,7 +306,11 @@ class BacktestRunner:
                     resampled = self._resample_clock(clock_series, trigger_s)
                     if not resampled.empty:
                         clock_series = resampled
-                        clock_tf = f"{trigger_s // 3600}hour" if trigger_s >= 3600 else f"{trigger_s // 60}min"
+                        # Use nearest known timeframe for the engine
+                        for tf_name, tf_sec in [("1day", 86400), ("1hour", 3600), ("15min", 900), ("5min", 300), ("1min", 60)]:
+                            if tf_sec <= trigger_s:
+                                clock_tf = tf_name
+                                break
             else:
                 import numpy as np
                 clock_source = "synthetic"
