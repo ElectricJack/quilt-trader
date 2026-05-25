@@ -414,13 +414,36 @@ class BacktestEngine:
         raise ValueError(f"Unsupported order_type: {ot}")
 
     def _lookup_option_price(self, contract_symbol: str, side: str, ctx) -> float | None:
-        """Find bid/ask for a contract from the cached option chain data.
+        """Find bid/ask for a contract.
 
-        Searches all cached chain DataFrames for the contract symbol.
-        If no cache hit, attempts to load the chain from data_service using
-        the underlying symbol extracted from the OCC-style contract symbol.
+        Priority: direct contract bar data on disk (most accurate) → chain cache.
         """
-        # First, search existing cache
+        # Best path: load the contract's own bar data directly
+        if ctx._data_service is not None:
+            sym = contract_symbol.removeprefix("O:")
+            df = ctx._data_service.load_market_data(
+                ctx._default_source or "polygon", sym, "1day",
+            )
+            if df is not None and not df.empty:
+                import numpy as np
+                ts = pd.to_datetime(df["timestamp"])
+                if ts.dt.tz is not None:
+                    ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+                cutoff = pd.Timestamp(ctx._sim_time_now)
+                if cutoff.tz is not None:
+                    cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                visible = df[ts <= cutoff]
+                if not visible.empty:
+                    bar = visible.iloc[-1]
+                    close = float(bar["close"])
+                    if "bid" in bar.index and "ask" in bar.index and pd.notna(bar["bid"]):
+                        return float(bar["ask"]) if side == "buy" else float(bar["bid"])
+                    from coordinator.services.options_math import estimate_spread
+                    vol = int(bar.get("volume", 0))
+                    spread = estimate_spread(close, vol)
+                    return (close + spread / 2) if side == "buy" else max(0.0, close - spread / 2)
+
+        # Fallback: search chain cache
         for key, df in ctx._option_chain_cache.items():
             if df is None or (hasattr(df, 'empty') and df.empty):
                 continue
