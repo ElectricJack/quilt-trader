@@ -48,6 +48,25 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+## Backtesting
+
+### Timezone-aware backtest engine
+- **Surfaced by:** options-spreads-martingale backtests producing 0 trades (2026-05-25). The algo checks `now.time() < time(15, 45)` meaning 3:45 PM ET, but sim_time is UTC. The 5-minute entry window (15:45–15:50 config) silently misaligns.
+- **Why deferred:** workaround exists (adjust config times to UTC), but every new algo with time-of-day logic will hit the same trap.
+- **What's needed:** add `timezone` field to manifest (e.g., `timezone: America/New_York`). Engine converts sim_time to algo's declared timezone before calling on_tick. `ctx.timestamp` returns tz-aware datetime. Default to UTC if not specified. Validate at install: reject manifests with time-based configs that don't declare a timezone.
+
+### Daily/weekly option expiration data
+- **Surfaced by:** options-spreads-martingale and options-condor-martingale backtests (2026-05-25). These are 0DTE/1DTE strategies that need contracts expiring every trading day. Current contract discovery only finds monthly expirations (3rd Friday), so the algo's `_next_expiration()` returns tomorrow's date but no chain exists for it → 0 trades.
+- **Why deferred:** downloading daily expirations increases data volume ~20x. Polygon free tier rate limits make this impractical without a paid plan.
+- **What's needed:** extend contract discovery to find daily/weekly expirations. Consider making expiration frequency configurable in the manifest (`expiration_frequency: daily | weekly | monthly`). May require Polygon paid tier for reasonable download times.
+
+### Orphan backtest cleanup on startup
+- **Surfaced by:** coordinator restarts leaving backtests stuck in "running" status (2026-05-25).
+- **Why deferred:** manual SQL cleanup works. Similar to download manager's existing `recover_orphaned_downloads()`.
+- **What's needed:** on startup, mark any "running"/"downloading_data" backtest rows as "failed" with message "Orphaned by coordinator restart".
+
+---
+
 ## Live data feeds
 
 ### Per-stream `on_disconnect` callback wired into broker handles
