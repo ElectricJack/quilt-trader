@@ -704,8 +704,11 @@ class BacktestEngine:
 
         for sym, ps, parsed in expired:
             exp = _date.fromisoformat(parsed["expiration"])
+            exp_datetime = pd.Timestamp(exp)
+            if hasattr(sim_time, 'tzinfo') and sim_time.tzinfo is not None:
+                exp_datetime = exp_datetime.tz_localize(sim_time.tzinfo)
             underlying_price = self._lookup_symbol_close(
-                parsed["underlying"], sim_time, ctx, None,
+                parsed["underlying"], exp_datetime, ctx, None,
             )
             if underlying_price == 0.0:
                 underlying_price = parsed["strike"]
