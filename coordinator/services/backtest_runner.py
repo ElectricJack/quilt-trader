@@ -25,7 +25,7 @@ from coordinator.services.backtest_config import SlippageModel, TradingFee
 from coordinator.services.backtest_engine_v2 import (
     BacktestEngine, CancelToken, EngineObserver, EngineSummary, FillRecord,
 )
-from coordinator.services.backtest_tick_context import BacktestTickContext
+from coordinator.services.backtest_tick_context import BacktestTickContext, timeframe_to_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +299,14 @@ class BacktestRunner:
                 clock_key = self._pick_clock_key(bars, manifest.trigger)
                 clock_series = bars[clock_key]
                 clock_source, clock_symbol, clock_tf = clock_key
+                # If trigger is coarser than the clock data, resample to reduce ticks
+                trigger_s = self._trigger_to_seconds(manifest.trigger)
+                clock_s = timeframe_to_seconds(clock_tf) or 1
+                if trigger_s and trigger_s > clock_s * 2:
+                    resampled = self._resample_clock(clock_series, trigger_s)
+                    if not resampled.empty:
+                        clock_series = resampled
+                        clock_tf = f"{trigger_s // 3600}hour" if trigger_s >= 3600 else f"{trigger_s // 60}min"
             else:
                 import numpy as np
                 clock_source = "synthetic"
@@ -653,6 +661,21 @@ class BacktestRunner:
             timeframe=timeframe,
         )
         await self._wait_for_download(dl["id"])
+
+    @staticmethod
+    def _resample_clock(clock_series: pd.DataFrame, target_seconds: int) -> pd.DataFrame:
+        """Resample a fine-grained clock to a coarser interval."""
+        df = clock_series.copy()
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        if df["timestamp"].dt.tz is not None:
+            df["timestamp"] = df["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+        df = df.set_index("timestamp")
+        freq = f"{target_seconds}s"
+        resampled = df.resample(freq).agg({
+            "open": "first", "high": "max", "low": "min",
+            "close": "last", "volume": "sum",
+        }).dropna(subset=["open"]).reset_index()
+        return resampled
 
     def _smallest_timeframe_key(self, bars: dict) -> tuple:
         from coordinator.services.backtest_tick_context import timeframe_to_seconds
