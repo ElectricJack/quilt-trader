@@ -304,8 +304,13 @@ class BacktestTickContext(TickContext):
             setattr(self, ref_time_key, ref_time)
 
         now = pd.Timestamp(self._sim_time_now)
-        if abs(underlying_price - ref_price) < 0.01 and ref_time == now:
+        price_moved = abs(underlying_price - ref_price) >= 0.01
+        time_moved = now.date() != ref_time.date() if ref_time is not None else True
+        if not price_moved and not time_moved:
             return chain_df
+
+        setattr(self, ref_key, underlying_price)
+        setattr(self, ref_time_key, now)
 
         repriced = chain_df.copy()
         risk_free = 0.04
