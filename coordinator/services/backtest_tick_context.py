@@ -66,6 +66,7 @@ class BacktestTickContext(TickContext):
         self._custom_data_cache: Optional[dict[str, pd.DataFrame]] = None
         self._cancel_orders_requested = False
         self._option_chain_cache: dict[tuple, "pd.DataFrame"] = {}
+        self._ts_index_cache: dict[int, tuple] = {}  # id(df) -> (ns_array, tz_stripped)
 
     # ---- mutation hooks called by the engine ----
 
@@ -159,19 +160,25 @@ class BacktestTickContext(TickContext):
 
         if df is None or df.empty:
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+        import numpy as np
         duration_s = timeframe_to_seconds(timeframe)
         cutoff = pd.Timestamp(self._sim_time_now)
-        # Normalize cutoff tz to match the column. On-disk bars are stored tz-naive
-        # (UTC by convention); pre-loaded bars may be tz-aware. If the column is
-        # tz-naive, strip tz from the cutoff so the comparison succeeds.
-        ts_col = pd.to_datetime(df["timestamp"])
-        if ts_col.dt.tz is None and cutoff.tz is not None:
+        if cutoff.tz is not None:
             cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-        # A bar is "fully closed" if its close time (start + duration) is <= cutoff.
-        # For 1tick (duration=0), this collapses to timestamp <= cutoff.
-        delta = pd.Timedelta(seconds=duration_s)
-        visible = df[ts_col + delta <= cutoff]
-        return visible.tail(bars).reset_index(drop=True)
+        cutoff_ns = np.datetime64(cutoff).view("int64") - duration_s * 1_000_000_000
+
+        cache_key = id(df)
+        if cache_key not in self._ts_index_cache:
+            ts_col = pd.to_datetime(df["timestamp"])
+            if ts_col.dt.tz is not None:
+                ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+            ns = ts_col.values.view("int64")
+            self._ts_index_cache[cache_key] = ns
+        ns = self._ts_index_cache[cache_key]
+
+        end_idx = int(np.searchsorted(ns, cutoff_ns, side="right"))
+        start_idx = max(0, end_idx - bars)
+        return df.iloc[start_idx:end_idx].reset_index(drop=True)
 
     def data(self, source_name: str) -> pd.DataFrame:
         """Load custom data (scraper output, CSV, etc.) from disk."""

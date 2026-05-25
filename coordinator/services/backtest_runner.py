@@ -292,11 +292,11 @@ class BacktestRunner:
                     pass
                 bars[(source, symbol, timeframe)] = df
 
-            # Pick the smallest-timeframe series for the clock. If no market
-            # bars exist (e.g., scraper-only algo), build a synthetic daily
-            # clock spanning the date range.
+            # Pick the clock series. If the manifest has a trigger interval
+            # coarser than the finest data (e.g., trigger=interval:4h but
+            # data is 1min), use a coarser clock so the engine ticks less.
             if bars:
-                clock_key = self._smallest_timeframe_key(bars)
+                clock_key = self._pick_clock_key(bars, manifest.trigger)
                 clock_series = bars[clock_key]
                 clock_source, clock_symbol, clock_tf = clock_key
             else:
@@ -657,3 +657,42 @@ class BacktestRunner:
     def _smallest_timeframe_key(self, bars: dict) -> tuple:
         from coordinator.services.backtest_tick_context import timeframe_to_seconds
         return min(bars.keys(), key=lambda k: timeframe_to_seconds(k[2]) or 1e18)
+
+    @staticmethod
+    def _trigger_to_seconds(trigger: str) -> int | None:
+        """Parse a manifest trigger into seconds. Returns None for non-interval triggers."""
+        import re
+        m = re.match(r"^bar:(\w+)$", trigger)
+        if m:
+            from coordinator.services.backtest_tick_context import timeframe_to_seconds
+            try:
+                return timeframe_to_seconds(m.group(1))
+            except ValueError:
+                return None
+        m = re.match(r"^interval:(\d+)([smh])$", trigger)
+        if m:
+            val, unit = int(m.group(1)), m.group(2)
+            return val * {"s": 1, "m": 60, "h": 3600}[unit]
+        return None
+
+    def _pick_clock_key(self, bars: dict, trigger: str) -> tuple:
+        """Pick the best clock series for the engine.
+
+        If the trigger interval is coarser than the finest data, pick
+        a data series whose timeframe is closest to (but not coarser than)
+        the trigger interval. This reduces engine ticks while keeping
+        finer data available for market_data() calls.
+        """
+        from coordinator.services.backtest_tick_context import timeframe_to_seconds
+        trigger_s = self._trigger_to_seconds(trigger)
+        if trigger_s is None:
+            return self._smallest_timeframe_key(bars)
+
+        best_key = None
+        best_seconds = 0
+        for key in bars:
+            tf_s = timeframe_to_seconds(key[2]) or 1
+            if tf_s <= trigger_s and tf_s > best_seconds:
+                best_seconds = tf_s
+                best_key = key
+        return best_key or self._smallest_timeframe_key(bars)

@@ -339,9 +339,13 @@ class BacktestEngine:
 
             # ---- 3. Mark-to-market equity point ----
             mtm_value = cash + self._positions_market_value(positions, bar, ctx=ctx, sim_time=sim_time)
-            observer.on_equity_point(
-                sim_time, mtm_value, cash, self._positions_snapshot(positions, bar, ctx=ctx, sim_time=sim_time),
-            )
+            # Full position snapshot is expensive — only compute it every 50 bars
+            # or on the last bar. The observer still gets the portfolio value on every bar.
+            if bar_idx % 50 == 0 or bar_idx == len(clock) - 1:
+                snapshot = self._positions_snapshot(positions, bar, ctx=ctx, sim_time=sim_time)
+            else:
+                snapshot = []
+            observer.on_equity_point(sim_time, mtm_value, cash, snapshot)
 
             if progress is not None and bar_idx % 100 == 0:
                 progress(bar_idx / max(len(clock), 1))
