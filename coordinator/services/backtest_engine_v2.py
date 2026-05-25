@@ -225,14 +225,14 @@ class BacktestEngine:
                                 ts_col = pd.to_datetime(df["timestamp"])
                                 if ts_col.dt.tz is not None:
                                     ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                                ns = ts_col.values.astype("int64")
+                                ns = ts_col.values.view("int64")
                                 closes = df["close"].values.astype(float)
                                 self._ts_cache[cache_key] = (ns, closes)
                             ns, _ = self._ts_cache[cache_key]
                             cutoff = pd.Timestamp(sim_time)
                             if cutoff.tz is not None:
                                 cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-                            cutoff_ns = cutoff.value
+                            cutoff_ns = np.datetime64(cutoff).view("int64")
                             idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
                             if idx >= 0:
                                 fill_bar = df.iloc[idx]
@@ -771,14 +771,14 @@ class BacktestEngine:
                         ts_col = pd.to_datetime(df["timestamp"])
                         if ts_col.dt.tz is not None:
                             ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                        ns = ts_col.values.astype("int64")
+                        ns = ts_col.values.view("int64")
                         closes = df["close"].values.astype(float)
                         self._ts_cache[cache_key] = (ns, closes)
                     ns, closes = self._ts_cache[cache_key]
                     cutoff = pd.Timestamp(sim_time)
                     if cutoff.tz is not None:
                         cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-                    cutoff_ns = cutoff.value
+                    cutoff_ns = np.datetime64(cutoff).view("int64")
                     idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
                     if idx >= 0:
                         return float(closes[idx])
