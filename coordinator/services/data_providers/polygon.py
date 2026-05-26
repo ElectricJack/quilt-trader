@@ -252,30 +252,34 @@ class PolygonProvider:
         on_status: StatusCallback | None = None,
         strike_range_pct: float = 0.05,
         max_contracts: int = 0,
+        underlying_price: float | None = None,
     ) -> list[dict]:
         """Discover option contracts for a given underlying + expiration.
 
         Returns a list of contract dicts with keys: ticker, strike_price, contract_type.
         Does NOT fetch bars — callers use fetch_bars() per contract.
+
+        If underlying_price is provided, skips the Polygon price lookup (saves one API call).
+        If strike_range_pct >= 1.0 (i.e. "all"), skips the price lookup entirely.
         """
         from datetime import timedelta
 
-        await self._safe_status(on_status, f"Fetching {underlying} price for ATM filtering")
-        underlying_price = None
-        try:
-            price_url = (
-                f"{self.BASE_URL}/v2/aggs/ticker/{underlying}/range"
-                f"/1/day/{(expiration - timedelta(days=7)).isoformat()}/{expiration.isoformat()}"
-            )
-            price_resp = await self._request_with_retry(
-                price_url, {"apiKey": self._api_key, "limit": 5, "sort": "desc"},
-                on_status=on_status,
-            )
-            price_bars = price_resp.json().get("results") or []
-            if price_bars:
-                underlying_price = price_bars[0].get("c")
-        except Exception:
-            pass
+        if underlying_price is None and strike_range_pct < 1.0:
+            await self._safe_status(on_status, f"Fetching {underlying} price for ATM filtering")
+            try:
+                price_url = (
+                    f"{self.BASE_URL}/v2/aggs/ticker/{underlying}/range"
+                    f"/1/day/{(expiration - timedelta(days=7)).isoformat()}/{expiration.isoformat()}"
+                )
+                price_resp = await self._request_with_retry(
+                    price_url, {"apiKey": self._api_key, "limit": 5, "sort": "desc"},
+                    on_status=on_status,
+                )
+                price_bars = price_resp.json().get("results") or []
+                if price_bars:
+                    underlying_price = price_bars[0].get("c")
+            except Exception:
+                pass
 
         await self._safe_status(on_status, f"Discovering {underlying} contracts for {expiration}")
         contracts: list[dict] = []

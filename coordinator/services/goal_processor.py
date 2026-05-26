@@ -20,7 +20,7 @@ from coordinator.database.models import DataGoal
 
 logger = logging.getLogger(__name__)
 
-DISCOVERY_BATCH = 5
+DISCOVERY_BATCH = 20
 DOWNLOAD_BATCH = 50
 
 
@@ -90,6 +90,21 @@ class GoalProcessor:
         new_contracts = list(existing_contracts)
         discovered_this_tick = 0
 
+        # Get underlying price once via yfinance (free, no rate limit)
+        # to avoid burning a Polygon API call per expiration
+        underlying_price = None
+        if strike_pct < 1.0:
+            try:
+                yf_provider = self._providers.get("yfinance")
+                if yf_provider:
+                    import asyncio
+                    bars = await yf_provider.fetch_bars(underlying, "1day", end - timedelta(days=7), end)
+                    if bars:
+                        underlying_price = bars[-1].get("close")
+                        logger.info("Got %s price %.2f from yfinance for discovery", underlying, underlying_price)
+            except Exception:
+                logger.debug("Could not get underlying price from yfinance, will use Polygon fallback")
+
         for exp in expirations:
             if exp.isoformat() in discovered_exps:
                 continue
@@ -102,7 +117,8 @@ class GoalProcessor:
                     new_contracts.append({"symbol": sym, "expiration": exp.isoformat()})
             else:
                 contracts = await provider.discover_option_contracts(
-                    underlying, exp, strike_range_pct=strike_pct, max_contracts=max_contracts,
+                    underlying, exp, strike_range_pct=strike_pct,
+                    max_contracts=max_contracts, underlying_price=underlying_price,
                 )
                 for c in contracts:
                     sym = c["ticker"].removeprefix("O:")
