@@ -485,6 +485,14 @@ export function useResumeGoal() {
   });
 }
 
+export function useUpdateGoal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: GoalCreate }) => api.updateGoal(id, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["data", "goals"] }),
+  });
+}
+
 export function useDeleteGoal() {
   const qc = useQueryClient();
   return useMutation({

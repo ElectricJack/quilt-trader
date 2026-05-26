@@ -1,10 +1,11 @@
-import { useState } from "react";
-import type { GoalCreate } from "../api/client";
+import { useState, useEffect } from "react";
+import type { GoalCreate, DataGoal } from "../api/client";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onSubmit: (goal: GoalCreate) => void;
+  editGoal?: DataGoal | null;
 }
 
 const FREQUENCIES = [
@@ -23,11 +24,11 @@ const TIMEFRAME_OPTIONS = ["1min", "5min", "15min", "1hour", "1day"];
 
 const PROVIDERS = ["polygon", "yfinance", "tradier", "alpaca"];
 
-export function CreateGoalModal({ open, onClose, onSubmit }: Props) {
+export function CreateGoalModal({ open, onClose, onSubmit, editGoal }: Props) {
   const [goalType, setGoalType] = useState<"options" | "bars">("options");
   const [name, setName] = useState("");
   const [underlying, setUnderlying] = useState("QQQ");
-  const [frequency, setFrequency] = useState("weekly");
+  const [frequencies, setFrequencies] = useState<string[]>(["weekly"]);
   const [strikeRange, setStrikeRange] = useState("atm5");
   const [maxContracts, setMaxContracts] = useState(60);
   const [symbols, setSymbols] = useState("");
@@ -36,10 +37,46 @@ export function CreateGoalModal({ open, onClose, onSubmit }: Props) {
   const [dateStart, setDateStart] = useState("2024-06-01");
   const [dateEnd, setDateEnd] = useState("2026-05-01");
 
+  useEffect(() => {
+    if (editGoal) {
+      setGoalType(editGoal.goal_type);
+      setName(editGoal.name);
+      const c = editGoal.config as any;
+      setProvider(c.provider || "polygon");
+      setDateStart(c.date_start || "2024-06-01");
+      setDateEnd(c.date_end || "2026-05-01");
+      if (editGoal.goal_type === "options") {
+        setUnderlying(c.underlying || "QQQ");
+        const freq = c.frequency || c.frequencies || "weekly";
+        setFrequencies(Array.isArray(freq) ? freq : [freq]);
+        setStrikeRange(c.strike_range || "atm5");
+        setMaxContracts(c.max_contracts_per_exp || 60);
+      } else {
+        setSymbols((c.symbols || []).join(", "));
+        setTimeframes(c.timeframes || ["1day"]);
+      }
+    } else if (!open) {
+      setName("");
+    }
+  }, [editGoal, open]);
+
   if (!open) return null;
+
+  const toggleFrequency = (val: string) => {
+    setFrequencies((prev) =>
+      prev.includes(val) ? prev.filter((f) => f !== val) : [...prev, val]
+    );
+  };
+
+  const toggleTimeframe = (tf: string) => {
+    setTimeframes((prev) =>
+      prev.includes(tf) ? prev.filter((t) => t !== tf) : [...prev, tf]
+    );
+  };
 
   const handleSubmit = () => {
     if (!name.trim()) return;
+    if (goalType === "options" && frequencies.length === 0) return;
     if (goalType === "options") {
       onSubmit({
         name,
@@ -49,7 +86,7 @@ export function CreateGoalModal({ open, onClose, onSubmit }: Props) {
           provider,
           date_start: dateStart,
           date_end: dateEnd,
-          frequency,
+          frequencies,
           strike_range: strikeRange,
           max_contracts_per_exp: maxContracts,
         },
@@ -70,20 +107,16 @@ export function CreateGoalModal({ open, onClose, onSubmit }: Props) {
     onClose();
   };
 
-  const toggleTimeframe = (tf: string) => {
-    setTimeframes((prev) =>
-      prev.includes(tf) ? prev.filter((t) => t !== tf) : [...prev, tf]
-    );
-  };
+  const isEdit = !!editGoal;
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-gray-900 rounded-lg w-full max-w-lg p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
-        <h2 className="text-lg font-semibold text-white">Create Data Goal</h2>
+        <h2 className="text-lg font-semibold text-white">{isEdit ? "Edit Data Goal" : "Create Data Goal"}</h2>
 
         <div>
           <label className="text-xs text-gray-400 block mb-1">Goal Name</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., QQQ weekly options 2Y" className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100" />
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., QQQ all options 2Y" className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100" />
         </div>
 
         <div>
@@ -123,15 +156,16 @@ export function CreateGoalModal({ open, onClose, onSubmit }: Props) {
               <input value={underlying} onChange={(e) => setUnderlying(e.target.value.toUpperCase())} className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100" />
             </div>
             <div>
-              <label className="text-xs text-gray-400 block mb-1">Expiration Frequency</label>
+              <label className="text-xs text-gray-400 block mb-1">Expiration Frequencies (select all that apply)</label>
               <div className="flex gap-2">
                 {FREQUENCIES.map((f) => (
-                  <button key={f.value} onClick={() => setFrequency(f.value)}
-                    className={`px-3 py-1.5 rounded text-xs font-medium ${frequency === f.value ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}>
+                  <button key={f.value} onClick={() => toggleFrequency(f.value)}
+                    className={`px-3 py-1.5 rounded text-xs font-medium ${frequencies.includes(f.value) ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}>
                     {f.label}
                   </button>
                 ))}
               </div>
+              {frequencies.length === 0 && <p className="text-xs text-red-400 mt-1">Select at least one frequency</p>}
             </div>
             <div>
               <label className="text-xs text-gray-400 block mb-1">Strike Range</label>
@@ -173,7 +207,9 @@ export function CreateGoalModal({ open, onClose, onSubmit }: Props) {
 
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
-          <button onClick={handleSubmit} disabled={!name.trim()} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded disabled:opacity-50">Create Goal</button>
+          <button onClick={handleSubmit} disabled={!name.trim() || (goalType === "options" && frequencies.length === 0)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded disabled:opacity-50">
+            {isEdit ? "Save Changes" : "Create Goal"}
+          </button>
         </div>
       </div>
     </div>

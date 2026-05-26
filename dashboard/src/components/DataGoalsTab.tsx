@@ -1,15 +1,16 @@
 import { useState } from "react";
-import { Plus, Pause, Play, Trash2 } from "lucide-react";
-import { useDataGoals, useCreateGoal, usePauseGoal, useResumeGoal, useDeleteGoal } from "../api/hooks";
+import { Plus, Pause, Play, Trash2, Pencil } from "lucide-react";
+import { useDataGoals, useCreateGoal, useUpdateGoal, usePauseGoal, useResumeGoal, useDeleteGoal } from "../api/hooks";
 import { CreateGoalModal } from "./CreateGoalModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { GoalCreate, DataGoal } from "../api/client";
 
-function GoalCard({ goal, onPause, onResume, onDelete }: {
+function GoalCard({ goal, onPause, onResume, onDelete, onEdit }: {
   goal: DataGoal;
   onPause: () => void;
   onResume: () => void;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   const pct = goal.progress_pct;
   const statusColor = goal.status === "active" ? "text-green-400" : goal.status === "paused" ? "text-yellow-400" : "text-gray-400";
@@ -37,6 +38,9 @@ function GoalCard({ goal, onPause, onResume, onDelete }: {
               <Play size={14} className="text-gray-400" />
             </button>
           )}
+          <button onClick={onEdit} className="p-1 hover:bg-gray-800 rounded" title="Edit">
+            <Pencil size={14} className="text-gray-400" />
+          </button>
           <button onClick={onDelete} className="p-1 hover:bg-gray-800 rounded" title="Delete">
             <Trash2 size={14} className="text-gray-400" />
           </button>
@@ -66,14 +70,21 @@ function GoalCard({ goal, onPause, onResume, onDelete }: {
 export function DataGoalsTab() {
   const { data: goals, isLoading } = useDataGoals();
   const createGoal = useCreateGoal();
+  const updateGoal = useUpdateGoal();
   const pauseGoal = usePauseGoal();
   const resumeGoal = useResumeGoal();
   const deleteGoal = useDeleteGoal();
   const [showCreate, setShowCreate] = useState(false);
+  const [editingGoal, setEditingGoal] = useState<DataGoal | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  const handleCreate = (body: GoalCreate) => {
-    createGoal.mutate(body);
+  const handleSubmit = (body: GoalCreate) => {
+    if (editingGoal) {
+      updateGoal.mutate({ id: editingGoal.id, body });
+      setEditingGoal(null);
+    } else {
+      createGoal.mutate(body);
+    }
   };
 
   if (isLoading) return <div className="text-gray-500 text-sm py-4">Loading goals...</div>;
@@ -96,11 +107,17 @@ export function DataGoalsTab() {
             <GoalCard key={g.id} goal={g}
               onPause={() => pauseGoal.mutate(g.id)}
               onResume={() => resumeGoal.mutate(g.id)}
-              onDelete={() => setConfirmDelete(g.id)} />
+              onDelete={() => setConfirmDelete(g.id)}
+              onEdit={() => { setEditingGoal(g); setShowCreate(true); }} />
           ))}
         </div>
       )}
-      <CreateGoalModal open={showCreate} onClose={() => setShowCreate(false)} onSubmit={handleCreate} />
+      <CreateGoalModal
+        open={showCreate}
+        onClose={() => { setShowCreate(false); setEditingGoal(null); }}
+        onSubmit={handleSubmit}
+        editGoal={editingGoal}
+      />
       <ConfirmDialog
         open={confirmDelete !== null}
         title="Delete Goal"

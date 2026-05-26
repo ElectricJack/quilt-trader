@@ -67,13 +67,18 @@ class GoalProcessor:
 
         start = date.fromisoformat(config["date_start"])
         end = date.fromisoformat(config["date_end"])
-        frequency = config.get("frequency", "monthly")
+        frequencies = config.get("frequencies", config.get("frequency", ["monthly"]))
+        if isinstance(frequencies, str):
+            frequencies = [frequencies]
         strike_range = config.get("strike_range", "atm5")
         max_contracts = config.get("max_contracts_per_exp", 60)
 
         strike_pct = {"atm5": 0.05, "atm15": 0.15, "all": 1.0}.get(strike_range, 0.05)
 
-        expirations = self._generate_expirations(start, end, frequency)
+        all_expirations: set[date] = set()
+        for freq in frequencies:
+            all_expirations.update(self._generate_expirations(start, end, freq))
+        expirations = sorted(all_expirations)
 
         total = 0
         completed = 0

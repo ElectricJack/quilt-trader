@@ -89,6 +89,21 @@ async def resume_goal(goal_id: str, db: AsyncSession = Depends(get_db)):
     return _to_response(g)
 
 
+@router.put("/{goal_id}")
+async def update_goal(goal_id: str, body: GoalCreate, db: AsyncSession = Depends(get_db)):
+    g = (await db.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one_or_none()
+    if g is None:
+        raise HTTPException(404, detail="Goal not found")
+    g.name = body.name
+    g.goal_type = body.goal_type
+    g.config = body.config
+    g.total_items = 0
+    g.completed_items = 0
+    g.status = "active"
+    await db.commit()
+    return _to_response(g)
+
+
 @router.delete("/{goal_id}", status_code=204)
 async def delete_goal(goal_id: str, db: AsyncSession = Depends(get_db)):
     g = (await db.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one_or_none()

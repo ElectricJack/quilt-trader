@@ -608,6 +608,12 @@ export const api = {
   resumeGoal(id: string): Promise<DataGoal> {
     return request<DataGoal>(`/api/data/goals/${id}/resume`, { method: "POST" });
   },
+  updateGoal(id: string, body: GoalCreate): Promise<DataGoal> {
+    return request<DataGoal>(`/api/data/goals/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
   deleteGoal(id: string): Promise<void> {
     return request<void>(`/api/data/goals/${id}`, { method: "DELETE" });
   },
