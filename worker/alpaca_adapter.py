@@ -325,8 +325,10 @@ class AlpacaAdapter(BrokerAdapter):
         chain_resp = self._data_client.get_option_chain(
             OptionChainRequest(underlying_symbol=underlying, expiration_date=expiry)
         )
+        # alpaca-py returns a dict[occ_symbol, OptionsSnapshot] directly
+        snapshots = chain_resp if isinstance(chain_resp, dict) else (chain_resp.snapshots or {})
         contracts = []
-        for occ_sym, snap in (chain_resp.snapshots or {}).items():
+        for occ_sym, snap in snapshots.items():
             # Parse OCC: <UNDERLYING><YY><MM><DD><C|P><strike*1000 padded 8>
             tail = occ_sym[len(underlying):]
             right = "call" if tail[6] == "C" else "put"
@@ -352,7 +354,7 @@ class AlpacaAdapter(BrokerAdapter):
         as_of = max(
             (
                 getattr(getattr(s, "latest_quote", None), "timestamp", None)
-                for s in (chain_resp.snapshots or {}).values()
+                for s in snapshots.values()
                 if getattr(s, "latest_quote", None) is not None
             ),
             default=None,
