@@ -9,12 +9,12 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import { ChevronLeft, RotateCcw } from "lucide-react";
 import {
   useAccount,
-  useOptionExpiries,
-  useOptionChain,
+  useOptionChainMatrix,
   useOpenPosition,
 } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
 import type { OptionLeg } from "../lib/options";
+import type { OptionChainResponse } from "../api/client";
 import {
   buildTemplate,
   TEMPLATE_LABELS,
@@ -22,7 +22,7 @@ import {
 } from "../components/strategy/templates";
 import { usePersistedBuilderState } from "../components/strategy/usePersistedBuilderState";
 import { LegsTable } from "../components/strategy/LegsTable";
-import { ChainBrowser } from "../components/strategy/ChainBrowser";
+import { StrategyChainMatrix } from "../components/strategy/StrategyChainMatrix";
 import { PnlChart } from "../components/strategy/PnlChart";
 import { DateSlider } from "../components/strategy/DateSlider";
 import { GreeksPanel } from "../components/strategy/GreeksPanel";
@@ -72,37 +72,54 @@ export function Strategies() {
     if (needsToastMsg) addAlert({ message: needsToastMsg, severity: "warning" });
   }, [needsToastMsg, addAlert]);
 
-  const { data: expData } = useOptionExpiries(
+  const { data: matrix, isLoading: matrixLoading } = useOptionChainMatrix(
     accountId,
     underlying.trim() ? underlying.trim() : null
   );
-  const { data: chain, isLoading: chainLoading } = useOptionChain(
-    accountId,
-    underlying.trim() ? underlying.trim() : null,
-    expiry
-  );
 
-  // When the chain loads, refresh bid/ask/iv on any leg that matches a
-  // contract in the new chain. Structural fields (side/right/strike/expiry)
-  // are left alone — those came from the persisted state.
+  // Build a synthetic single-expiry chain for the template builder + greeks.
+  // Picks the active expiry (or falls back to the nearest available).
+  const chain: OptionChainResponse | undefined = useMemo(() => {
+    if (!matrix || matrix.expiries.length === 0) return undefined;
+    const targetExp = expiry && matrix.expiries.find((e) => e.expiry === expiry)
+      ? expiry
+      : matrix.expiries[0].expiry;
+    const slice = matrix.expiries.find((e) => e.expiry === targetExp)!;
+    return {
+      underlying: matrix.underlying,
+      spot: matrix.spot ?? 0,
+      expiry: slice.expiry,
+      as_of: null,
+      contracts: slice.contracts,
+    };
+  }, [matrix, expiry]);
+
+  // Refresh bid/ask/iv on any leg whose (expiry, right, strike) appears in
+  // the matrix. Structural fields are left alone — they came from
+  // persisted state or template builder.
   useEffect(() => {
-    if (!chain) return;
+    if (!matrix) return;
+    const byKey = new Map<string, { bid: number | null; ask: number | null; iv: number | null }>();
+    for (const e of matrix.expiries) {
+      for (const c of e.contracts) {
+        byKey.set(`${e.expiry}|${c.right}|${c.strike}`, {
+          bid: c.bid, ask: c.ask, iv: c.iv,
+        });
+      }
+    }
     setLegs((prev) =>
       prev.map((l) => {
-        if (l.expiry !== chain.expiry) return l;
-        const match = chain.contracts.find(
-          (c) => c.right === l.right && c.strike === l.strike
-        );
-        if (!match) return l;
+        const m = byKey.get(`${l.expiry}|${l.right}|${l.strike}`);
+        if (!m) return l;
         return {
           ...l,
-          bid: match.bid ?? undefined,
-          ask: match.ask ?? undefined,
-          iv: match.iv ?? l.iv,
+          bid: m.bid ?? undefined,
+          ask: m.ask ?? undefined,
+          iv: m.iv ?? l.iv,
         };
       })
     );
-  }, [chain]);
+  }, [matrix]);
 
   // Persist the full builder state on every change (debounced inside the hook).
   useEffect(() => {
@@ -153,6 +170,9 @@ export function Strategies() {
   function handlePickFromChain(leg: OptionLeg) {
     setLegs((prev) => [...prev, leg]);
     setTemplate("custom");
+    // Remember which expiry the user is exploring — used as the
+    // template-builder target if they apply a template afterwards.
+    setExpiry(leg.expiry);
   }
 
   const submitMut = useOpenPosition(accountId);
@@ -257,35 +277,17 @@ export function Strategies() {
             ))}
           </select>
         </label>
-        <label className="text-xs text-gray-400">
-          Expiry
-          <select
-            value={expiry ?? ""}
-            onChange={(e) => setExpiry(e.target.value || null)}
-            disabled={!expData?.expiries?.length}
-            className="ml-2 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-100 disabled:opacity-50"
-          >
-            <option value="">
-              {expData?.expiries?.length ? "Select expiry" : "—"}
-            </option>
-            {(expData?.expiries ?? []).map((d: string) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
+
+      <StrategyChainMatrix
+        matrix={matrix}
+        isLoading={matrixLoading}
+        onPick={handlePickFromChain}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="space-y-4">
           <LegsTable legs={legs} onChange={setLegs} chain={chain} expiry={expiry} />
-          <ChainBrowser
-            chain={chain}
-            expiry={expiry}
-            onPick={handlePickFromChain}
-            isLoading={chainLoading}
-          />
         </div>
         <div className="space-y-4">
           <PnlChart legs={legs} spot={chain?.spot} scrubMs={scrubMs} />

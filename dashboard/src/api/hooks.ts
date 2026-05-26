@@ -1030,6 +1030,19 @@ export function useOptionChain(
   });
 }
 
+export function useOptionChainMatrix(
+  accountId: string,
+  underlying: string | null,
+  maxExpiries = 20
+) {
+  return useQuery({
+    queryKey: ["option-chain-matrix", accountId, underlying, maxExpiries] as const,
+    queryFn: () => api.getOptionChainMatrix(accountId, underlying!, maxExpiries),
+    enabled: !!accountId && !!underlying,
+    staleTime: 30_000,
+  });
+}
+
 // ── Spec D U1: run backtest modal ──
 
 export function useCreateBacktestRun() {
