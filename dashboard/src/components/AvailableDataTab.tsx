@@ -3,6 +3,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 import { useCoverage, useAvailableData, useFillGaps, useDownloads, useDeleteDatasets } from "../api/hooks";
+import { api } from "../api/client";
 import { useProcessedCoverage, type AssetType, type DisplayRow } from "../hooks/useProcessedCoverage";
 import { TimeWindowControls } from "./TimeWindowControls";
 import { DataFilterBar } from "./DataFilterBar";
@@ -131,16 +132,41 @@ export function AvailableDataTab() {
     });
   }, [processed]);
 
-  // Expanded options groups
+  // Expanded options groups + lazy-loaded contract children
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const toggleGroup = useCallback((underlying: string) => {
+  const [lazyChildren, setLazyChildren] = useState<Record<string, { symbol: string; readableLabel: string; provider: string; ranges: { start: string; end: string }[]; timeframes: string[] }[]>>({});
+  const [loadingGroups, setLoadingGroups] = useState<Set<string>>(new Set());
+
+  const toggleGroup = useCallback((underlying: string, provider?: string) => {
     setExpandedGroups((prev) => {
       const next = new Set(prev);
-      if (next.has(underlying)) next.delete(underlying);
-      else next.add(underlying);
+      if (next.has(underlying)) {
+        next.delete(underlying);
+      } else {
+        next.add(underlying);
+        // Lazy-load contracts if not already loaded
+        if (!lazyChildren[underlying] && provider) {
+          setLoadingGroups((p) => new Set(p).add(underlying));
+          api.listOptionContracts(underlying, provider).then((data) => {
+            const children = data.expirations.flatMap((exp) =>
+              exp.contracts.map((c) => ({
+                symbol: c.symbol,
+                readableLabel: `${c.option_type === "call" ? "C" : "P"} $${c.strike} ${exp.expiration}`,
+                provider: data.provider,
+                ranges: [{ start: exp.expiration, end: exp.expiration }],
+                timeframes: ["1day"],
+              }))
+            );
+            setLazyChildren((prev) => ({ ...prev, [underlying]: children }));
+            setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
+          }).catch(() => {
+            setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
+          });
+        }
+      }
       return next;
     });
-  }, []);
+  }, [lazyChildren]);
 
   // Selection state (compare + bulk actions)
   const initialCompare = useMemo(readCompareFromUrl, []);
@@ -371,7 +397,7 @@ export function AvailableDataTab() {
                 <div key={`optgrp-${row.underlying}-${row.provider}`}>
                   <div className="flex items-center gap-3 px-3 py-2 bg-gray-900 hover:bg-gray-800/50 transition-colors rounded-sm">
                     <input type="checkbox" checked={isSelected} onChange={() => toggleSelected(ds)} className="accent-indigo-500 shrink-0" />
-                    <button onClick={() => toggleGroup(row.underlying)} className="flex items-center gap-1.5 text-sm font-mono text-gray-200 hover:text-white shrink-0 w-44 text-left">
+                    <button onClick={() => toggleGroup(row.underlying, row.provider)} className="flex items-center gap-1.5 text-sm font-mono text-gray-200 hover:text-white shrink-0 w-44 text-left">
                       {isExpanded ? <ChevronDown size={12} className="text-gray-500" /> : <ChevronRight size={12} className="text-gray-500" />}
                       {row.label}
                     </button>
@@ -382,7 +408,10 @@ export function AvailableDataTab() {
                   </div>
                   {isExpanded && (
                     <div className="ml-6">
-                      {row.children.map((child) => {
+                      {loadingGroups.has(row.underlying) && (
+                        <div className="text-xs text-gray-500 px-3 py-2">Loading contracts...</div>
+                      )}
+                      {(row.children.length > 0 ? row.children : lazyChildren[row.underlying] ?? []).map((child) => {
                         const childDs = makeCompareDataset(child.provider, child.symbol, child.timeframes);
                         const childSelected = selectedKeys.has(selectionKey(childDs));
                         return (

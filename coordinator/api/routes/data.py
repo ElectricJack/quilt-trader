@@ -290,6 +290,38 @@ async def retry_download(download_id: str):
     }
 
 
+# ─── Options contract listing ────────────────────────────────────────────────
+
+@router.get("/options/{underlying}/contracts")
+async def list_option_contracts(
+    underlying: str,
+    provider: str = Query("polygon"),
+):
+    """List option contracts on disk for an underlying, grouped by expiration."""
+    from coordinator.services.chain_builder import parse_occ_symbol
+    svc = get_data_service()
+    expirations = svc.list_option_expirations(provider, underlying)
+    groups = []
+    for exp in expirations:
+        contracts = svc.list_option_contracts(provider, underlying, exp)
+        children = []
+        for sym in contracts:
+            parsed = parse_occ_symbol(sym)
+            if parsed:
+                children.append({
+                    "symbol": sym,
+                    "strike": parsed["strike"],
+                    "option_type": parsed["option_type"],
+                    "expiration": parsed["expiration"],
+                })
+        groups.append({
+            "expiration": exp.isoformat(),
+            "contracts": children,
+            "count": len(children),
+        })
+    return {"underlying": underlying, "provider": provider, "expirations": groups}
+
+
 # ─── Coverage endpoints ───────────────────────────────────────────────────────
 
 @router.get("/coverage")

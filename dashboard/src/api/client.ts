@@ -528,6 +528,13 @@ export const api = {
   getCustomData(name: string): Promise<CustomDatasetResponse> {
     return request<CustomDatasetResponse>(`/api/data/custom/${encodeURIComponent(name)}`);
   },
+  listOptionContracts(underlying: string, provider = "polygon"): Promise<{
+    underlying: string;
+    provider: string;
+    expirations: { expiration: string; contracts: { symbol: string; strike: number; option_type: string; expiration: string }[]; count: number }[];
+  }> {
+    return request(`/api/data/options/${encodeURIComponent(underlying)}/contracts?provider=${encodeURIComponent(provider)}`);
+  },
   listDownloads(limit = 100, offset = 0, status?: string): Promise<MarketDataDownload[]> {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (status) params.set("status", status);
