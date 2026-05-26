@@ -301,10 +301,31 @@ async def get_coverage():
     available = svc.list_available_market_data()
 
     # Deduplicate to one entry per (provider, symbol) — collect unique timeframes on disk.
+    # Collapse OCC option contracts into a single grouped entry per underlying
+    # to avoid sending 2000+ rows to the frontend.
+    from coordinator.services.chain_builder import parse_occ_symbol
+
     seen: dict[str, dict] = {}
+    options_groups: dict[str, dict] = {}  # "provider/underlying" -> summary
+
     for item in available:
         provider = item["provider"]
         symbol = item["symbol"]
+
+        parsed = parse_occ_symbol(symbol)
+        if parsed:
+            group_key = f"{provider}/{parsed['underlying']}"
+            if group_key not in options_groups:
+                options_groups[group_key] = {
+                    "provider": provider,
+                    "symbol": parsed["underlying"],
+                    "contracts": [],
+                    "expirations": set(),
+                }
+            options_groups[group_key]["contracts"].append(symbol)
+            options_groups[group_key]["expirations"].add(parsed["expiration"])
+            continue
+
         key = f"{provider}/{symbol}"
         if key not in seen:
             ranges = coverage.get_ranges(provider, symbol) if coverage else []
@@ -315,6 +336,17 @@ async def get_coverage():
                 "timeframes_on_disk": [],
             }
         seen[key]["timeframes_on_disk"].append(item["timeframe"])
+
+    for group_key, group in options_groups.items():
+        exps = sorted(group["expirations"])
+        seen[group_key + "/options"] = {
+            "provider": group["provider"],
+            "symbol": group["symbol"],
+            "ranges": [{"start": exps[0], "end": exps[-1]}] if exps else [],
+            "timeframes_on_disk": ["options"],
+            "option_contracts": len(group["contracts"]),
+            "option_expirations": len(exps),
+        }
 
     # Group by provider
     grouped: dict[str, list] = {}

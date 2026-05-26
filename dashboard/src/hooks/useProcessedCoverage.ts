@@ -134,9 +134,15 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
 
   // 4. Separate options from non-options
   const optionsByUnderlying = new Map<string, (CoverageAsset & { normalizedProvider: string })[]>();
+  const serverGroupedOptions = new Map<string, CoverageAsset & { normalizedProvider: string }>();
   const nonOptions: (CoverageAsset & { normalizedProvider: string })[] = [];
 
   for (const asset of mergedAssets) {
+    // Server-side collapsed options group (has option_contracts field)
+    if ((asset as any).option_contracts) {
+      serverGroupedOptions.set(`${asset.normalizedProvider}/${asset.symbol}`, asset);
+      continue;
+    }
     const parsed = parseOCC(asset.symbol);
     if (parsed) {
       const list = optionsByUnderlying.get(parsed.underlying) ?? [];
@@ -204,7 +210,7 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     }
   }
 
-  // Options groups (OCC-style individual contracts)
+  // Options groups (OCC-style individual contracts — legacy path)
   for (const [underlying, contracts] of optionsByUnderlying) {
     const allRanges = contracts.flatMap((c) => c.ranges);
     const allTimeframes = [...new Set(contracts.flatMap((c) => c.timeframes_on_disk))];
@@ -228,6 +234,25 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
       ranges: mergeRanges(allRanges),
       timeframes: allTimeframes,
       children,
+      assetType: "options",
+      sortKey: `${underlying}\x01`,
+    });
+  }
+
+  // Server-side collapsed options groups
+  for (const [, asset] of serverGroupedOptions) {
+    const underlying = asset.symbol;
+    if (optionsByUnderlying.has(underlying)) continue;
+    const numContracts = (asset as any).option_contracts ?? 0;
+    const numExps = (asset as any).option_expirations ?? 0;
+    rows.push({
+      kind: "options-group",
+      underlying,
+      label: `${underlying} Options (${numContracts} contracts, ${numExps} expirations)`,
+      provider: asset.normalizedProvider,
+      ranges: asset.ranges,
+      timeframes: ["options"],
+      children: [],
       assetType: "options",
       sortKey: `${underlying}\x01`,
     });
