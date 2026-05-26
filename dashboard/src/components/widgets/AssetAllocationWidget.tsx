@@ -9,7 +9,7 @@ function fmtCompact(v: number): string {
 
 export function AssetAllocationWidget() {
   const { data, isLoading } = usePortfolioAllocation();
-  const [view, setView] = useState<"class" | "symbol">("class");
+  const [view, setView] = useState<"class" | "symbol">("symbol");
   const segments = (view === "class" ? data?.by_class : data?.by_symbol) ?? [];
 
   return (
