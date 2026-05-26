@@ -320,6 +320,7 @@ export function Data() {
   const [scraperToDelete, setScraperToDelete] = useState<string | null>(null);
   const [customPreview, setCustomPreview] = useState<DataSourceRow | null>(null);
   const [downloadDefaults, setDownloadDefaults] = useState<DownloadFormValues>(loadDownloadDefaults);
+  const [yearsSlider, setYearsSlider] = useState(2);
 
   const { data: downloads, isLoading: downloadsLoading, refetch } = useDownloads();
   const { mutateAsync: createDownload, isPending: isCreating } = useCreateDownload();
@@ -863,16 +864,18 @@ export function Data() {
                       start.setFullYear(start.getFullYear() - y);
                       form.setValue("date_range_start", _fmtDate(start));
                       form.setValue("date_range_end", _fmtDate(end));
+                      setYearsSlider(y);
                     }}
-                      className="px-2.5 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+                      className={`px-2.5 py-1 text-xs rounded ${yearsSlider === y ? "bg-indigo-600 text-white" : "bg-gray-700 hover:bg-gray-600 text-gray-200"}`}
                     >{y}Y</button>
                   ))}
                 </div>
                 <div className="flex items-center gap-2">
                   <input type="range" min={1} max={10} step={1}
-                    defaultValue={2}
+                    value={yearsSlider}
                     onChange={(e) => {
                       const y = parseInt(e.target.value);
+                      setYearsSlider(y);
                       const end = _prevMarketDay();
                       const start = new Date(end);
                       start.setFullYear(start.getFullYear() - y);
