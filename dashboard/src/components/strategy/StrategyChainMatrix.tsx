@@ -2,7 +2,7 @@
 // Strike × expiry matrix for the strategy builder. Each cell shows
 // availability and liquidity for one call/put contract. Click a cell to
 // add that leg to the legs table; hover for bid/ask.
-import { useMemo, useState, Fragment } from "react";
+import { useEffect, useMemo, useRef, useState, Fragment } from "react";
 import type { OptionChainMatrixResponse, OptionChainContract } from "../../api/client";
 import type { OptionLeg } from "../../lib/options";
 
@@ -54,6 +54,9 @@ function fmtExp(exp: string): string {
 }
 
 export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const atmRef = useRef<HTMLTableRowElement>(null);
+  const lastAnchored = useRef<string | null>(null);
   const [hover, setHover] = useState<{
     strike: number;
     expiry: string;
@@ -97,11 +100,25 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
   }
 
   const spot = matrix.spot ?? 0;
-  // Strike closest to spot — used to anchor the initial scroll position
+  // Strike closest to spot — anchors the initial scroll position only.
   const atmStrike = strikes.reduce((best, k) =>
     Math.abs(k - spot) < Math.abs(best - spot) ? k : best,
     strikes[0]
   );
+
+  // Scroll the ATM row into the *scroll container only* — never the
+  // document. Fires once per underlying so it doesn't snap back when
+  // other state (hover, date slider, leg add) triggers a re-render.
+  useEffect(() => {
+    const anchor = `${matrix?.underlying ?? ""}|${atmStrike}`;
+    if (!atmRef.current || !scrollRef.current) return;
+    if (lastAnchored.current === anchor) return;
+    const container = scrollRef.current;
+    const row = atmRef.current;
+    const target = row.offsetTop - container.clientHeight / 2 + row.clientHeight / 2;
+    container.scrollTop = Math.max(0, target);
+    lastAnchored.current = anchor;
+  }, [matrix?.underlying, atmStrike]);
 
   function pickCell(strike: number, expiry: string, right: "call" | "put") {
     const c = lookup.get(`${strike}|${right}|${expiry}`);
@@ -129,7 +146,7 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
         </span>
       </div>
       <div className="relative">
-        <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+        <div ref={scrollRef} className="overflow-x-auto max-h-[500px] overflow-y-auto">
           <table className="text-[10px] font-mono border-collapse">
             <thead className="sticky top-0 z-10">
               <tr>
@@ -166,7 +183,7 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
                 return (
                   <tr
                     key={strike}
-                    ref={isAtm ? (el) => el?.scrollIntoView({ block: "center" }) : undefined}
+                    ref={isAtm ? atmRef : undefined}
                     className={isAtm ? "bg-indigo-900/20" : ""}
                   >
                     <td

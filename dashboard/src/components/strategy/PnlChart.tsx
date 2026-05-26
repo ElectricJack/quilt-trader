@@ -201,45 +201,49 @@ export function PnlChart({ legs, spot, scrubMs, height = 320 }: PnlChartProps) {
           </span>
         </div>
       </div>
-      {legs.length === 0 ? (
-        <div className="px-3 py-12 text-center text-sm text-gray-500">
-          Add legs to see the P&amp;L diagram.
-        </div>
-      ) : (
-        <>
-          <div ref={containerRef} className="w-full" style={{ height }} />
-          <div className="flex flex-wrap items-center gap-4 px-3 py-2 border-t border-gray-800 text-xs text-gray-400">
-            <span>
-              Now P&amp;L:{" "}
-              <span
-                className={
-                  currentPnl > 0
-                    ? "text-emerald-400 font-medium tabular-nums"
-                    : currentPnl < 0
-                      ? "text-red-400 font-medium tabular-nums"
-                      : "text-gray-300 tabular-nums"
-                }
-              >
-                {currentPnl >= 0 ? "+" : ""}
-                {currentPnl.toFixed(2)}
-              </span>
-            </span>
-            {breakevens.length > 0 && (
-              <span>
-                Breakeven{breakevens.length === 1 ? "" : "s"}:{" "}
-                <span className="text-gray-200 tabular-nums">
-                  {breakevens.map((b) => b.toFixed(2)).join(", ")}
-                </span>
-              </span>
-            )}
-            <span>
-              Range:{" "}
-              <span className="text-gray-300 tabular-nums">
-                {rangeLo.toFixed(2)} – {rangeHi.toFixed(2)}
-              </span>
-            </span>
+      {/* Container is always mounted so the chart's createChart effect can
+          attach on first render. When there are no legs, an overlay covers
+          the empty chart with the instruction message. */}
+      <div className="relative">
+        <div ref={containerRef} className="w-full" style={{ height }} />
+        {legs.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 pointer-events-none">
+            Add legs to see the P&amp;L diagram.
           </div>
-        </>
+        )}
+      </div>
+      {legs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-4 px-3 py-2 border-t border-gray-800 text-xs text-gray-400">
+          <span>
+            Now P&amp;L:{" "}
+            <span
+              className={
+                currentPnl > 0
+                  ? "text-emerald-400 font-medium tabular-nums"
+                  : currentPnl < 0
+                    ? "text-red-400 font-medium tabular-nums"
+                    : "text-gray-300 tabular-nums"
+              }
+            >
+              {currentPnl >= 0 ? "+" : ""}
+              {currentPnl.toFixed(2)}
+            </span>
+          </span>
+          {breakevens.length > 0 && (
+            <span>
+              Breakeven{breakevens.length === 1 ? "" : "s"}:{" "}
+              <span className="text-gray-200 tabular-nums">
+                {breakevens.map((b) => b.toFixed(2)).join(", ")}
+              </span>
+            </span>
+          )}
+          <span>
+            Range:{" "}
+            <span className="text-gray-300 tabular-nums">
+              {rangeLo.toFixed(2)} – {rangeHi.toFixed(2)}
+            </span>
+          </span>
+        </div>
       )}
     </div>
   );
