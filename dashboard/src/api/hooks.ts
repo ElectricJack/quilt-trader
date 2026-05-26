@@ -17,6 +17,7 @@ import type {
   DownloadCreate,
   EventParams,
   FillGapsRequest,
+  GoalCreate,
 } from "./client";
 
 // ─── Query Keys ────────────────────────────────────────────────────────────────
@@ -447,6 +448,48 @@ export function useRetryDownload() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.downloads() });
     },
+  });
+}
+
+// ─── Data Goals ───────────────────────────────────────────────────────────────
+
+export function useDataGoals() {
+  return useQuery({
+    queryKey: ["data", "goals"],
+    queryFn: api.listGoals,
+    refetchInterval: 5000,
+  });
+}
+
+export function useCreateGoal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: GoalCreate) => api.createGoal(body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["data", "goals"] }),
+  });
+}
+
+export function usePauseGoal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.pauseGoal(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["data", "goals"] }),
+  });
+}
+
+export function useResumeGoal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.resumeGoal(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["data", "goals"] }),
+  });
+}
+
+export function useDeleteGoal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteGoal(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["data", "goals"] }),
   });
 }
 

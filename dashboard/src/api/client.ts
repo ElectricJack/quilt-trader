@@ -215,6 +215,27 @@ export interface FillGapsResponse {
   gap_count: number;
 }
 
+export interface DataGoal {
+  id: string;
+  name: string;
+  goal_type: "options" | "bars";
+  config: Record<string, unknown>;
+  status: "active" | "paused" | "completed";
+  total_items: number;
+  completed_items: number;
+  failed_items: number;
+  progress_pct: number;
+  last_processed_at: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface GoalCreate {
+  name: string;
+  goal_type: "options" | "bars";
+  config: Record<string, unknown>;
+}
+
 export interface EventParams {
   event_type?: string;
   severity?: string;
@@ -568,6 +589,27 @@ export const api = {
   },
   deleteDownload(id: string): Promise<void> {
     return request<void>(`/api/data/downloads/${id}`, { method: "DELETE" });
+  },
+  listGoals(): Promise<DataGoal[]> {
+    return request<DataGoal[]>("/api/data/goals");
+  },
+  getGoal(id: string): Promise<DataGoal> {
+    return request<DataGoal>(`/api/data/goals/${id}`);
+  },
+  createGoal(body: GoalCreate): Promise<DataGoal> {
+    return request<DataGoal>("/api/data/goals", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  pauseGoal(id: string): Promise<DataGoal> {
+    return request<DataGoal>(`/api/data/goals/${id}/pause`, { method: "POST" });
+  },
+  resumeGoal(id: string): Promise<DataGoal> {
+    return request<DataGoal>(`/api/data/goals/${id}/resume`, { method: "POST" });
+  },
+  deleteGoal(id: string): Promise<void> {
+    return request<void>(`/api/data/goals/${id}`, { method: "DELETE" });
   },
   clearDownloads(status?: string): Promise<{ deleted: number }> {
     const qs = status ? `?status=${encodeURIComponent(status)}` : "";
