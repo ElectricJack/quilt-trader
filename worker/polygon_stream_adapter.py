@@ -17,11 +17,6 @@ from worker.broker_adapter import BrokerAdapter, MarketDataStreamHandle, OrderRe
 logger = logging.getLogger(__name__)
 
 _WS_BASE = "wss://socket.polygon.io"
-_CLUSTER_MAP = {
-    "equities": "stocks",
-    "crypto": "crypto",
-    "options": "options",
-}
 
 
 class PolygonStreamAdapter(BrokerAdapter):
@@ -44,7 +39,13 @@ class PolygonStreamAdapter(BrokerAdapter):
     def start_market_data_stream(
         self, symbols: list[str], on_trade, on_quote, asset_class: str = "equities",
     ) -> MarketDataStreamHandle:
-        cluster = _CLUSTER_MAP.get(asset_class, "stocks")
+        from coordinator.services.asset_services import get_default_registry
+        registry = get_default_registry()
+        if symbols:
+            cfg = registry.stream_config(symbols[0], "polygon")
+            cluster = cfg.cluster or "stocks"
+        else:
+            cluster = "stocks"
         url = f"{_WS_BASE}/{cluster}"
         return _PolygonStreamHandle(
             url=url,
@@ -76,12 +77,13 @@ class _PolygonStreamHandle(MarketDataStreamHandle):
         self._thread.start()
 
     def _format_symbol(self, symbol: str) -> str:
-        """Convert internal symbol to Polygon format.
-        Crypto: BTCUSD -> X:BTCUSD
-        Equities: SPY -> SPY (no change)
-        """
-        if self._asset_class == "crypto":
+        """Convert internal symbol to Polygon stream format via registry."""
+        from coordinator.services.asset_services import get_default_registry
+        cfg = get_default_registry().stream_config(symbol, "polygon")
+        if cfg.symbol_transform == "polygon_x_prefix":
             return f"X:{symbol}"
+        if cfg.symbol_transform == "occ_prefix":
+            return f"O:{symbol.removeprefix('O:')}"
         return symbol
 
     def _normalize_symbol(self, polygon_sym: str) -> str:

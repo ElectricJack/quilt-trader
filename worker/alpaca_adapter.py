@@ -143,8 +143,10 @@ class AlpacaAdapter(BrokerAdapter):
         from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
+        from coordinator.services.asset_services import get_default_registry
         order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
-        tif = TimeInForce.GTC if (asset_type or "").lower() == "crypto" else TimeInForce.DAY
+        tif_str = get_default_registry().time_in_force(symbol)
+        tif = TimeInForce.GTC if tif_str == "GTC" else TimeInForce.DAY
 
         if order_type.lower() == "limit" and limit_price is not None:
             request = LimitOrderRequest(
@@ -220,21 +222,16 @@ class AlpacaAdapter(BrokerAdapter):
     def supports_multileg_orders(self, legs: list[MultilegLegSpec]) -> bool:
         if len(legs) < 2:
             return False
-        if not all(l.asset_type == "options" for l in legs):
+        from coordinator.services.asset_services import get_default_registry
+        registry = get_default_registry()
+        if not all(registry.get_service_by_type(l.asset_type).supports_multileg() for l in legs):
             return False
         underlyings = {l.symbol for l in legs}
         return len(underlyings) == 1
 
     def compose_symbol(self, leg: MultilegLegSpec) -> str:
-        if leg.asset_type != "options":
-            return leg.symbol
-        # OCC: <UNDERLYING><YY><MM><DD><C|P><strike*1000 padded 8>
-        if not (leg.expiry and leg.strike is not None and leg.right):
-            raise ValueError(f"Options leg missing expiry/strike/right: {leg}")
-        y, m, d = leg.expiry.split("-")
-        right_ch = "C" if leg.right == "call" else "P"
-        strike_int = round(leg.strike * 1000)
-        return f"{leg.symbol}{y[2:]}{m}{d}{right_ch}{strike_int:08d}"
+        from coordinator.services.asset_services import get_default_registry
+        return get_default_registry().compose_order_symbol(leg)
 
     def submit_multileg_order(
         self,
@@ -375,26 +372,22 @@ class AlpacaAdapter(BrokerAdapter):
         asset_class: str = "equities",
     ) -> "MarketDataStreamHandle":
         from alpaca.data.live import StockDataStream, CryptoDataStream
+        from coordinator.services.asset_services import get_default_registry
 
-        # Alpaca's crypto streaming requires base/quote format (BTC/USD), while
-        # the order endpoints accept BTCUSD. Normalize here so callers can use
-        # either form. Heuristic: insert a slash before the last 3 chars if no
-        # slash is present — covers BTC/USD, ETH/USD, LTC/USD, SOL/USD etc.
-        # (Multi-char quote currencies like USDT/USDC would need explicit
-        # handling — not covered here; documented as a follow-up.)
-        # Build a map from streamed-symbol → caller-facing symbol so inbound
-        # ticks dispatch into the aggregator's _SubState keyed by the original
-        # form (without slash). For equities this is identity.
-        if asset_class == "crypto":
+        # Resolve stream config via the registry — Alpaca crypto needs
+        # BTC/USD-style symbols for streaming while order endpoints accept BTCUSD.
+        registry = get_default_registry()
+        first = symbols[0] if symbols else ""
+        cfg = registry.stream_config(first, "alpaca") if first else None
+        if cfg and cfg.symbol_transform == "crypto_slash":
             original_by_streamed = {
-                (s if "/" in s else f"{s[:-3]}/{s[-3:]}"): s
-                for s in symbols
+                registry.resolve_symbol(s, "alpaca_stream"): s for s in symbols
             }
             symbols = list(original_by_streamed.keys())
         else:
             original_by_streamed = {s: s for s in symbols}
 
-        stream_cls = CryptoDataStream if asset_class == "crypto" else StockDataStream
+        stream_cls = CryptoDataStream if (cfg and cfg.stream_class == "crypto") else StockDataStream
         stream = stream_cls(self._api_key, self._secret_key)
 
         async def _trade_handler(data):
