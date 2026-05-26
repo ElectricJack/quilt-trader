@@ -43,6 +43,17 @@ def create_app(
                 ))
             except Exception:
                 pass  # column already exists
+            try:
+                await conn.execute(text(
+                    "CREATE TABLE IF NOT EXISTS data_goals ("
+                    "id TEXT PRIMARY KEY, name TEXT NOT NULL, goal_type TEXT NOT NULL, "
+                    "config JSON NOT NULL, status TEXT NOT NULL DEFAULT 'active', "
+                    "total_items INTEGER NOT NULL DEFAULT 0, completed_items INTEGER NOT NULL DEFAULT 0, "
+                    "failed_items INTEGER NOT NULL DEFAULT 0, last_processed_at TIMESTAMP, "
+                    "error_message TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                ))
+            except Exception:
+                pass
         session_factory = create_session_factory(engine)
         event_bus = EventBus()
         encryption = EncryptionService(encryption_key)

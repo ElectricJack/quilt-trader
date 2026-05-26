@@ -295,6 +295,21 @@ class MarketDataDownload(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class DataGoal(Base):
+    __tablename__ = "data_goals"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    goal_type: Mapped[str] = mapped_column(String, nullable=False)  # "options" | "bars"
+    config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")  # active | paused | completed
+    total_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class DataArchival(Base):
     __tablename__ = "data_archival"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
