@@ -61,15 +61,29 @@ const downloadSchema = z.object({
 
 type DownloadFormValues = z.infer<typeof downloadSchema>;
 
+function _prevMarketDay(): Date {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  return d;
+}
+function _fmtDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
 const DOWNLOAD_PREFS_KEY = "data.downloadModal.lastSettings";
+
+const _defaultEnd = _prevMarketDay();
+const _defaultStart = new Date(_defaultEnd);
+_defaultStart.setFullYear(_defaultStart.getFullYear() - 2);
 
 const EMPTY_DOWNLOAD_DEFAULTS: DownloadFormValues = {
   symbols: "",
-  date_range_start: "",
-  date_range_end: "",
+  date_range_start: _fmtDate(_defaultStart),
+  date_range_end: _fmtDate(_defaultEnd),
   provider: "",
   data_types: [] as DataType[],
-  timeframes: ["1min"] as Timeframe[],
+  timeframes: ["1day"] as Timeframe[],
   show_advanced: false,
 };
 
@@ -839,26 +853,45 @@ export function Data() {
               </div>
             </FormField>
 
-            <FormField
-              label="Start Date"
-              error={form.formState.errors.date_range_start?.message}
-            >
-              <input
-                {...form.register("date_range_start")}
-                type="date"
-                className={INPUT_CLS}
-              />
-            </FormField>
-
-            <FormField
-              label="End Date"
-              error={form.formState.errors.date_range_end?.message}
-            >
-              <input
-                {...form.register("date_range_end")}
-                type="date"
-                className={INPUT_CLS}
-              />
+            <FormField label="Date Range" error={form.formState.errors.date_range_start?.message || form.formState.errors.date_range_end?.message}>
+              <div className="space-y-2">
+                <div className="flex gap-1.5 flex-wrap">
+                  {[1, 2, 5, 10].map((y) => (
+                    <button key={y} type="button" onClick={() => {
+                      const end = _prevMarketDay();
+                      const start = new Date(end);
+                      start.setFullYear(start.getFullYear() - y);
+                      form.setValue("date_range_start", _fmtDate(start));
+                      form.setValue("date_range_end", _fmtDate(end));
+                    }}
+                      className="px-2.5 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+                    >{y}Y</button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input type="range" min={1} max={10} step={1}
+                    defaultValue={2}
+                    onChange={(e) => {
+                      const y = parseInt(e.target.value);
+                      const end = _prevMarketDay();
+                      const start = new Date(end);
+                      start.setFullYear(start.getFullYear() - y);
+                      form.setValue("date_range_start", _fmtDate(start));
+                      form.setValue("date_range_end", _fmtDate(end));
+                    }}
+                    className="flex-1 accent-indigo-500"
+                  />
+                  <span className="text-xs text-gray-400 w-16 text-right font-mono">
+                    {form.watch("date_range_start") && form.watch("date_range_end")
+                      ? `${Math.round((new Date(form.watch("date_range_end")).getTime() - new Date(form.watch("date_range_start")).getTime()) / (365.25 * 86400000))}Y`
+                      : ""}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input {...form.register("date_range_start")} type="date" className={INPUT_CLS} />
+                  <input {...form.register("date_range_end")} type="date" className={INPUT_CLS} />
+                </div>
+              </div>
             </FormField>
 
             <FormField label="Data Types" error={form.formState.errors.data_types?.message as string | undefined}>
