@@ -289,10 +289,9 @@ function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProp
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-const TABS = ["goals", "acquisition", "available", "history"] as const;
+const TABS = ["acquisition", "available", "history"] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABELS: Record<Tab, string> = {
-  goals: "Data Goals",
   acquisition: "Data Acquisition",
   available: "Available Data",
   history: "Download History",
@@ -542,12 +541,13 @@ export function Data() {
         ))}
       </div>
 
-      {/* ── Data Goals tab ── */}
-      {activeTab === "goals" && <DataGoalsTab />}
-
       {/* ── Data Acquisition tab ── */}
       {activeTab === "acquisition" && (
         <div className="space-y-8">
+          <section>
+            <DataGoalsTab />
+          </section>
+
           <section>
             <h2 className="text-sm font-semibold text-gray-400 uppercase mb-3">
               Scrapers{" "}
