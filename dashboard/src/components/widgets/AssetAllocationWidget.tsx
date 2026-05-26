@@ -27,16 +27,21 @@ export function AssetAllocationWidget() {
           </button>
         ))}
       </div>
-      <div className="flex items-center gap-4 px-4 pb-4">
-        <Donut segments={segments} size={130} />
-        <div className="flex-1 text-[11px] leading-relaxed">
+      <div className="flex items-center gap-6 px-4 pb-4">
+        <div className="shrink-0">
+          <Donut segments={segments} size={180} />
+        </div>
+        <div className="flex-1 text-[11px] leading-loose">
           {segments.map((s) => (
-            <div key={s.key}>
+            <div key={s.key} className="flex items-center gap-2">
               <span
-                className="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle"
+                className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
                 style={{ background: s.color }}
               />
-              <strong>{s.label}</strong> {s.percent}% · {fmtCompact(s.value_usd)}
+              <span className="flex-1">
+                <strong>{s.label}</strong>{" "}
+                <span className="text-gray-400">{s.percent}% · {fmtCompact(s.value_usd)}</span>
+              </span>
             </div>
           ))}
         </div>

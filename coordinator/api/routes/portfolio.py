@@ -302,7 +302,7 @@ async def portfolio_allocation(db: AsyncSession = Depends(get_db)):
             "label": f"+{len(rest)} more",
             "value_usd": rest_total,
             "percent": round(rest_total / grand * 100.0, 1),
-            "color": "#6b7280",
+            "color": "#475569",
         })
     if cash_value > 0:
         by_symbol.append({
@@ -310,7 +310,7 @@ async def portfolio_allocation(db: AsyncSession = Depends(get_db)):
             "label": "Cash",
             "value_usd": cash_value,
             "percent": round(cash_value / grand * 100.0, 1),
-            "color": "#6b7280",
+            "color": "#22d3ee",
         })
 
     return {"by_class": by_class, "by_symbol": by_symbol}
