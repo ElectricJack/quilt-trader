@@ -127,22 +127,32 @@ class GoalProcessor:
             discovered_exps.add(exp.isoformat())
             discovered_this_tick += 1
 
-        all_discovered = len(discovered_exps) >= len(expirations)
-        progress = f"{len(discovered_exps)}/{len(expirations)} expirations"
+            # Save progress after each expiration so the UI updates live
+            progress = f"{len(discovered_exps)}/{len(expirations)} expirations"
+            async with self._sf() as session:
+                g = (await session.execute(
+                    select(DataGoal).where(DataGoal.id == goal.id)
+                )).scalar_one()
+                g.discovered_contracts = new_contracts
+                g.discovery_progress = progress
+                g.total_items = len(new_contracts)
+                g.last_processed_at = datetime.now(timezone.utc)
+                g.error_message = None
+                # Check if goal was paused while we were running
+                if g.status != "active":
+                    await session.commit()
+                    return
+                await session.commit()
 
-        async with self._sf() as session:
-            g = (await session.execute(
-                select(DataGoal).where(DataGoal.id == goal.id)
-            )).scalar_one()
-            g.discovered_contracts = new_contracts
-            g.discovery_progress = progress
-            g.total_items = len(new_contracts)
-            g.last_processed_at = datetime.now(timezone.utc)
-            g.error_message = None
-            if all_discovered:
+        all_discovered = len(discovered_exps) >= len(expirations)
+        if all_discovered:
+            async with self._sf() as session:
+                g = (await session.execute(
+                    select(DataGoal).where(DataGoal.id == goal.id)
+                )).scalar_one()
                 g.phase = "downloading"
                 g.discovery_progress = f"{len(expirations)}/{len(expirations)} expirations (done)"
-            await session.commit()
+                await session.commit()
 
     async def _download_options(self, goal: DataGoal) -> None:
         config = goal.config

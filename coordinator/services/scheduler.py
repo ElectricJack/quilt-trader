@@ -53,7 +53,10 @@ class SchedulerService:
             day_of_week=self._convert_dow(parts[4]),
             jitter=jitter,
         )
-        self._scheduler.add_job(func, trigger=trigger, id=job_id, replace_existing=True)
+        self._scheduler.add_job(
+            func, trigger=trigger, id=job_id, replace_existing=True,
+            misfire_grace_time=600, coalesce=True,
+        )
 
     def remove_job(self, job_id: str) -> None:
         self._scheduler.remove_job(job_id)
