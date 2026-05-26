@@ -299,6 +299,7 @@ async def list_option_contracts(
 ):
     """List option contracts on disk for an underlying, grouped by expiration."""
     from coordinator.services.chain_builder import parse_occ_symbol
+    import os
     svc = get_data_service()
     expirations = svc.list_option_expirations(provider, underlying)
     groups = []
@@ -308,11 +309,17 @@ async def list_option_contracts(
         for sym in contracts:
             parsed = parse_occ_symbol(sym)
             if parsed:
+                bar_count = 0
+                path = svc.market_data_path(provider, sym, "1day")
+                if os.path.exists(path):
+                    import pyarrow.parquet as pq
+                    bar_count = pq.read_metadata(path).num_rows
                 children.append({
                     "symbol": sym,
                     "strike": parsed["strike"],
                     "option_type": parsed["option_type"],
                     "expiration": parsed["expiration"],
+                    "bars": bar_count,
                 })
         groups.append({
             "expiration": exp.isoformat(),

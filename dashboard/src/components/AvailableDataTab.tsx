@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 import { useCoverage, useAvailableData, useFillGaps, useDownloads, useDeleteDatasets } from "../api/hooks";
 import { api } from "../api/client";
+import { OptionsChainMatrix } from "./OptionsChainMatrix";
 import { useProcessedCoverage, type AssetType, type DisplayRow } from "../hooks/useProcessedCoverage";
 import { TimeWindowControls } from "./TimeWindowControls";
 import { DataFilterBar } from "./DataFilterBar";
@@ -134,7 +135,7 @@ export function AvailableDataTab() {
 
   // Expanded options groups + lazy-loaded contract children
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [lazyChildren, setLazyChildren] = useState<Record<string, { symbol: string; readableLabel: string; provider: string; ranges: { start: string; end: string }[]; timeframes: string[] }[]>>({});
+  const [lazyContractData, setLazyContractData] = useState<Record<string, Awaited<ReturnType<typeof api.listOptionContracts>>>>({});
   const [loadingGroups, setLoadingGroups] = useState<Set<string>>(new Set());
 
   const toggleGroup = useCallback((underlying: string, provider?: string) => {
@@ -144,20 +145,10 @@ export function AvailableDataTab() {
         next.delete(underlying);
       } else {
         next.add(underlying);
-        // Lazy-load contracts if not already loaded
-        if (!lazyChildren[underlying] && provider) {
+        if (!lazyContractData[underlying] && provider) {
           setLoadingGroups((p) => new Set(p).add(underlying));
           api.listOptionContracts(underlying, provider).then((data) => {
-            const children = data.expirations.flatMap((exp) =>
-              exp.contracts.map((c) => ({
-                symbol: c.symbol,
-                readableLabel: `${c.option_type === "call" ? "C" : "P"} $${c.strike} ${exp.expiration}`,
-                provider: data.provider,
-                ranges: [{ start: exp.expiration, end: exp.expiration }],
-                timeframes: ["1day"],
-              }))
-            );
-            setLazyChildren((prev) => ({ ...prev, [underlying]: children }));
+            setLazyContractData((prev) => ({ ...prev, [underlying]: data }));
             setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
           }).catch(() => {
             setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
@@ -166,7 +157,7 @@ export function AvailableDataTab() {
       }
       return next;
     });
-  }, [lazyChildren]);
+  }, [lazyContractData]);
 
   // Selection state (compare + bulk actions)
   const initialCompare = useMemo(readCompareFromUrl, []);
@@ -407,26 +398,18 @@ export function AvailableDataTab() {
                     </div>
                   </div>
                   {isExpanded && (
-                    <div className="ml-6">
+                    <div className="ml-2 mt-1 mb-2">
                       {loadingGroups.has(row.underlying) && (
                         <div className="text-xs text-gray-500 px-3 py-2">Loading contracts...</div>
                       )}
-                      {(row.children.length > 0 ? row.children : lazyChildren[row.underlying] ?? []).map((child) => {
-                        const childDs = makeCompareDataset(child.provider, child.symbol, child.timeframes);
-                        const childSelected = selectedKeys.has(selectionKey(childDs));
-                        return (
-                          <div key={child.symbol} className="flex items-center gap-3 px-3 py-1.5 bg-gray-950 hover:bg-gray-900/50 transition-colors">
-                            <input type="checkbox" checked={childSelected} onChange={() => toggleSelected(childDs)} className="accent-indigo-500 shrink-0" />
-                            <span className="text-xs font-mono text-gray-400 w-44 truncate shrink-0 cursor-pointer hover:text-gray-200" onClick={() => handleBarClick(child.provider, child.symbol, child.timeframes, effectiveStart)} title={child.symbol}>
-                              {child.readableLabel}
-                            </span>
-                            <InteractiveCoverageBar ranges={child.ranges} provider={child.provider} windowStart={effectiveStart} windowEnd={effectiveEnd} markerDate={markerDate} onClick={(date) => handleBarClick(child.provider, child.symbol, child.timeframes, date)} />
-                            <div className="hidden sm:flex gap-1 shrink-0">
-                              {child.timeframes.map((tf) => <span key={tf} className="text-[10px] font-mono text-gray-500 bg-gray-800 px-1 py-0.5 rounded">{tf}</span>)}
-                            </div>
-                          </div>
-                        );
-                      })}
+                      {lazyContractData[row.underlying] && (
+                        <OptionsChainMatrix
+                          underlying={row.underlying}
+                          provider={row.provider}
+                          expirations={lazyContractData[row.underlying].expirations}
+                          onContractClick={(prov, sym) => handleBarClick(prov, sym, ["1day"], effectiveStart)}
+                        />
+                      )}
                     </div>
                   )}
                 </div>
