@@ -333,7 +333,7 @@ def create_app(
         container.goal_processor = goal_processor
         scheduler.add_cron_job(
             job_id="data_goal_processor",
-            func=lambda: asyncio.create_task(goal_processor.tick()),
+            func=goal_processor.tick,
             cron_expr="* * * * *",
         )
 
