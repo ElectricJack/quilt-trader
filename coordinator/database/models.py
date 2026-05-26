@@ -302,6 +302,9 @@ class DataGoal(Base):
     goal_type: Mapped[str] = mapped_column(String, nullable=False)  # "options" | "bars"
     config: Mapped[dict] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")  # active | paused | completed
+    phase: Mapped[str] = mapped_column(String, nullable=False, default="discovering")  # discovering | downloading | completed
+    discovered_contracts: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # [{symbol, expiration}, ...]
+    discovery_progress: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # "45/105 expirations"
     total_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

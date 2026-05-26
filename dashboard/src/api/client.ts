@@ -221,6 +221,8 @@ export interface DataGoal {
   goal_type: "options" | "bars";
   config: Record<string, unknown>;
   status: "active" | "paused" | "completed";
+  phase: "discovering" | "downloading" | "completed";
+  discovery_progress: string | null;
   total_items: number;
   completed_items: number;
   failed_items: number;

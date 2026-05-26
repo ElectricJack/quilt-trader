@@ -13,10 +13,15 @@ function GoalCard({ goal, onPause, onResume, onDelete, onEdit }: {
   onEdit: () => void;
 }) {
   const pct = goal.progress_pct;
+  const phase = (goal as any).phase || "discovering";
+  const discoveryProgress = (goal as any).discovery_progress;
   const statusColor = goal.status === "active" ? "text-green-400" : goal.status === "paused" ? "text-yellow-400" : "text-gray-400";
+  const phaseLabel = phase === "discovering" ? "Discovering" : phase === "downloading" ? "Downloading" : "Complete";
+  const phaseColor = phase === "discovering" ? "text-blue-400" : phase === "downloading" ? "text-amber-400" : "text-green-400";
 
+  const freqs = (goal.config as any).frequencies || [(goal.config as any).frequency] || [];
   const configSummary = goal.goal_type === "options"
-    ? `${(goal.config as any).underlying} ${(goal.config as any).frequency} options, ${(goal.config as any).strike_range} strikes`
+    ? `${(goal.config as any).underlying} ${Array.isArray(freqs) ? freqs.join("+") : freqs} options, ${(goal.config as any).strike_range} strikes`
     : `${((goal.config as any).symbols || []).join(", ")} — ${((goal.config as any).timeframes || []).join(", ")}`;
 
   return (
@@ -47,12 +52,18 @@ function GoalCard({ goal, onPause, onResume, onDelete, onEdit }: {
         </div>
       </div>
       <div>
-        <div className="flex justify-between text-[10px] text-gray-500 mb-1">
-          <span>{goal.completed_items.toLocaleString()} / {goal.total_items.toLocaleString()} items</span>
-          <span>{pct}%</span>
+        <div className="flex justify-between text-[10px] mb-1">
+          <span className="text-gray-500">
+            <span className={`font-medium ${phaseColor}`}>{phaseLabel}</span>
+            {phase === "discovering" && discoveryProgress && ` — ${discoveryProgress}`}
+            {phase === "discovering" && goal.total_items > 0 && ` (${goal.total_items.toLocaleString()} contracts found so far)`}
+            {phase === "downloading" && ` — ${goal.completed_items.toLocaleString()} / ${goal.total_items.toLocaleString()} contracts`}
+          </span>
+          {phase === "downloading" && <span className="text-gray-500">{pct}%</span>}
         </div>
         <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-          <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%` }} />
+          <div className={`h-full rounded-full transition-all ${phase === "discovering" ? "bg-blue-500" : "bg-indigo-500"}`}
+            style={{ width: phase === "discovering" ? "100%" : `${Math.min(pct, 100)}%` }} />
         </div>
       </div>
       <div className="flex gap-4 text-[10px] text-gray-500">

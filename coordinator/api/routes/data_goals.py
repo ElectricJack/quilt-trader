@@ -22,12 +22,16 @@ class GoalCreate(BaseModel):
 
 def _to_response(g: DataGoal) -> dict:
     pct = (g.completed_items / g.total_items * 100) if g.total_items > 0 else 0
+    phase = getattr(g, "phase", None) or "discovering"
+    discovery_progress = getattr(g, "discovery_progress", None)
     return {
         "id": g.id,
         "name": g.name,
         "goal_type": g.goal_type,
         "config": g.config,
         "status": g.status,
+        "phase": phase,
+        "discovery_progress": discovery_progress,
         "total_items": g.total_items,
         "completed_items": g.completed_items,
         "failed_items": g.failed_items,

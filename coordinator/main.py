@@ -48,12 +48,19 @@ def create_app(
                     "CREATE TABLE IF NOT EXISTS data_goals ("
                     "id TEXT PRIMARY KEY, name TEXT NOT NULL, goal_type TEXT NOT NULL, "
                     "config JSON NOT NULL, status TEXT NOT NULL DEFAULT 'active', "
+                    "phase TEXT NOT NULL DEFAULT 'discovering', "
+                    "discovered_contracts JSON, discovery_progress TEXT, "
                     "total_items INTEGER NOT NULL DEFAULT 0, completed_items INTEGER NOT NULL DEFAULT 0, "
                     "failed_items INTEGER NOT NULL DEFAULT 0, last_processed_at TIMESTAMP, "
                     "error_message TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
                 ))
             except Exception:
                 pass
+            for col in ("phase", "discovered_contracts", "discovery_progress"):
+                try:
+                    await conn.execute(text(f"ALTER TABLE data_goals ADD COLUMN {col} TEXT"))
+                except Exception:
+                    pass
         session_factory = create_session_factory(engine)
         event_bus = EventBus()
         encryption = EncryptionService(encryption_key)
