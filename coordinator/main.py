@@ -323,6 +323,20 @@ def create_app(
             cron_expr="35 20 * * 1-5",  # 4:35 PM ET (20:35 UTC), Mon-Fri
         )
 
+        from coordinator.services.goal_processor import GoalProcessor
+        goal_processor = GoalProcessor(
+            session_factory=session_factory,
+            download_manager=download_manager,
+            data_service=data_svc,
+            providers=providers,
+        )
+        container.goal_processor = goal_processor
+        scheduler.add_cron_job(
+            job_id="data_goal_processor",
+            func=lambda: asyncio.create_task(goal_processor.tick()),
+            cron_expr="* * * * *",
+        )
+
         set_container(container)
 
         from coordinator.services.worker_health import run_worker_health_loop
@@ -439,6 +453,9 @@ def create_app(
 
     from coordinator.api.routes.diagnostics import router as diagnostics_router
     app.include_router(diagnostics_router)
+
+    from coordinator.api.routes.data_goals import router as data_goals_router
+    app.include_router(data_goals_router)
 
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
