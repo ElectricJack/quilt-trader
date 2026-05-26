@@ -83,18 +83,20 @@ class GoalProcessor:
         total = 0
         completed = 0
         queued = 0
+        needs_download: list[tuple[str, date]] = []
 
         for exp in expirations:
             existing = self._ds.list_option_contracts(provider_name, underlying, exp)
-            has_history = sum(1 for sym in existing
-                             if (df := self._ds.load_market_data(provider_name, sym, "1day")) is not None and len(df) > 1)
 
-            if existing and has_history == len(existing):
-                total += len(existing)
-                completed += len(existing)
-                continue
-
-            if not existing and queued < BATCH_SIZE:
+            if existing:
+                for sym in existing:
+                    total += 1
+                    df = self._ds.load_market_data(provider_name, sym, "1day")
+                    if df is not None and len(df) > 1:
+                        completed += 1
+                    else:
+                        needs_download.append((sym, exp))
+            elif queued < BATCH_SIZE:
                 contracts = await provider.discover_option_contracts(
                     underlying, exp, strike_range_pct=strike_pct, max_contracts=max_contracts,
                 )
@@ -108,7 +110,8 @@ class GoalProcessor:
 
                 for sym in symbols:
                     if queued >= BATCH_SIZE:
-                        break
+                        needs_download.append((sym, exp))
+                        continue
                     await self._dm.create_download(
                         symbols=[sym],
                         date_range_start=dl_start,
@@ -117,22 +120,20 @@ class GoalProcessor:
                         timeframe="1day",
                     )
                     queued += 1
-            elif existing:
-                total += len(existing)
-                completed += has_history
-                for sym in existing:
-                    df = self._ds.load_market_data(provider_name, sym, "1day")
-                    if (df is None or len(df) <= 1) and queued < BATCH_SIZE:
-                        dl_start = max(start, exp - timedelta(days=90))
-                        dl_end = min(end, exp)
-                        await self._dm.create_download(
-                            symbols=[sym],
-                            date_range_start=dl_start,
-                            date_range_end=dl_end,
-                            provider=provider_name,
-                            timeframe="1day",
-                        )
-                        queued += 1
+
+        for sym, exp in needs_download:
+            if queued >= BATCH_SIZE:
+                break
+            dl_start = max(start, exp - timedelta(days=90))
+            dl_end = min(end, exp)
+            await self._dm.create_download(
+                symbols=[sym],
+                date_range_start=dl_start,
+                date_range_end=dl_end,
+                provider=provider_name,
+                timeframe="1day",
+            )
+            queued += 1
 
         async with self._sf() as session:
             g = (await session.execute(
