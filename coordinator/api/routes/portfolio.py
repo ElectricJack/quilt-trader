@@ -119,7 +119,7 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
     # Fall back to positions + cash if broker didn't report portfolio_value
     if total_equity == 0:
         total_equity = total_positions_value + total_cash
-    open_risk = sum(p.get("unrealized_pnl", 0) for p in live_positions)
+    open_risk = await _compute_portfolio_var(live_positions)
 
     # Today's P&L: live broker value minus most recent materialized close
     prior_total = 0.0
@@ -211,6 +211,89 @@ SYMBOL_PALETTE = [
     "#f97316", "#3b82f6", "#14b8a6", "#a855f7", "#ec4899",
     "#84cc16", "#06b6d4", "#eab308", "#10b981", "#f43f5e",
 ]
+
+
+async def _compute_portfolio_var(
+    positions: list[dict],
+    confidence: float = 0.95,
+    lookback_days: int = 60,
+) -> float:
+    """Compute daily Value at Risk for the portfolio.
+
+    Uses historical simulation: get daily returns for each held symbol,
+    compute portfolio daily returns weighted by position size, take the
+    percentile loss.
+
+    Returns dollar VaR (positive number = potential loss).
+    """
+    import numpy as np
+    from coordinator.services.data_service import DataService
+
+    if not positions:
+        return 0.0
+
+    ds = DataService(market_data_dir="data/market", custom_data_dir="data/custom")
+
+    symbols = []
+    weights = []
+    total_value = sum(p.get("market_value", 0) for p in positions)
+    if total_value <= 0:
+        return 0.0
+
+    # Group positions by symbol (aggregate across accounts)
+    sym_values: dict[str, float] = {}
+    for p in positions:
+        sym = p["symbol"]
+        sym_values[sym] = sym_values.get(sym, 0) + p.get("market_value", 0)
+
+    # Load daily returns for each symbol
+    returns_matrix = []
+    valid_symbols = []
+    for sym, value in sym_values.items():
+        if value <= 0:
+            continue
+        # Try multiple providers
+        df = None
+        for provider in ("polygon", "tradier", "yfinance", "alpaca_live", "tradier_live"):
+            df = ds.load_market_data(provider, sym, "1day")
+            if df is not None and len(df) >= 10:
+                break
+        if df is None or len(df) < 10:
+            continue
+
+        import pandas as pd
+        closes = pd.to_datetime(df["timestamp"])
+        close_prices = df["close"].astype(float).values
+        if len(close_prices) < 10:
+            continue
+
+        # Daily log returns, last N days
+        tail = close_prices[-lookback_days:]
+        if len(tail) < 10:
+            continue
+        daily_returns = np.diff(np.log(tail))
+        returns_matrix.append(daily_returns)
+        valid_symbols.append(sym)
+        weights.append(value / total_value)
+
+    if not returns_matrix:
+        return 0.0
+
+    # Align lengths (some may differ by a day)
+    min_len = min(len(r) for r in returns_matrix)
+    returns_matrix = [r[-min_len:] for r in returns_matrix]
+    weights = np.array(weights[:len(returns_matrix)])
+    weights = weights / weights.sum()
+
+    # Portfolio daily returns = weighted sum
+    returns_arr = np.array(returns_matrix)
+    portfolio_returns = returns_arr.T @ weights
+
+    # VaR = percentile loss × total portfolio value
+    var_pct = np.percentile(portfolio_returns, (1 - confidence) * 100)
+    var_dollars = abs(var_pct) * total_value
+
+    return round(var_dollars, 2)
 
 
 async def _fetch_live_positions(accts) -> tuple[list[dict], float, float]:

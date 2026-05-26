@@ -50,7 +50,7 @@ export function KpiStripWidget() {
       sub: data ? `${data.open_positions_long} long · ${data.open_positions_short} short` : "",
     },
     {
-      label: "Open Risk",
+      label: "Daily VaR (95%)",
       value: data ? formatMoney(data.open_risk, true) : "—",
       sub: data ? `${pct(data.open_risk_pct_equity)} of equity` : "",
     },
