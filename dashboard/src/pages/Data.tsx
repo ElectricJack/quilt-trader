@@ -23,6 +23,7 @@ import { CustomDataPreviewModal } from "../components/CustomDataPreviewModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { LiveSubscriptionsSection } from "../components/LiveSubscriptionsSection";
 import { AvailableDataTab } from "../components/AvailableDataTab";
+import { DataGoalsTab } from "../components/DataGoalsTab";
 import { useUIStore } from "../stores/ui";
 import type { MarketDataDownload } from "../types";
 import type { DataSourceRow } from "../api/client";
@@ -272,9 +273,10 @@ function ActiveDownloadCard({ download, onCancel, isCancelling }: ActiveCardProp
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-const TABS = ["acquisition", "available", "history"] as const;
+const TABS = ["goals", "acquisition", "available", "history"] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABELS: Record<Tab, string> = {
+  goals: "Data Goals",
   acquisition: "Data Acquisition",
   available: "Available Data",
   history: "Download History",
@@ -512,6 +514,9 @@ export function Data() {
           </button>
         ))}
       </div>
+
+      {/* ── Data Goals tab ── */}
+      {activeTab === "goals" && <DataGoalsTab />}
 
       {/* ── Data Acquisition tab ── */}
       {activeTab === "acquisition" && (
