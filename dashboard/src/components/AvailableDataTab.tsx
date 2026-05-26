@@ -133,10 +133,26 @@ export function AvailableDataTab() {
     });
   }, [processed]);
 
-  // Expanded options groups + lazy-loaded contract children
+  // Expanded options groups + lazy-loaded contract data (multi-provider)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [lazyContractData, setLazyContractData] = useState<Record<string, Awaited<ReturnType<typeof api.listOptionContracts>>>>({});
+  const [lazyContractData, setLazyContractData] = useState<Record<string, { provider: string; expirations: Awaited<ReturnType<typeof api.listOptionContracts>>["expirations"] }[]>>({});
   const [loadingGroups, setLoadingGroups] = useState<Set<string>>(new Set());
+
+  // Collect all providers that have options for each underlying
+  const optionsProviders = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    if (!coverageData) return map;
+    for (const [prov, assets] of Object.entries(coverageData.providers)) {
+      for (const a of assets) {
+        if ((a as any).option_contracts) {
+          const sym = a.symbol;
+          if (!map[sym]) map[sym] = [];
+          if (!map[sym].includes(prov)) map[sym].push(prov);
+        }
+      }
+    }
+    return map;
+  }, [coverageData]);
 
   const toggleGroup = useCallback((underlying: string, provider?: string) => {
     setExpandedGroups((prev) => {
@@ -145,19 +161,26 @@ export function AvailableDataTab() {
         next.delete(underlying);
       } else {
         next.add(underlying);
-        if (!lazyContractData[underlying] && provider) {
-          setLoadingGroups((p) => new Set(p).add(underlying));
-          api.listOptionContracts(underlying, provider).then((data) => {
-            setLazyContractData((prev) => ({ ...prev, [underlying]: data }));
-            setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
-          }).catch(() => {
-            setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
-          });
+        if (!lazyContractData[underlying]) {
+          const provs = optionsProviders[underlying] ?? (provider ? [provider] : []);
+          if (provs.length > 0) {
+            setLoadingGroups((p) => new Set(p).add(underlying));
+            Promise.all(provs.map((p) => api.listOptionContracts(underlying, p))).then((results) => {
+              const providerData = results.map((r) => ({
+                provider: r.provider,
+                expirations: r.expirations,
+              }));
+              setLazyContractData((prev) => ({ ...prev, [underlying]: providerData }));
+              setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
+            }).catch(() => {
+              setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
+            });
+          }
         }
       }
       return next;
     });
-  }, [lazyContractData]);
+  }, [lazyContractData, optionsProviders]);
 
   // Selection state (compare + bulk actions)
   const initialCompare = useMemo(readCompareFromUrl, []);
@@ -405,8 +428,7 @@ export function AvailableDataTab() {
                       {lazyContractData[row.underlying] && (
                         <OptionsChainMatrix
                           underlying={row.underlying}
-                          provider={row.provider}
-                          expirations={lazyContractData[row.underlying].expirations}
+                          providers={lazyContractData[row.underlying]}
                           onContractClick={(prov, sym) => handleBarClick(prov, sym, ["1day"], effectiveStart)}
                         />
                       )}
