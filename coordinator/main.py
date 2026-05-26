@@ -321,12 +321,12 @@ def create_app(
         # Register periodic account jobs
         scheduler.add_cron_job(
             job_id="account_periodic_sync",
-            func=lambda: asyncio.create_task(account_lifecycle.periodic_sync()),
+            func=account_lifecycle.periodic_sync,
             cron_expr="*/15 * * * 1-5",  # every 15min, Mon-Fri
         )
         scheduler.add_cron_job(
             job_id="account_daily_close",
-            func=lambda: asyncio.create_task(account_lifecycle.daily_close()),
+            func=account_lifecycle.daily_close,
             cron_expr="35 20 * * 1-5",  # 4:35 PM ET (20:35 UTC), Mon-Fri
         )
 
