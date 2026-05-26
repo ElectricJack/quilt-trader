@@ -57,6 +57,8 @@ async def _fetch_broker_positions(db: AsyncSession) -> list[dict]:
             adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
             positions = await asyncio.to_thread(adapter.get_positions)
             for sym, pos in positions.items():
+                from coordinator.services.asset_services import get_default_registry
+                registry = get_default_registry()
                 items.append({
                     "id": f"{acct.id}:{sym}",
                     "instance_id": None,
@@ -68,7 +70,7 @@ async def _fetch_broker_positions(db: AsyncSession) -> list[dict]:
                     "quantity": float(pos.get("quantity", 0)),
                     "avg_price": float(pos.get("avg_price", 0)),
                     "current_price": float(pos.get("current_price", 0)),
-                    "asset_type": pos.get("asset_class", "equities"),
+                    "asset_type": registry.classify(sym).value,
                     "unrealized_pnl": float(pos.get("unrealized_pnl", 0)),
                     "net_pnl": None,
                     "net_cost": float(pos.get("avg_price", 0)) * float(pos.get("quantity", 0)),
