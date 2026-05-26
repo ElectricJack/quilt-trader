@@ -25,11 +25,9 @@ function GoalCard({ goal, onPause, onResume, onDelete, onEdit }: {
       const done = parseInt(m[1]);
       const total = parseInt(m[2]);
       discoveryPct = total > 0 ? (done / total) * 100 : 0;
-      if (done > 0 && goal.created_at && goal.last_processed_at) {
-        const started = new Date(goal.created_at).getTime();
-        const now = new Date(goal.last_processed_at).getTime();
-        const elapsed = (now - started) / 1000;
-        const remaining = elapsed / done * (total - done);
+      if (done < total) {
+        // Estimate: ~20 expirations per 60s tick (current batch rate)
+        const remaining = Math.ceil((total - done) / 20) * 60;
         if (remaining < 60) discoveryEta = `~${Math.round(remaining)}s left`;
         else if (remaining < 3600) discoveryEta = `~${Math.round(remaining / 60)}m left`;
         else discoveryEta = `~${(remaining / 3600).toFixed(1)}h left`;
