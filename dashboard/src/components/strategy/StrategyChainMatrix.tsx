@@ -84,32 +84,22 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
     };
   }, [matrix]);
 
-  if (isLoading) {
-    return (
-      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-6 text-center text-sm text-gray-500">
-        Loading chain…
-      </div>
-    );
-  }
-  if (!matrix || expDates.length === 0 || strikes.length === 0) {
-    return (
-      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-6 text-center text-sm text-gray-500">
-        Pick an underlying to view the chain.
-      </div>
-    );
-  }
-
-  const spot = matrix.spot ?? 0;
+  const spot = matrix?.spot ?? 0;
   // Strike closest to spot — anchors the initial scroll position only.
-  const atmStrike = strikes.reduce((best, k) =>
-    Math.abs(k - spot) < Math.abs(best - spot) ? k : best,
-    strikes[0]
-  );
+  const atmStrike = strikes.length
+    ? strikes.reduce(
+        (best, k) => (Math.abs(k - spot) < Math.abs(best - spot) ? k : best),
+        strikes[0]
+      )
+    : null;
 
   // Scroll the ATM row into the *scroll container only* — never the
   // document. Fires once per underlying so it doesn't snap back when
   // other state (hover, date slider, leg add) triggers a re-render.
+  // NOTE: hook must run before the early returns below to satisfy
+  // React's rules of hooks.
   useEffect(() => {
+    if (atmStrike == null) return;
     const anchor = `${matrix?.underlying ?? ""}|${atmStrike}`;
     if (!atmRef.current || !scrollRef.current) return;
     if (lastAnchored.current === anchor) return;
@@ -119,6 +109,21 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
     container.scrollTop = Math.max(0, target);
     lastAnchored.current = anchor;
   }, [matrix?.underlying, atmStrike]);
+
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-6 text-center text-sm text-gray-500">
+        Loading chain…
+      </div>
+    );
+  }
+  if (!matrix || expDates.length === 0 || strikes.length === 0 || atmStrike == null) {
+    return (
+      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-6 text-center text-sm text-gray-500">
+        Pick an underlying to view the chain.
+      </div>
+    );
+  }
 
   function pickCell(strike: number, expiry: string, right: "call" | "put") {
     const c = lookup.get(`${strike}|${right}|${expiry}`);
