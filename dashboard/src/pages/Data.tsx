@@ -27,7 +27,7 @@ import { AvailableDataTab } from "../components/AvailableDataTab";
 import { DataGoalsTab } from "../components/DataGoalsTab";
 import { useUIStore } from "../stores/ui";
 import type { MarketDataDownload } from "../types";
-import { api } from "../api/client";
+import { SymbolSearch } from "../components/SymbolSearch";
 import type { DataSourceRow } from "../api/client";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -818,40 +818,10 @@ export function Data() {
             </FormField>
 
             <FormField label="Symbols" error={form.formState.errors.symbols?.message}>
-              <div className="flex gap-2">
-                <input
-                  {...form.register("symbols")}
-                  className={INPUT_CLS + " flex-1"}
-                  placeholder="AAPL, MSFT, SPY"
-                />
-                {form.watch("provider") && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const q = prompt("Search symbols:");
-                      if (!q) return;
-                      api.searchSymbols(q, form.watch("provider")).then((data) => {
-                        if (data.error) { alert(data.error); return; }
-                        if (data.results.length === 0) { alert("No results"); return; }
-                        const lines = data.results.map((r) => `${r.symbol}  —  ${r.name} (${r.type})`);
-                        const selected = prompt(
-                          `Found ${data.results.length} results:\n\n` +
-                          lines.join("\n") +
-                          "\n\nEnter symbols to add (comma-separated):"
-                        );
-                        if (selected) {
-                          const current = form.getValues("symbols");
-                          const combined = [current, selected].filter(Boolean).join(", ");
-                          form.setValue("symbols", combined);
-                        }
-                      });
-                    }}
-                    className="px-3 py-2 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded whitespace-nowrap"
-                  >
-                    Browse
-                  </button>
-                )}
-              </div>
+              <SymbolSearch
+                value={form.watch("symbols")}
+                onChange={(v) => form.setValue("symbols", v, { shouldValidate: true })}
+              />
             </FormField>
 
             <FormField label="Date Range" error={form.formState.errors.date_range_start?.message || form.formState.errors.date_range_end?.message}>
