@@ -141,6 +141,36 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
     )
     trades_today = (await db.execute(trade_q)).scalar() or 0
 
+    # Win/loss from today's closing trades (realized P&L)
+    today_trades = (await db.execute(
+        select(TradeLog).where(
+            TradeLog.timestamp >= today_start,
+            TradeLog.account_id.in_(visible_ids),
+        )
+    )).scalars().all()
+    today_wins = sum(1 for t in today_trades if (t.realized_pnl or 0) > 0)
+    today_losses = sum(1 for t in today_trades if (t.realized_pnl or 0) < 0)
+
+    # 7-day win rate
+    week_ago = now - timedelta(days=7)
+    week_trades = (await db.execute(
+        select(TradeLog).where(
+            TradeLog.timestamp >= week_ago,
+            TradeLog.account_id.in_(visible_ids),
+        )
+    )).scalars().all()
+    week_with_pnl = [t for t in week_trades if t.realized_pnl is not None and t.realized_pnl != 0]
+    week_wins = sum(1 for t in week_with_pnl if t.realized_pnl > 0)
+    win_rate_7d = (week_wins / len(week_with_pnl) * 100.0) if week_with_pnl else 0.0
+
+    # All-time win rate
+    all_trades = (await db.execute(
+        select(TradeLog).where(TradeLog.account_id.in_(visible_ids))
+    )).scalars().all()
+    all_with_pnl = [t for t in all_trades if t.realized_pnl is not None and t.realized_pnl != 0]
+    all_wins = sum(1 for t in all_with_pnl if t.realized_pnl > 0)
+    win_rate = (all_wins / len(all_with_pnl) * 100.0) if all_with_pnl else 0.0
+
     deployed_pct = (
         (total_positions_value / total_equity * 100.0) if total_equity > 0 else 0.0
     )
@@ -150,10 +180,10 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
         "today_pnl": today_pnl,
         "today_pnl_pct": today_pnl_pct,
         "trades_today": trades_today,
-        "trades_today_wins": 0,
-        "trades_today_losses": 0,
-        "win_rate": 0.0,
-        "win_rate_7d_avg": 0.0,
+        "trades_today_wins": today_wins,
+        "trades_today_losses": today_losses,
+        "win_rate": win_rate,
+        "win_rate_7d_avg": win_rate_7d,
         "open_positions": len(live_positions),
         "open_positions_long": sum(1 for p in live_positions if p.get("quantity", 0) > 0),
         "open_positions_short": sum(1 for p in live_positions if p.get("quantity", 0) < 0),

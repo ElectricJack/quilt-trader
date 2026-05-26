@@ -51,6 +51,7 @@ def _deployment_to_response(
     algo_name: str,
     account_name: str,
     worker_name: str,
+    computed_metrics: dict | None = None,
 ) -> dict:
     return {
         "id": inst.id,
@@ -63,7 +64,7 @@ def _deployment_to_response(
         "status": inst.status,
         "active_run_id": inst.active_run_id,
         "config_values": inst.config_values,
-        "lifetime_metrics": inst.lifetime_metrics,
+        "lifetime_metrics": computed_metrics or inst.lifetime_metrics,
         "created_at": to_iso_utc(inst.created_at),
         "updated_at": to_iso_utc(inst.updated_at),
     }
@@ -93,7 +94,36 @@ async def list_deployments(
     if account_id:
         stmt = stmt.where(AlgorithmInstance.account_id == account_id)
     rows = (await db.execute(stmt)).all()
-    return [_deployment_to_response(inst, a, ac, w) for inst, a, ac, w in rows]
+
+    # Compute lifetime metrics from trade_log for each deployment
+    from coordinator.database.models import TradeLog
+    metrics_by_instance: dict[str, dict] = {}
+    for inst, _, _, _ in rows:
+        trades = (await db.execute(
+            select(TradeLog).where(TradeLog.instance_id == inst.id)
+        )).scalars().all()
+        if not trades:
+            # Also try by account_id + algorithm_id for trades without instance_id
+            trades = (await db.execute(
+                select(TradeLog).where(
+                    TradeLog.account_id == inst.account_id,
+                )
+            )).scalars().all()
+        with_pnl = [t for t in trades if t.realized_pnl is not None and t.realized_pnl != 0]
+        wins = sum(1 for t in with_pnl if t.realized_pnl > 0)
+        total_pnl = sum(t.realized_pnl for t in with_pnl)
+        metrics_by_instance[inst.id] = {
+            "trade_count": len(trades),
+            "win_count": wins,
+            "loss_count": len(with_pnl) - wins,
+            "win_rate": (wins / len(with_pnl) * 100) if with_pnl else 0,
+            "lifetime_pnl": total_pnl,
+        }
+
+    return [
+        _deployment_to_response(inst, a, ac, w, computed_metrics=metrics_by_instance.get(inst.id))
+        for inst, a, ac, w in rows
+    ]
 
 
 async def _broadcast_status_changed(deployment_id: str, status: str, active_run_id: Optional[str]) -> None:
