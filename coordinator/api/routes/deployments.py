@@ -119,12 +119,17 @@ async def list_deployments(
                     creds = _json.loads(container.encryption.decrypt(acct.credentials))
                     adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
                     positions = await asyncio.to_thread(adapter.get_positions)
-                    live_positions_by_account[acct_id] = [
-                        {"symbol": sym, "unrealized_pnl": float(p.get("unrealized_pnl", 0)),
-                         "market_value": float(p.get("market_value", 0)),
-                         "quantity": float(p.get("quantity", 0))}
-                        for sym, p in positions.items()
-                    ]
+                    pos_list = []
+                    for sym, p in positions.items():
+                        mv = float(p.get("market_value", 0))
+                        qty = float(p.get("quantity", 0))
+                        avg = float(p.get("avg_price", 0))
+                        upnl = float(p.get("unrealized_pnl", 0))
+                        # Compute unrealized P&L if broker didn't provide it
+                        if upnl == 0 and mv > 0 and avg > 0 and qty > 0:
+                            upnl = mv - (avg * qty)
+                        pos_list.append({"symbol": sym, "unrealized_pnl": upnl, "market_value": mv, "quantity": qty})
+                    live_positions_by_account[acct_id] = pos_list
             except Exception:
                 pass
 
