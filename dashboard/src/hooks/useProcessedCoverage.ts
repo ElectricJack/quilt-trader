@@ -250,18 +250,34 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     });
   }
 
-  // Server-side collapsed options groups
+  // Server-side collapsed options groups — merge by underlying across providers
+  const mergedOptionGroups = new Map<string, { contracts: number; exps: number; ranges: CoverageRange[]; provider: string }>();
   for (const [, asset] of serverGroupedOptions) {
     const underlying = asset.symbol;
     if (optionsByUnderlying.has(underlying)) continue;
+    const existing = mergedOptionGroups.get(underlying);
     const numContracts = (asset as any).option_contracts ?? 0;
     const numExps = (asset as any).option_expirations ?? 0;
+    if (existing) {
+      existing.contracts += numContracts;
+      existing.exps = Math.max(existing.exps, numExps);
+      existing.ranges = [...existing.ranges, ...asset.ranges];
+    } else {
+      mergedOptionGroups.set(underlying, {
+        contracts: numContracts,
+        exps: numExps,
+        ranges: [...asset.ranges],
+        provider: asset.normalizedProvider,
+      });
+    }
+  }
+  for (const [underlying, group] of mergedOptionGroups) {
     rows.push({
       kind: "options-group",
       underlying,
-      label: `${underlying} Options (${numContracts} contracts, ${numExps} expirations)`,
-      provider: asset.normalizedProvider,
-      ranges: asset.ranges,
+      label: `${underlying} Options (${group.contracts} contracts, ${group.exps} expirations)`,
+      provider: group.provider,
+      ranges: mergeRanges(group.ranges),
       timeframes: ["options"],
       children: [],
       assetType: "options",
