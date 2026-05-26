@@ -175,6 +175,7 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
   for (const asset of nonOptOriginals) {
     const list = childBySymbol.get(asset.symbol) ?? [];
     for (const tf of asset.timeframes_on_disk) {
+      if (tf === "options") continue;
       const existing = list.find((c) => c.provider === asset.normalizedProvider && c.timeframe === tf);
       if (existing) {
         existing.ranges = mergeRanges([...existing.ranges, ...asset.ranges]);
