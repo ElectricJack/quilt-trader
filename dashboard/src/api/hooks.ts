@@ -397,7 +397,7 @@ export function useCreateCashFlow(accountId: string) {
 export function useDownloads() {
   return useQuery({
     queryKey: keys.downloads(),
-    queryFn: api.listDownloads,
+    queryFn: () => api.listDownloads(),
   });
 }
 

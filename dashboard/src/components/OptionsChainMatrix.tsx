@@ -39,7 +39,7 @@ function barTooltip(c: Contract | undefined, provider?: string): string {
   return `${c.symbol}${provider ? ` [${provider}]` : ""}\n${c.bars} bars`;
 }
 
-export function OptionsChainMatrix({ underlying, providers, onContractClick }: Props) {
+export function OptionsChainMatrix({ underlying: _underlying, providers, onContractClick }: Props) {
   const providerNames = providers.map((p) => p.provider);
   const [activeProvider, setActiveProvider] = useState(providerNames[0] ?? "");
 

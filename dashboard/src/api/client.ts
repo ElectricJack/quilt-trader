@@ -552,7 +552,7 @@ export const api = {
   listOptionContracts(underlying: string, provider = "polygon"): Promise<{
     underlying: string;
     provider: string;
-    expirations: { expiration: string; contracts: { symbol: string; strike: number; option_type: string; expiration: string }[]; count: number }[];
+    expirations: { expiration: string; contracts: { symbol: string; strike: number; option_type: string; expiration: string; bars: number }[]; count: number }[];
   }> {
     return request(`/api/data/options/${encodeURIComponent(underlying)}/contracts?provider=${encodeURIComponent(provider)}`);
   },
