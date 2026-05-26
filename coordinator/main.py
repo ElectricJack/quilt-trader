@@ -61,6 +61,18 @@ def create_app(
                     await conn.execute(text(f"ALTER TABLE data_goals ADD COLUMN {col} TEXT"))
                 except Exception:
                     pass
+            # Add missing columns to positions table
+            for col, dtype in [
+                ("owner_instance_id", "TEXT"),
+                ("strategy_type", "TEXT"),
+                ("position_intent", "TEXT"),
+                ("remaining_quantity", "REAL"),
+                ("cost_basis_lots", "JSON"),
+            ]:
+                try:
+                    await conn.execute(text(f"ALTER TABLE positions ADD COLUMN {col} {dtype}"))
+                except Exception:
+                    pass
         session_factory = create_session_factory(engine)
         event_bus = EventBus()
         encryption = EncryptionService(encryption_key)
