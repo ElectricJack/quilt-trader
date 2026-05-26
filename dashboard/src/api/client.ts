@@ -551,6 +551,14 @@ export const api = {
   getCustomData(name: string): Promise<CustomDatasetResponse> {
     return request<CustomDatasetResponse>(`/api/data/custom/${encodeURIComponent(name)}`);
   },
+  searchSymbols(query: string, provider = "polygon", limit = 20): Promise<{
+    results: { symbol: string; name: string; type: string }[];
+    provider: string;
+    error?: string;
+  }> {
+    const params = new URLSearchParams({ q: query, provider, limit: String(limit) });
+    return request(`/api/data/search-symbols?${params}`);
+  },
   listProviders(): Promise<{ providers: { name: string; timeframes: string[] }[] }> {
     return request("/api/data/providers");
   },

@@ -42,6 +42,14 @@ class PolygonProvider:
         self._min_interval = min_request_interval_s
         self._last_request_ts: float = 0.0
 
+    async def search_symbols(self, query: str, limit: int = 20) -> list[dict]:
+        """Search for ticker symbols matching a query string."""
+        url = f"{self.BASE_URL}/v3/reference/tickers"
+        params = {"apiKey": self._api_key, "search": query, "limit": limit, "active": "true"}
+        resp = await self._request_with_retry(url, params)
+        results = resp.json().get("results") or []
+        return [{"symbol": r.get("ticker", ""), "name": r.get("name", ""), "type": r.get("type", "")} for r in results]
+
     def _timeframe_params(self, timeframe: str) -> tuple[str, str]:
         if timeframe in TIMEFRAME_MAP:
             return TIMEFRAME_MAP[timeframe]

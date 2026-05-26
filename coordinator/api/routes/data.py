@@ -152,6 +152,24 @@ async def list_providers():
     return {"providers": result}
 
 
+@router.get("/search-symbols")
+async def search_symbols(
+    q: str = Query("", min_length=1, description="Search query"),
+    provider: str = Query("polygon"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Search for symbols via a provider's ticker search API."""
+    try:
+        mgr = get_download_manager()
+    except Exception:
+        return {"results": []}
+    prov = mgr._providers.get(provider)
+    if prov is None or not hasattr(prov, "search_symbols"):
+        return {"results": [], "error": f"Provider '{provider}' does not support symbol search"}
+    results = await prov.search_symbols(q, limit=limit)
+    return {"results": results, "provider": provider}
+
+
 @router.get("/available")
 async def list_available():
     svc = get_data_service()
