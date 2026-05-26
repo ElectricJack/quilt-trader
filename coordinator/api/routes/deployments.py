@@ -95,34 +95,78 @@ async def list_deployments(
         stmt = stmt.where(AlgorithmInstance.account_id == account_id)
     rows = (await db.execute(stmt)).all()
 
-    # Compute lifetime metrics from trade_log for each deployment
+    # Compute lifetime metrics including unrealized P&L from live positions
     from coordinator.database.models import TradeLog
+    import asyncio
+    import json as _json
+    from worker.adapter_factory import make_broker_adapter
+
+    # Fetch live positions per account (includes unrealized_pnl)
+    container = None
+    try:
+        from coordinator.api.dependencies import get_container
+        container = get_container()
+    except Exception:
+        pass
+
+    live_positions_by_account: dict[str, list[dict]] = {}
+    if container:
+        seen_accounts = {inst.account_id for inst, _, _, _ in rows}
+        for acct_id in seen_accounts:
+            try:
+                acct = (await db.execute(select(Account).where(Account.id == acct_id))).scalar_one_or_none()
+                if acct:
+                    creds = _json.loads(container.encryption.decrypt(acct.credentials))
+                    adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
+                    positions = await asyncio.to_thread(adapter.get_positions)
+                    live_positions_by_account[acct_id] = [
+                        {"symbol": sym, "unrealized_pnl": float(p.get("unrealized_pnl", 0)),
+                         "market_value": float(p.get("market_value", 0)),
+                         "quantity": float(p.get("quantity", 0))}
+                        for sym, p in positions.items()
+                    ]
+            except Exception:
+                pass
+
     metrics_by_instance: dict[str, dict] = {}
     for inst, _, _, _ in rows:
         trades = (await db.execute(
             select(TradeLog).where(TradeLog.instance_id == inst.id)
         )).scalars().all()
         if not trades:
-            # Also try by account_id + algorithm_id for trades without instance_id
             trades = (await db.execute(
-                select(TradeLog).where(
-                    TradeLog.account_id == inst.account_id,
-                )
+                select(TradeLog).where(TradeLog.account_id == inst.account_id)
             )).scalars().all()
+
+        # Unrealized P&L from open positions
+        positions = live_positions_by_account.get(inst.account_id, [])
+        unrealized_pnl = sum(p["unrealized_pnl"] for p in positions)
+        positions_in_profit = sum(1 for p in positions if p["unrealized_pnl"] > 0)
+        positions_in_loss = sum(1 for p in positions if p["unrealized_pnl"] < 0)
+        total_positions = positions_in_profit + positions_in_loss
+
+        # Realized P&L from closed trades
         sells = [t for t in trades if t.side == "sell"]
-        buys_by_sym = {}
+        buys_by_sym: dict[str, float] = {}
         for t in trades:
             if t.side == "buy":
                 buys_by_sym[t.symbol] = t.filled_price
-        wins = sum(1 for t in sells if t.symbol in buys_by_sym and t.filled_price > buys_by_sym[t.symbol])
-        losses = sum(1 for t in sells if t.symbol in buys_by_sym and t.filled_price < buys_by_sym[t.symbol])
-        total_with_result = wins + losses
+        realized_pnl = sum(
+            (t.filled_price - buys_by_sym.get(t.symbol, t.filled_price)) * t.quantity
+            for t in sells
+        )
+
+        lifetime_pnl = realized_pnl + unrealized_pnl
+        win_rate = (positions_in_profit / total_positions * 100) if total_positions else 0
+
         metrics_by_instance[inst.id] = {
             "trade_count": len(trades),
-            "win_count": wins,
-            "loss_count": losses,
-            "win_rate": (wins / total_with_result * 100) if total_with_result else 0,
-            "lifetime_pnl": sum((t.filled_price - buys_by_sym.get(t.symbol, t.filled_price)) * t.quantity for t in sells),
+            "win_count": positions_in_profit,
+            "loss_count": positions_in_loss,
+            "win_rate": win_rate,
+            "lifetime_pnl": lifetime_pnl,
+            "realized_pnl": realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
         }
 
     return [
