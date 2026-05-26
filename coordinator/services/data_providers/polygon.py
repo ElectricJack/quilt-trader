@@ -34,6 +34,7 @@ INDEX_SYMBOL_MAP: dict[str, str] = {
 
 
 class PolygonProvider:
+    supported_timeframes = ["1min", "5min", "15min", "1hour", "1day"]
     BASE_URL = "https://api.polygon.io"
 
     def __init__(self, api_key: str, http_client: Any = None, *, min_request_interval_s: float = 0.0) -> None:

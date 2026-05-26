@@ -40,6 +40,7 @@ TIMEFRAME_MAP = {
 
 
 class YFinanceProvider:
+    supported_timeframes = ["1min", "5min", "15min", "1hour", "1day"]
     """Historical data provider using Yahoo Finance (yfinance).
 
     Delayed data only — do not use for live trading.

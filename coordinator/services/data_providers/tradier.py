@@ -20,6 +20,7 @@ SANDBOX_BASE_URL = "https://sandbox.tradier.com/v1"
 
 
 class TradierProvider:
+    supported_timeframes = ["1day"]
     def __init__(
         self,
         access_token: str,

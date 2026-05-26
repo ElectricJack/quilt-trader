@@ -126,12 +126,18 @@ async def get_custom_data(source_name: str, fmt: str = Query("csv")):
 
 @router.get("/providers")
 async def list_providers():
-    """Return list of configured data provider names."""
+    """Return configured providers with their supported timeframes."""
     try:
         mgr = get_download_manager()
-        return {"providers": sorted(mgr._providers.keys())}
     except Exception:
         return {"providers": []}
+
+    result = []
+    for name in sorted(mgr._providers.keys()):
+        prov = mgr._providers[name]
+        timeframes = getattr(prov, "supported_timeframes", ["1day"])
+        result.append({"name": name, "timeframes": timeframes})
+    return {"providers": result}
 
 
 @router.get("/available")
