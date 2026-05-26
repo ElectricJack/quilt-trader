@@ -107,6 +107,10 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     if (existing) {
       existing.ranges = [...existing.ranges, ...asset.ranges];
       existing.timeframes_on_disk = [...new Set([...existing.timeframes_on_disk, ...asset.timeframes_on_disk])];
+      if ((asset as any).option_contracts) {
+        (existing as any).option_contracts = (asset as any).option_contracts;
+        (existing as any).option_expirations = (asset as any).option_expirations;
+      }
     } else {
       deduped.set(key, { ...asset, ranges: [...asset.ranges], timeframes_on_disk: [...asset.timeframes_on_disk] });
     }
@@ -141,6 +145,11 @@ export function processCoverage(data: CoverageResponse): ProcessedCoverage {
     // Server-side collapsed options group (has option_contracts field)
     if ((asset as any).option_contracts) {
       serverGroupedOptions.set(`${asset.normalizedProvider}/${asset.symbol}`, asset);
+      // Also add as non-option if it has regular timeframes (equity bars + options)
+      const regularTfs = asset.timeframes_on_disk.filter((t: string) => t !== "options");
+      if (regularTfs.length > 0) {
+        nonOptions.push({ ...asset, timeframes_on_disk: regularTfs });
+      }
       continue;
     }
     const parsed = parseOCC(asset.symbol);
