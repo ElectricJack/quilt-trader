@@ -14,7 +14,28 @@ function GoalCard({ goal, onPause, onResume, onDelete, onEdit }: {
 }) {
   const pct = goal.progress_pct;
   const phase = (goal as any).phase || "discovering";
-  const discoveryProgress = (goal as any).discovery_progress;
+  const discoveryProgress: string | null = (goal as any).discovery_progress;
+
+  // Parse discovery progress for percentage and ETA
+  let discoveryPct = 0;
+  let discoveryEta = "";
+  if (discoveryProgress) {
+    const m = discoveryProgress.match(/^(\d+)\/(\d+)/);
+    if (m) {
+      const done = parseInt(m[1]);
+      const total = parseInt(m[2]);
+      discoveryPct = total > 0 ? (done / total) * 100 : 0;
+      if (done > 0 && goal.created_at && goal.last_processed_at) {
+        const started = new Date(goal.created_at).getTime();
+        const now = new Date(goal.last_processed_at).getTime();
+        const elapsed = (now - started) / 1000;
+        const remaining = elapsed / done * (total - done);
+        if (remaining < 60) discoveryEta = `~${Math.round(remaining)}s left`;
+        else if (remaining < 3600) discoveryEta = `~${Math.round(remaining / 60)}m left`;
+        else discoveryEta = `~${(remaining / 3600).toFixed(1)}h left`;
+      }
+    }
+  }
   const statusColor = goal.status === "active" ? "text-green-400" : goal.status === "paused" ? "text-yellow-400" : "text-gray-400";
   const phaseLabel = phase === "discovering" ? "Discovering" : phase === "downloading" ? "Downloading" : "Complete";
   const phaseColor = phase === "discovering" ? "text-blue-400" : phase === "downloading" ? "text-amber-400" : "text-green-400";
@@ -59,11 +80,15 @@ function GoalCard({ goal, onPause, onResume, onDelete, onEdit }: {
             {phase === "discovering" && goal.total_items > 0 && ` (${goal.total_items.toLocaleString()} contracts found so far)`}
             {phase === "downloading" && ` — ${goal.completed_items.toLocaleString()} / ${goal.total_items.toLocaleString()} contracts`}
           </span>
-          {phase === "downloading" && <span className="text-gray-500">{pct}%</span>}
+          <span className="text-gray-500">
+            {phase === "discovering" && discoveryPct > 0 && `${discoveryPct.toFixed(0)}%`}
+            {phase === "downloading" && `${pct}%`}
+            {discoveryEta && phase === "discovering" && ` · ${discoveryEta}`}
+          </span>
         </div>
         <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
           <div className={`h-full rounded-full transition-all ${phase === "discovering" ? "bg-blue-500" : "bg-indigo-500"}`}
-            style={{ width: phase === "discovering" ? "100%" : `${Math.min(pct, 100)}%` }} />
+            style={{ width: phase === "discovering" ? `${Math.max(discoveryPct, 2)}%` : `${Math.min(pct, 100)}%` }} />
         </div>
       </div>
       <div className="flex gap-4 text-[10px] text-gray-500">
