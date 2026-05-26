@@ -13,6 +13,7 @@ const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   equities: "Equities",
   options: "Options",
   crypto: "Crypto",
+  indexes: "Indexes",
 };
 
 interface DataFilterBarProps {

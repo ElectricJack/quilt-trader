@@ -2,13 +2,15 @@ import { useMemo } from "react";
 import type { CoverageResponse, CoverageAsset, CoverageRange } from "../api/client";
 import { isOCCSymbol, parseOCC, formatOCCReadable } from "../lib/occ";
 
-export type AssetType = "equities" | "options" | "crypto";
+export type AssetType = "equities" | "options" | "crypto" | "indexes";
 
 const CRYPTO_SYMBOLS = new Set(["BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT", "SOLUSD", "DOGEUSD"]);
+const INDEX_SYMBOLS = new Set(["VIX", "SPX", "NDX", "RUT", "DJI", "GSPC", "IXIC"]);
 
 function detectAssetType(symbol: string): AssetType {
   if (isOCCSymbol(symbol)) return "options";
   if (CRYPTO_SYMBOLS.has(symbol) || symbol.endsWith("USD") || symbol.endsWith("USDT")) return "crypto";
+  if (INDEX_SYMBOLS.has(symbol) || symbol.startsWith("^") || symbol.startsWith("I:")) return "indexes";
   return "equities";
 }
 

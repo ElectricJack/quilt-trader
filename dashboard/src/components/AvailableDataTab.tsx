@@ -110,7 +110,7 @@ export function AvailableDataTab() {
 
   // Filter state — initialize from URL params (e.g. linked from live subscriptions)
   const [searchText, setSearchText] = useState(initialSearch);
-  const [assetTypes, setAssetTypes] = useState<Set<AssetType>>(new Set(["equities", "options", "crypto"]));
+  const [assetTypes, setAssetTypes] = useState<Set<AssetType>>(new Set(["equities", "options", "crypto", "indexes"]));
   const [activeProviders, setActiveProviders] = useState<Set<string> | null>(null);
   const effectiveProviders = activeProviders ?? new Set(processed?.providers ?? []);
 
