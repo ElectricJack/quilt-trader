@@ -170,9 +170,13 @@ async def create_download(body: DownloadRequest):
 
 
 @router.get("/downloads")
-async def list_downloads():
+async def list_downloads(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = Query(None),
+):
     mgr = get_download_manager()
-    return await mgr.list_downloads()
+    return await mgr.list_downloads(limit=limit, offset=offset, status=status)
 
 
 @router.get("/downloads/{download_id}")

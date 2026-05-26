@@ -528,8 +528,10 @@ export const api = {
   getCustomData(name: string): Promise<CustomDatasetResponse> {
     return request<CustomDatasetResponse>(`/api/data/custom/${encodeURIComponent(name)}`);
   },
-  listDownloads(): Promise<MarketDataDownload[]> {
-    return request<MarketDataDownload[]>("/api/data/downloads");
+  listDownloads(limit = 100, offset = 0, status?: string): Promise<MarketDataDownload[]> {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (status) params.set("status", status);
+    return request<MarketDataDownload[]>(`/api/data/downloads?${params}`);
   },
   getDownload(id: string): Promise<MarketDataDownload> {
     return request<MarketDataDownload>(`/api/data/downloads/${id}`);

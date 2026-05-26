@@ -76,11 +76,13 @@ class DownloadManager:
                 return None
             return self._to_dict(dl)
 
-    async def list_downloads(self) -> list[dict]:
+    async def list_downloads(self, limit: int = 100, offset: int = 0, status: str | None = None) -> list[dict]:
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(MarketDataDownload).order_by(MarketDataDownload.started_at.desc())
-            )
+            q = select(MarketDataDownload).order_by(MarketDataDownload.started_at.desc())
+            if status:
+                q = q.where(MarketDataDownload.status == status)
+            q = q.offset(offset).limit(limit)
+            result = await session.execute(q)
             return [self._to_dict(dl) for dl in result.scalars().all()]
 
     async def delete_download(self, download_id: str) -> bool:
