@@ -551,6 +551,9 @@ export const api = {
   getCustomData(name: string): Promise<CustomDatasetResponse> {
     return request<CustomDatasetResponse>(`/api/data/custom/${encodeURIComponent(name)}`);
   },
+  listProviders(): Promise<{ providers: string[] }> {
+    return request("/api/data/providers");
+  },
   getStorageSummary(): Promise<{
     market_data_path: string;
     custom_data_path: string;

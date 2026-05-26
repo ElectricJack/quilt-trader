@@ -124,6 +124,16 @@ async def get_custom_data(source_name: str, fmt: str = Query("csv")):
     return {"data": df.to_dict(orient="records")}
 
 
+@router.get("/providers")
+async def list_providers():
+    """Return list of configured data provider names."""
+    try:
+        mgr = get_download_manager()
+        return {"providers": sorted(mgr._providers.keys())}
+    except Exception:
+        return {"providers": []}
+
+
 @router.get("/available")
 async def list_available():
     svc = get_data_service()

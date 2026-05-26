@@ -14,6 +14,7 @@ import {
   useDeleteScraper,
   useRunScraper,
   useDataSources,
+  useProviders,
 } from "../api/hooks";
 import { FormModal } from "../components/FormModal";
 import { FormField } from "../components/FormField";
@@ -311,6 +312,8 @@ export function Data() {
   const deleteDownload = useDeleteDownload();
   const clearDownloads = useClearDownloads();
   const retryDownload = useRetryDownload();
+  const { data: providersData } = useProviders();
+  const providerList = providersData?.providers ?? [];
   const { data: scrapers = [], isLoading: scrapersLoading } = useScrapers();
   const { data: scraperSources = [], isLoading: sourcesLoading } = useDataSources("scraper");
   const installScraper = useInstallScraper();
@@ -469,12 +472,20 @@ export function Data() {
         <h1 className="text-2xl font-bold text-white">Data</h1>
         <div className="flex gap-2">
           {activeTab === "acquisition" && (
-            <button
-              onClick={() => setInstallScraperOpen(true)}
-              className="px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors"
-            >
-              Install Scraper
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setModalOpen(true)}
+                className="px-4 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors"
+              >
+                Download Market Data
+              </button>
+              <button
+                onClick={() => setInstallScraperOpen(true)}
+                className="px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors"
+              >
+                Install Scraper
+              </button>
+            </div>
           )}
           {activeTab === "available" && (
             <button
@@ -814,8 +825,9 @@ export function Data() {
             <FormField label="Provider" error={form.formState.errors.provider?.message}>
               <select {...form.register("provider")} className={INPUT_CLS}>
                 <option value="">Select provider…</option>
-                <option value="polygon">polygon</option>
-                <option value="theta">theta</option>
+                {(providerList ?? []).map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
               </select>
             </FormField>
 

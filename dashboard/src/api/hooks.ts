@@ -538,6 +538,14 @@ export function useAvailableData() {
 
 // ─── Coverage ─────────────────────────────────────────────────────────────────
 
+export function useProviders() {
+  return useQuery({
+    queryKey: ["data", "providers"] as const,
+    queryFn: api.listProviders,
+    staleTime: 60_000,
+  });
+}
+
 export function useStorageSummary() {
   return useQuery({
     queryKey: ["data", "storage-summary"] as const,

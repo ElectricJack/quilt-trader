@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import type { GoalCreate, DataGoal } from "../api/client";
+import { useProviders } from "../api/hooks";
 
 interface Props {
   open: boolean;
@@ -22,11 +23,13 @@ const STRIKE_RANGES = [
 
 const TIMEFRAME_OPTIONS = ["1min", "5min", "15min", "1hour", "1day"];
 
-const PROVIDERS = ["polygon", "yfinance", "tradier", "alpaca"];
+const FALLBACK_PROVIDERS = ["polygon", "yfinance", "tradier", "alpaca"];
 
 export function CreateGoalModal({ open, onClose, onSubmit, editGoal }: Props) {
   const [goalType, setGoalType] = useState<"options" | "bars">("options");
   const [name, setName] = useState("");
+  const { data: providersData } = useProviders();
+  const providers = providersData?.providers ?? FALLBACK_PROVIDERS;
   const [underlying, setUnderlying] = useState("QQQ");
   const [frequencies, setFrequencies] = useState<string[]>(["weekly"]);
   const [strikeRange, setStrikeRange] = useState("atm5");
@@ -134,7 +137,7 @@ export function CreateGoalModal({ open, onClose, onSubmit, editGoal }: Props) {
         <div>
           <label className="text-xs text-gray-400 block mb-1">Provider</label>
           <select value={provider} onChange={(e) => setProvider(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100">
-            {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+            {providers.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
 
