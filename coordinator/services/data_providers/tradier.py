@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 LIVE_BASE_URL = "https://api.tradier.com/v1"
 SANDBOX_BASE_URL = "https://sandbox.tradier.com/v1"
 
+TIMEFRAME_MAP = {"1day": "daily"}
+
 
 class TradierProvider:
-    supported_timeframes = ["1day"]
     def __init__(
         self,
         access_token: str,

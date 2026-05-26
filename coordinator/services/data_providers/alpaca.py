@@ -29,7 +29,6 @@ _TF_MAP: dict[str, TimeFrame] = {
 
 
 class AlpacaProvider:
-    supported_timeframes = ["1min", "5min", "15min", "1hour", "1day"]
     def __init__(
         self,
         api_key: str,

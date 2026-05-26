@@ -135,7 +135,19 @@ async def list_providers():
     result = []
     for name in sorted(mgr._providers.keys()):
         prov = mgr._providers[name]
-        timeframes = getattr(prov, "supported_timeframes", ["1day"])
+        # Derive supported timeframes from the provider's timeframe map
+        timeframes = None
+        if hasattr(prov, "supported_timeframes"):
+            timeframes = prov.supported_timeframes
+        if timeframes is None:
+            mod = __import__(prov.__class__.__module__, fromlist=["TIMEFRAME_MAP", "_TF_MAP"])
+            for attr in ("TIMEFRAME_MAP", "_TF_MAP"):
+                tf_map = getattr(mod, attr, None)
+                if tf_map and isinstance(tf_map, dict):
+                    timeframes = sorted(tf_map.keys())
+                    break
+        if timeframes is None:
+            timeframes = ["1day"]
         result.append({"name": name, "timeframes": timeframes})
     return {"providers": result}
 
