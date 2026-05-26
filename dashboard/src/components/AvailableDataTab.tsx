@@ -2,7 +2,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { useCoverage, useAvailableData, useFillGaps, useDownloads, useDeleteDatasets } from "../api/hooks";
+import { useCoverage, useAvailableData, useFillGaps, useDownloads, useDeleteDatasets, useStorageSummary } from "../api/hooks";
 import { api } from "../api/client";
 import { OptionsChainMatrix } from "./OptionsChainMatrix";
 import { useProcessedCoverage, type AssetType, type DisplayRow } from "../hooks/useProcessedCoverage";
@@ -56,6 +56,7 @@ export function AvailableDataTab() {
 
   const { data: coverageData, isLoading: coverageLoading, refetch: refetchCoverage } = useCoverage();
   const { isLoading: availableLoading } = useAvailableData();
+  const { data: storageSummary } = useStorageSummary();
   const fillGapsMutation = useFillGaps();
   const deleteDatasetsMutation = useDeleteDatasets();
   const { data: downloads, refetch: refetchDownloads } = useDownloads();
@@ -315,6 +316,18 @@ export function AvailableDataTab() {
 
   return (
     <div className="space-y-4">
+      {/* Storage summary */}
+      {storageSummary && (
+        <div className="flex items-center gap-4 px-3 py-2 bg-gray-900/50 rounded text-xs text-gray-400 font-mono">
+          <span>📁 {storageSummary.market_data_path}</span>
+          <span className="text-gray-600">|</span>
+          <span>Total: <span className="text-gray-200">{storageSummary.total_formatted}</span></span>
+          {Object.entries(storageSummary.by_provider).map(([prov, info]) => (
+            <span key={prov}>{prov}: <span className="text-gray-300">{info.formatted}</span></span>
+          ))}
+        </div>
+      )}
+
       <TimeWindowControls
         globalMin={processed.globalMin}
         globalMax={processed.globalMax}

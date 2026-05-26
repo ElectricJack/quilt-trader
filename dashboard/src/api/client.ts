@@ -551,6 +551,19 @@ export const api = {
   getCustomData(name: string): Promise<CustomDatasetResponse> {
     return request<CustomDatasetResponse>(`/api/data/custom/${encodeURIComponent(name)}`);
   },
+  getStorageSummary(): Promise<{
+    market_data_path: string;
+    custom_data_path: string;
+    total_bytes: number;
+    total_formatted: string;
+    market_bytes: number;
+    market_formatted: string;
+    custom_bytes: number;
+    custom_formatted: string;
+    by_provider: Record<string, { bytes: number; formatted: string }>;
+  }> {
+    return request("/api/data/storage-summary");
+  },
   listOptionContracts(underlying: string, provider = "polygon"): Promise<{
     underlying: string;
     provider: string;

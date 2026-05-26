@@ -130,6 +130,58 @@ async def list_available():
     return svc.list_available_market_data()
 
 
+@router.get("/storage-summary")
+async def storage_summary():
+    """Return data storage path and total disk usage."""
+    import os
+    svc = get_data_service()
+    market_dir = svc._market_dir
+    custom_dir = svc._custom_dir
+
+    def dir_size(path: str) -> int:
+        total = 0
+        if not os.path.isdir(path):
+            return 0
+        for dirpath, _, filenames in os.walk(path):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                try:
+                    total += os.path.getsize(fp)
+                except OSError:
+                    pass
+        return total
+
+    market_bytes = dir_size(market_dir)
+    custom_bytes = dir_size(custom_dir)
+    total_bytes = market_bytes + custom_bytes
+
+    by_provider: dict[str, int] = {}
+    if os.path.isdir(market_dir):
+        for prov in os.listdir(market_dir):
+            prov_path = os.path.join(market_dir, prov)
+            if os.path.isdir(prov_path):
+                by_provider[prov] = dir_size(prov_path)
+
+    def fmt(b: int) -> str:
+        if b >= 1 << 30:
+            return f"{b / (1 << 30):.1f} GB"
+        if b >= 1 << 20:
+            return f"{b / (1 << 20):.1f} MB"
+        return f"{b / (1 << 10):.1f} KB"
+
+    return {
+        "market_data_path": os.path.abspath(market_dir),
+        "custom_data_path": os.path.abspath(custom_dir),
+        "total_bytes": total_bytes,
+        "total_formatted": fmt(total_bytes),
+        "market_bytes": market_bytes,
+        "market_formatted": fmt(market_bytes),
+        "custom_bytes": custom_bytes,
+        "custom_formatted": fmt(custom_bytes),
+        "by_provider": {k: {"bytes": v, "formatted": fmt(v)} for k, v in sorted(by_provider.items(), key=lambda x: -x[1])},
+    }
+
+
 @router.get("/sources")
 async def list_data_sources(
     type: Optional[str] = Query(None, description="Filter by source type, e.g. 'scraper'"),
