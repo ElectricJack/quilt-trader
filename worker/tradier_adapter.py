@@ -73,6 +73,24 @@ class TradierAdapter(BrokerAdapter):
         if isinstance(items, dict):
             items = [items]
 
+        symbols = [raw.get("symbol") for raw in items if raw.get("symbol")]
+        quotes: dict[str, float] = {}
+        if symbols:
+            try:
+                client = self._ensure_client()
+                q_resp = client.get("/markets/quotes", params={"symbols": ",".join(symbols)})
+                q_resp.raise_for_status()
+                q_data = q_resp.json().get("quotes", {}).get("quote", [])
+                if isinstance(q_data, dict):
+                    q_data = [q_data]
+                for q in q_data:
+                    sym = q.get("symbol")
+                    price = q.get("last") or q.get("close") or 0.0
+                    if sym:
+                        quotes[sym] = float(price)
+            except Exception:
+                pass
+
         result: dict[str, dict] = {}
         for raw in items:
             symbol = raw.get("symbol")
@@ -81,14 +99,17 @@ class TradierAdapter(BrokerAdapter):
             qty = float(raw.get("quantity", 0.0))
             cost_basis = float(raw.get("cost_basis", 0.0))
             avg_price = (cost_basis / qty) if qty else 0.0
+            current_price = quotes.get(symbol, 0.0)
+            market_value = current_price * abs(qty) if current_price else cost_basis
+            unrealized_pnl = market_value - cost_basis if current_price else 0.0
             result[symbol] = {
                 "symbol": symbol,
                 "quantity": qty,
                 "side": "long" if qty >= 0 else "short",
                 "avg_price": avg_price,
-                "current_price": 0.0,
-                "unrealized_pnl": 0.0,
-                "market_value": cost_basis,
+                "current_price": current_price,
+                "unrealized_pnl": unrealized_pnl,
+                "market_value": market_value,
             }
         return result
 
