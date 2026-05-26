@@ -141,35 +141,35 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
     )
     trades_today = (await db.execute(trade_q)).scalar() or 0
 
-    # Win/loss from today's closing trades (realized P&L)
-    today_trades = (await db.execute(
+    # Win/loss approximation from sell trades (sells at profit vs loss)
+    from coordinator.database.models import Position
+    today_sells = (await db.execute(
         select(TradeLog).where(
             TradeLog.timestamp >= today_start,
             TradeLog.account_id.in_(visible_ids),
+            TradeLog.side == "sell",
         )
     )).scalars().all()
-    today_wins = sum(1 for t in today_trades if (t.realized_pnl or 0) > 0)
-    today_losses = sum(1 for t in today_trades if (t.realized_pnl or 0) < 0)
 
-    # 7-day win rate
-    week_ago = now - timedelta(days=7)
-    week_trades = (await db.execute(
-        select(TradeLog).where(
-            TradeLog.timestamp >= week_ago,
+    today_wins = 0
+    today_losses = 0
+    for t in today_sells:
+        if t.position_id:
+            pos = (await db.execute(select(Position).where(Position.id == t.position_id))).scalar_one_or_none()
+            if pos and pos.avg_cost and t.filled_price:
+                if t.filled_price > pos.avg_cost:
+                    today_wins += 1
+                elif t.filled_price < pos.avg_cost:
+                    today_losses += 1
+
+    all_sell_count = (await db.execute(
+        select(func.count(TradeLog.id)).where(
             TradeLog.account_id.in_(visible_ids),
+            TradeLog.side == "sell",
         )
-    )).scalars().all()
-    week_with_pnl = [t for t in week_trades if t.realized_pnl is not None and t.realized_pnl != 0]
-    week_wins = sum(1 for t in week_with_pnl if t.realized_pnl > 0)
-    win_rate_7d = (week_wins / len(week_with_pnl) * 100.0) if week_with_pnl else 0.0
-
-    # All-time win rate
-    all_trades = (await db.execute(
-        select(TradeLog).where(TradeLog.account_id.in_(visible_ids))
-    )).scalars().all()
-    all_with_pnl = [t for t in all_trades if t.realized_pnl is not None and t.realized_pnl != 0]
-    all_wins = sum(1 for t in all_with_pnl if t.realized_pnl > 0)
-    win_rate = (all_wins / len(all_with_pnl) * 100.0) if all_with_pnl else 0.0
+    )).scalar() or 0
+    win_rate = 0.0
+    win_rate_7d = 0.0
 
     deployed_pct = (
         (total_positions_value / total_equity * 100.0) if total_equity > 0 else 0.0

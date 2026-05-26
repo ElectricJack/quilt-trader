@@ -109,15 +109,20 @@ async def list_deployments(
                     TradeLog.account_id == inst.account_id,
                 )
             )).scalars().all()
-        with_pnl = [t for t in trades if t.realized_pnl is not None and t.realized_pnl != 0]
-        wins = sum(1 for t in with_pnl if t.realized_pnl > 0)
-        total_pnl = sum(t.realized_pnl for t in with_pnl)
+        sells = [t for t in trades if t.side == "sell"]
+        buys_by_sym = {}
+        for t in trades:
+            if t.side == "buy":
+                buys_by_sym[t.symbol] = t.filled_price
+        wins = sum(1 for t in sells if t.symbol in buys_by_sym and t.filled_price > buys_by_sym[t.symbol])
+        losses = sum(1 for t in sells if t.symbol in buys_by_sym and t.filled_price < buys_by_sym[t.symbol])
+        total_with_result = wins + losses
         metrics_by_instance[inst.id] = {
             "trade_count": len(trades),
             "win_count": wins,
-            "loss_count": len(with_pnl) - wins,
-            "win_rate": (wins / len(with_pnl) * 100) if with_pnl else 0,
-            "lifetime_pnl": total_pnl,
+            "loss_count": losses,
+            "win_rate": (wins / total_with_result * 100) if total_with_result else 0,
+            "lifetime_pnl": sum((t.filled_price - buys_by_sym.get(t.symbol, t.filled_price)) * t.quantity for t in sells),
         }
 
     return [
