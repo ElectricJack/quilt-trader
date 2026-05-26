@@ -26,8 +26,10 @@ function GoalCard({ goal, onPause, onResume, onDelete, onEdit }: {
       const total = parseInt(m[2]);
       discoveryPct = total > 0 ? (done / total) * 100 : 0;
       if (done < total) {
-        // Estimate: ~20 expirations per 60s tick (current batch rate)
-        const remaining = Math.ceil((total - done) / 20) * 60;
+        // Each undiscovered expiration needs ~13s (Polygon rate limit)
+        // Batch of 20 takes ~260s, expirations on disk are instant
+        // Assume ~80% need API calls as a rough estimate
+        const remaining = Math.ceil((total - done) * 0.8 * 13);
         if (remaining < 60) discoveryEta = `~${Math.round(remaining)}s left`;
         else if (remaining < 3600) discoveryEta = `~${Math.round(remaining / 60)}m left`;
         else discoveryEta = `~${(remaining / 3600).toFixed(1)}h left`;
