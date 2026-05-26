@@ -13,6 +13,15 @@ interface LegsTableProps {
   onChange: (legs: OptionLeg[]) => void;
   chain: OptionChainResponse | undefined;
   expiry: string | null;
+  underlying?: string;
+}
+
+// Human-readable contract identifier — matches the OCC layout users see
+// elsewhere. e.g. SPY 2026-06-20 750C
+function contractLabel(underlying: string | undefined, l: OptionLeg): string {
+  const sym = underlying?.toUpperCase() || "—";
+  const right = l.right === "call" ? "C" : "P";
+  return `${sym} ${l.expiry} ${l.strike}${right}`;
 }
 
 function midPrice(l: OptionLeg): number | null {
@@ -22,7 +31,7 @@ function midPrice(l: OptionLeg): number | null {
   return null;
 }
 
-export function LegsTable({ legs, onChange, chain, expiry }: LegsTableProps) {
+export function LegsTable({ legs, onChange, chain, expiry, underlying }: LegsTableProps) {
   function updateLeg(idx: number, patch: Partial<OptionLeg>) {
     const next = legs.map((l, i) => (i === idx ? { ...l, ...patch } : l));
     onChange(next);
@@ -117,6 +126,8 @@ export function LegsTable({ legs, onChange, chain, expiry }: LegsTableProps) {
         <table className="w-full text-sm">
           <thead className="text-xs text-gray-500 uppercase tracking-wide">
             <tr>
+              <th className="text-left px-2 py-2 font-medium">#</th>
+              <th className="text-left px-3 py-2 font-medium">Contract</th>
               <th className="text-left px-3 py-2 font-medium">Side</th>
               <th className="text-left px-3 py-2 font-medium">Type</th>
               <th className="text-left px-3 py-2 font-medium">Strike</th>
@@ -133,6 +144,20 @@ export function LegsTable({ legs, onChange, chain, expiry }: LegsTableProps) {
               const hasOwnStrike = strikes.includes(leg.strike);
               return (
                 <tr key={idx} className="border-t border-gray-800">
+                  <td className="px-2 py-1.5">
+                    <span
+                      className={`inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold ${
+                        leg.side === "buy"
+                          ? "bg-emerald-900/80 text-emerald-200 ring-1 ring-emerald-400"
+                          : "bg-amber-900/80 text-amber-200 ring-1 ring-amber-400"
+                      }`}
+                    >
+                      {idx + 1}
+                    </span>
+                  </td>
+                  <td className="px-3 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
+                    {contractLabel(underlying, leg)}
+                  </td>
                   <td className="px-3 py-1.5">
                     <select
                       value={leg.side}

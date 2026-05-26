@@ -1,7 +1,11 @@
 // dashboard/src/components/strategy/templates.ts
 // Pure-function registry of strategy templates. Each template takes a chain
-// (spot + contracts) and an expiry and returns a list of OptionLegs with
-// approximate strike picks. The user can then edit/adjust legs after.
+// (spot + contracts) and an expiry and returns a list of OptionLegs.
+//
+// Templates accept an optional ``anchorStrike`` which re-centers the entire
+// structure at that strike instead of spot. This is what powers
+// click-to-place: the user clicks a strike in the matrix and the template
+// re-anchors there. Width offsets remain proportional to the anchor.
 
 import type { OptionLeg } from "../../lib/options";
 import type { OptionChainResponse, OptionChainContract } from "../../api/client";
@@ -72,61 +76,63 @@ function legFrom(
 export function buildTemplate(
   name: TemplateName,
   chain: OptionChainResponse,
-  expiry: string
+  expiry: string,
+  anchorStrike?: number
 ): OptionLeg[] {
-  const spot = chain.spot;
+  // Use the clicked strike as the structure's reference; fall back to spot.
+  const anchor = anchorStrike ?? chain.spot;
   switch (name) {
     case "long_call": {
-      const c = pickByStrike(chain, spot, "call");
+      const c = pickByStrike(chain, anchor, "call");
       return c ? [legFrom(c, "buy", expiry)] : [];
     }
     case "long_put": {
-      const c = pickByStrike(chain, spot, "put");
+      const c = pickByStrike(chain, anchor, "put");
       return c ? [legFrom(c, "buy", expiry)] : [];
     }
     case "short_call": {
-      const c = pickByStrike(chain, spot, "call");
+      const c = pickByStrike(chain, anchor, "call");
       return c ? [legFrom(c, "sell", expiry)] : [];
     }
     case "short_put": {
-      const c = pickByStrike(chain, spot, "put");
+      const c = pickByStrike(chain, anchor, "put");
       return c ? [legFrom(c, "sell", expiry)] : [];
     }
     case "vertical_bull_call": {
-      const lo = pickByStrike(chain, spot, "call");
-      const hi = pickByStrike(chain, spot * 1.02, "call");
+      const lo = pickByStrike(chain, anchor, "call");
+      const hi = pickByStrike(chain, anchor * 1.02, "call");
       return lo && hi ? [legFrom(lo, "buy", expiry), legFrom(hi, "sell", expiry)] : [];
     }
     case "vertical_bear_call": {
-      const lo = pickByStrike(chain, spot, "call");
-      const hi = pickByStrike(chain, spot * 1.02, "call");
+      const lo = pickByStrike(chain, anchor, "call");
+      const hi = pickByStrike(chain, anchor * 1.02, "call");
       return lo && hi ? [legFrom(lo, "sell", expiry), legFrom(hi, "buy", expiry)] : [];
     }
     case "vertical_bull_put": {
-      const hi = pickByStrike(chain, spot, "put");
-      const lo = pickByStrike(chain, spot * 0.98, "put");
+      const hi = pickByStrike(chain, anchor, "put");
+      const lo = pickByStrike(chain, anchor * 0.98, "put");
       return hi && lo ? [legFrom(hi, "sell", expiry), legFrom(lo, "buy", expiry)] : [];
     }
     case "vertical_bear_put": {
-      const hi = pickByStrike(chain, spot, "put");
-      const lo = pickByStrike(chain, spot * 0.98, "put");
+      const hi = pickByStrike(chain, anchor, "put");
+      const lo = pickByStrike(chain, anchor * 0.98, "put");
       return hi && lo ? [legFrom(hi, "buy", expiry), legFrom(lo, "sell", expiry)] : [];
     }
     case "straddle": {
-      const c = pickByStrike(chain, spot, "call");
-      const p = pickByStrike(chain, spot, "put");
+      const c = pickByStrike(chain, anchor, "call");
+      const p = pickByStrike(chain, anchor, "put");
       return c && p ? [legFrom(c, "buy", expiry), legFrom(p, "buy", expiry)] : [];
     }
     case "strangle": {
-      const c = pickByStrike(chain, spot * 1.03, "call");
-      const p = pickByStrike(chain, spot * 0.97, "put");
+      const c = pickByStrike(chain, anchor * 1.03, "call");
+      const p = pickByStrike(chain, anchor * 0.97, "put");
       return c && p ? [legFrom(c, "buy", expiry), legFrom(p, "buy", expiry)] : [];
     }
     case "iron_condor": {
-      const cs = pickByStrike(chain, spot * 1.02, "call");
-      const cl = pickByStrike(chain, spot * 1.04, "call");
-      const ps = pickByStrike(chain, spot * 0.98, "put");
-      const pl = pickByStrike(chain, spot * 0.96, "put");
+      const cs = pickByStrike(chain, anchor * 1.02, "call");
+      const cl = pickByStrike(chain, anchor * 1.04, "call");
+      const ps = pickByStrike(chain, anchor * 0.98, "put");
+      const pl = pickByStrike(chain, anchor * 0.96, "put");
       return cs && cl && ps && pl
         ? [
             legFrom(ps, "sell", expiry),
@@ -137,10 +143,10 @@ export function buildTemplate(
         : [];
     }
     case "iron_butterfly": {
-      const cs = pickByStrike(chain, spot, "call");
-      const ps = pickByStrike(chain, spot, "put");
-      const cl = pickByStrike(chain, spot * 1.04, "call");
-      const pl = pickByStrike(chain, spot * 0.96, "put");
+      const cs = pickByStrike(chain, anchor, "call");
+      const ps = pickByStrike(chain, anchor, "put");
+      const cl = pickByStrike(chain, anchor * 1.04, "call");
+      const pl = pickByStrike(chain, anchor * 0.96, "put");
       return cs && ps && cl && pl
         ? [
             legFrom(cs, "sell", expiry),

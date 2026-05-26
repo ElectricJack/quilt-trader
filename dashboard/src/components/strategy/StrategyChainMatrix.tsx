@@ -1,7 +1,14 @@
 // dashboard/src/components/strategy/StrategyChainMatrix.tsx
 // Strike × expiry matrix for the strategy builder. Each cell shows
-// availability and liquidity for one call/put contract. Click a cell to
-// add that leg to the legs table; hover for bid/ask.
+// availability and liquidity for one call/put contract.
+//
+// Click semantics depend on the active template:
+//   - "custom"  → clicking adds the specific contract as a leg.
+//   - anything else → clicking re-anchors the template at the clicked
+//                     strike + expiry; legs update automatically.
+//
+// Cells currently selected by the leg list get a colored ring (long =
+// emerald, short = amber) plus a small leg-index badge.
 import { useEffect, useMemo, useRef, useState, Fragment } from "react";
 import type { OptionChainMatrixResponse, OptionChainContract } from "../../api/client";
 import type { OptionLeg } from "../../lib/options";
@@ -9,7 +16,10 @@ import type { OptionLeg } from "../../lib/options";
 interface Props {
   matrix: OptionChainMatrixResponse | undefined;
   isLoading?: boolean;
+  template: string;
+  legs: OptionLeg[];
   onPick: (leg: OptionLeg) => void;
+  onAnchor: (strike: number, expiry: string, right: "call" | "put") => void;
 }
 
 type Liquidity = "none" | "wide" | "ok" | "good" | "tight";
@@ -53,7 +63,14 @@ function fmtExp(exp: string): string {
   return `${(d.getMonth() + 1).toString().padStart(2, "0")}/${d.getDate().toString().padStart(2, "0")}/${d.getFullYear().toString().slice(2)}`;
 }
 
-export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
+export function StrategyChainMatrix({
+  matrix,
+  isLoading,
+  template,
+  legs,
+  onPick,
+  onAnchor,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atmRef = useRef<HTMLTableRowElement>(null);
   const lastAnchored = useRef<string | null>(null);
@@ -63,6 +80,18 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
     right: "call" | "put";
     contract: OptionChainContract;
   } | null>(null);
+
+  // Map (expiry|right|strike) → { idx, side } so we can highlight cells
+  // that match current legs and surface the leg-list ordering.
+  const legByKey = useMemo(() => {
+    const m = new Map<string, { idx: number; side: "buy" | "sell" }>();
+    legs.forEach((l, i) => {
+      m.set(`${l.expiry}|${l.right}|${l.strike}`, { idx: i, side: l.side });
+    });
+    return m;
+  }, [legs]);
+
+  const isCustom = template === "custom";
 
   const { strikes, expDates, lookup } = useMemo(() => {
     const strikeSet = new Set<number>();
@@ -125,19 +154,23 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
     );
   }
 
-  function pickCell(strike: number, expiry: string, right: "call" | "put") {
+  function handleCellClick(strike: number, expiry: string, right: "call" | "put") {
     const c = lookup.get(`${strike}|${right}|${expiry}`);
     if (!c) return;
-    onPick({
-      side: "buy",
-      right,
-      strike: c.strike,
-      quantity: 1,
-      expiry,
-      bid: c.bid ?? undefined,
-      ask: c.ask ?? undefined,
-      iv: c.iv ?? 0.3,
-    });
+    if (isCustom) {
+      onPick({
+        side: "buy",
+        right,
+        strike: c.strike,
+        quantity: 1,
+        expiry,
+        bid: c.bid ?? undefined,
+        ask: c.ask ?? undefined,
+        iv: c.iv ?? 0.3,
+      });
+    } else {
+      onAnchor(strike, expiry, right);
+    }
   }
 
   return (
@@ -203,32 +236,70 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
                       const put = lookup.get(`${strike}|put|${exp}`);
                       const callLiq = liquidity(call);
                       const putLiq = liquidity(put);
+                      const callSel = legByKey.get(`${exp}|call|${strike}`);
+                      const putSel = legByKey.get(`${exp}|put|${strike}`);
                       return (
                         <Fragment key={`${strike}-${exp}`}>
                           <td
-                            className={`w-7 h-5 border-l border-gray-800/50 ${cellColor("call", callLiq)} ${
+                            className={`relative w-7 h-5 border-l border-gray-800/50 ${cellColor("call", callLiq)} ${
                               call && callLiq !== "none"
                                 ? "cursor-pointer hover:ring-1 hover:ring-blue-300"
+                                : ""
+                            } ${
+                              callSel
+                                ? callSel.side === "buy"
+                                  ? "ring-2 ring-emerald-400 ring-inset"
+                                  : "ring-2 ring-amber-400 ring-inset"
                                 : ""
                             }`}
                             onMouseEnter={() =>
                               call && setHover({ strike, expiry: exp, right: "call", contract: call })
                             }
                             onMouseLeave={() => setHover(null)}
-                            onClick={() => callLiq !== "none" && pickCell(strike, exp, "call")}
-                          />
+                            onClick={() => callLiq !== "none" && handleCellClick(strike, exp, "call")}
+                          >
+                            {callSel && (
+                              <span
+                                className={`absolute top-[1px] left-[1px] text-[8px] leading-none px-0.5 rounded font-bold ${
+                                  callSel.side === "buy"
+                                    ? "text-emerald-200 bg-emerald-900/80"
+                                    : "text-amber-200 bg-amber-900/80"
+                                }`}
+                              >
+                                {callSel.idx + 1}
+                              </span>
+                            )}
+                          </td>
                           <td
-                            className={`w-7 h-5 ${cellColor("put", putLiq)} ${
+                            className={`relative w-7 h-5 ${cellColor("put", putLiq)} ${
                               put && putLiq !== "none"
                                 ? "cursor-pointer hover:ring-1 hover:ring-red-300"
+                                : ""
+                            } ${
+                              putSel
+                                ? putSel.side === "buy"
+                                  ? "ring-2 ring-emerald-400 ring-inset"
+                                  : "ring-2 ring-amber-400 ring-inset"
                                 : ""
                             }`}
                             onMouseEnter={() =>
                               put && setHover({ strike, expiry: exp, right: "put", contract: put })
                             }
                             onMouseLeave={() => setHover(null)}
-                            onClick={() => putLiq !== "none" && pickCell(strike, exp, "put")}
-                          />
+                            onClick={() => putLiq !== "none" && handleCellClick(strike, exp, "put")}
+                          >
+                            {putSel && (
+                              <span
+                                className={`absolute top-[1px] left-[1px] text-[8px] leading-none px-0.5 rounded font-bold ${
+                                  putSel.side === "buy"
+                                    ? "text-emerald-200 bg-emerald-900/80"
+                                    : "text-amber-200 bg-amber-900/80"
+                                }`}
+                              >
+                                {putSel.idx + 1}
+                              </span>
+                            )}
+                          </td>
                         </Fragment>
                       );
                     })}
@@ -269,7 +340,11 @@ export function StrategyChainMatrix({ matrix, isLoading, onPick }: Props) {
         <span className="inline-block w-3 h-3 bg-blue-800/50 rounded-sm"></span>ok
         <span className="inline-block w-3 h-3 bg-blue-900/40 rounded-sm"></span>wide
         <span className="inline-block w-3 h-3 bg-gray-950 border border-gray-700 rounded-sm ml-1"></span>none
-        <span className="ml-3 text-gray-600">Click a cell to add as a leg</span>
+        <span className="ml-3 inline-block w-3 h-3 rounded-sm ring-2 ring-emerald-400 ring-inset"></span>long
+        <span className="inline-block w-3 h-3 rounded-sm ring-2 ring-amber-400 ring-inset"></span>short
+        <span className="ml-3 text-gray-600">
+          {isCustom ? "Click to add a leg" : "Click to re-anchor the template"}
+        </span>
       </div>
     </div>
   );

@@ -175,6 +175,31 @@ export function Strategies() {
     setExpiry(leg.expiry);
   }
 
+  // Re-anchor the current template at a clicked strike + expiry.
+  function handleAnchor(strike: number, exp: string, _right: "call" | "put") {
+    if (template === "custom") return;
+    setExpiry(exp);
+    if (!matrix) return;
+    const slice = matrix.expiries.find((e) => e.expiry === exp);
+    if (!slice) return;
+    const syntheticChain: OptionChainResponse = {
+      underlying: matrix.underlying,
+      spot: matrix.spot ?? strike,
+      expiry: exp,
+      as_of: null,
+      contracts: slice.contracts,
+    };
+    const built = buildTemplate(template, syntheticChain, exp, strike);
+    if (built.length === 0) {
+      addAlert({
+        message: `Template "${template}" couldn't be built at ${strike} / ${exp}`,
+        severity: "warning",
+      });
+      return;
+    }
+    setLegs(built);
+  }
+
   const submitMut = useOpenPosition(accountId);
 
   const netCost = useMemo(() => {
@@ -282,12 +307,21 @@ export function Strategies() {
       <StrategyChainMatrix
         matrix={matrix}
         isLoading={matrixLoading}
+        template={template}
+        legs={legs}
         onPick={handlePickFromChain}
+        onAnchor={handleAnchor}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="space-y-4">
-          <LegsTable legs={legs} onChange={setLegs} chain={chain} expiry={expiry} />
+          <LegsTable
+            legs={legs}
+            onChange={setLegs}
+            chain={chain}
+            expiry={expiry}
+            underlying={underlying.trim() || undefined}
+          />
         </div>
         <div className="space-y-4">
           <PnlChart legs={legs} spot={chain?.spot} scrubMs={scrubMs} />
