@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional, Protocol
 
 import pandas as pd
 
+from coordinator.services.asset_services import AssetServiceRegistry, AssetType
 from coordinator.services.backtest_tick_context import BacktestTickContext, timeframe_to_seconds
 from coordinator.services.backtest_config import SlippageModel, TradingFee
 from sdk.signals import Signal, SignalLeg, SignalType, OrderType
@@ -145,6 +146,7 @@ class BacktestEngine:
         _t_engine_start = _time.monotonic()
         _n_bars = 0
         self._ts_cache: dict[int, tuple] = {}
+        self._asset_registry = AssetServiceRegistry()
 
         bar_idx = 0
         while bar_idx < len(clock):
@@ -250,7 +252,7 @@ class BacktestEngine:
                     # Sells / shorts on existing positions are allowed; opening a
                     # short with no position is also rejected (no margin in v1).
                     if fill.side == "buy":
-                        bp_multiplier = 100 if fill.asset_type == "options" else 1
+                        bp_multiplier = self._asset_registry.get_multiplier(fill.symbol)
                         notional_plus_fees = fill.fill_price * fill.quantity * bp_multiplier + fill.fees
                         if notional_plus_fees > cash + 1e-6:
                             observer.on_signal_rejected(
@@ -263,7 +265,8 @@ class BacktestEngine:
                     elif fill.side == "sell":
                         # Block accidental short for equities/crypto (can't sell what you don't own).
                         # Options can be sold to open (writing), so allow short sells for options.
-                        if fill.asset_type != "options":
+                        svc = self._asset_registry.get_service(fill.symbol)
+                        if svc.asset_type != AssetType.OPTIONS:
                             key = (fill.symbol,)
                             held = positions.get(key)
                             held_qty = held.quantity if held else 0.0
@@ -286,7 +289,8 @@ class BacktestEngine:
                 else:
                     # Options with no price should be rejected immediately,
                     # never carried forward to retry (the chain won't change).
-                    if po.leg.asset_type == "options":
+                    svc = self._asset_registry.get_service(po.leg.symbol)
+                    if svc.asset_type == AssetType.OPTIONS:
                         observer.on_signal_rejected(
                             sim_time, Signal(legs=[po.leg]), "no_option_price"
                         )
@@ -324,16 +328,14 @@ class BacktestEngine:
             # Also cancel pending orders for expired contracts
             still_pending2 = []
             for po in pending:
-                if po.leg.asset_type == "options":
-                    from coordinator.services.chain_builder import parse_occ_symbol
-                    parsed = parse_occ_symbol(po.leg.symbol)
-                    if parsed:
-                        from datetime import date as _date
-                        exp = _date.fromisoformat(parsed["expiration"])
-                        sim_date = sim_time.date() if hasattr(sim_time, "date") else sim_time
-                        if sim_date > exp:
-                            observer.on_signal_rejected(sim_time, Signal(legs=[po.leg]), "contract_expired")
-                            continue
+                svc = self._asset_registry.get_service(po.leg.symbol)
+                settlement = svc.handle_expiry(
+                    po.leg.symbol, quantity=1, avg_price=0.0,
+                    sim_time=sim_time, ctx=ctx,
+                )
+                if settlement is not None:
+                    observer.on_signal_rejected(sim_time, Signal(legs=[po.leg]), "contract_expired")
+                    continue
                 still_pending2.append(po)
             pending = still_pending2
 
@@ -504,7 +506,8 @@ class BacktestEngine:
         leg = po.leg
 
         # Options: use contract bid/ask from cached option chain data
-        if leg.asset_type == "options" and ctx is not None:
+        svc = self._asset_registry.get_service(leg.symbol)
+        if svc.asset_type == AssetType.OPTIONS and ctx is not None:
             option_price = self._lookup_option_price(leg.symbol, side, ctx)
             if option_price is not None and option_price > 0:
                 if slippage.market_bps > 0:
@@ -559,7 +562,8 @@ class BacktestEngine:
             return None
 
         # Options path: use contract bid/ask from chain data
-        if leg.asset_type == "options" and ctx is not None:
+        svc = self._asset_registry.get_service(leg.symbol)
+        if svc.asset_type == AssetType.OPTIONS and ctx is not None:
             option_price = self._lookup_option_price(leg.symbol, side, ctx)
             if option_price is not None:
                 if side == "buy" and option_price <= limit:
@@ -633,7 +637,7 @@ class BacktestEngine:
     def _apply_fill(self, cash: float, positions: dict, fill: FillRecord) -> float:
         key = (fill.symbol,)  # Equities/crypto key for v1
         ps = positions.get(key) or _PositionState(asset_type=fill.asset_type)
-        multiplier = 100 if fill.asset_type == "options" else 1
+        multiplier = self._asset_registry.get_multiplier(fill.symbol)
         notional = fill.fill_price * fill.quantity * multiplier
 
         if fill.side == "buy":
@@ -685,77 +689,34 @@ class BacktestEngine:
     def _settle_expired_options(
         self, cash, positions, sim_time, ctx, observer, all_fills,
     ) -> tuple[float, dict]:
-        """Auto-settle expired option positions.
+        """Auto-settle any expired position via the asset service layer.
 
-        ITM options are exercised/assigned at intrinsic value.
-        OTM options expire worthless.
+        Delegates per-asset expiry rules to AssetService.handle_expiry —
+        equities/crypto/indexes return None (no expiry); options return
+        a Settlement with intrinsic value and realized PnL.
         """
-        from coordinator.services.chain_builder import parse_occ_symbol
-        from datetime import date as _date
-
-        sim_date = sim_time.date() if hasattr(sim_time, "date") else sim_time
-        expired = []
         for (sym,), ps in list(positions.items()):
-            if ps.asset_type != "options":
-                continue
-            parsed = parse_occ_symbol(sym)
-            if parsed is None:
-                continue
-            exp = _date.fromisoformat(parsed["expiration"])
-            if sim_date <= exp:
-                continue
-            expired.append((sym, ps, parsed))
-
-        for sym, ps, parsed in expired:
-            exp = _date.fromisoformat(parsed["expiration"])
-            exp_datetime = pd.Timestamp(exp)
-            if hasattr(sim_time, 'tzinfo') and sim_time.tzinfo is not None:
-                exp_datetime = exp_datetime.tz_localize(sim_time.tzinfo)
-            underlying_price = self._lookup_symbol_close(
-                parsed["underlying"], exp_datetime, ctx, None,
+            svc = self._asset_registry.get_service(sym)
+            settlement = svc.handle_expiry(
+                sym, quantity=ps.quantity, avg_price=ps.avg_price,
+                sim_time=sim_time, ctx=ctx,
             )
-            if underlying_price == 0.0:
-                underlying_price = parsed["strike"]
-
-            if parsed["option_type"] == "call":
-                intrinsic = max(0.0, underlying_price - parsed["strike"])
-            else:
-                intrinsic = max(0.0, parsed["strike"] - underlying_price)
-
-            multiplier = 100
-            qty = abs(ps.quantity)
-            is_short = ps.quantity < 0
-
-            if intrinsic > 0:
-                # ITM settlement
-                if is_short:
-                    settlement = intrinsic * qty * multiplier
-                    realized = (ps.avg_price - intrinsic) * qty * multiplier
-                    cash -= settlement
-                    side = "buy"
-                else:
-                    settlement = intrinsic * qty * multiplier
-                    realized = (intrinsic - ps.avg_price) * qty * multiplier
-                    cash += settlement
-                    side = "sell"
-            else:
-                # OTM — expires worthless
-                settlement = 0.0
-                if is_short:
-                    realized = ps.avg_price * qty * multiplier
-                else:
-                    realized = -(ps.avg_price * qty * multiplier)
-                side = "buy" if is_short else "sell"
-
+            if settlement is None:
+                continue
+            multiplier = svc.get_multiplier()
+            # Cash movement: ITM positions move cash; OTM (fill_price=0) doesn't.
+            if settlement.fill_price > 0:
+                cash_delta = settlement.fill_price * settlement.quantity * multiplier
+                cash = cash + cash_delta if settlement.side == "sell" else cash - cash_delta
             fill = FillRecord(
                 timestamp=sim_time,
-                symbol=sym, asset_type="options",
-                side=side, quantity=qty,
-                requested_price=intrinsic, fill_price=intrinsic,
+                symbol=sym, asset_type=svc.asset_type.value,
+                side=settlement.side, quantity=settlement.quantity,
+                requested_price=settlement.fill_price, fill_price=settlement.fill_price,
                 slippage_dollars=0.0, slippage_bps_applied=0.0,
                 fees=0.0, fee_breakdown=[],
                 signal_id=f"expiry-{sym}",
-                realized_pnl=realized,
+                realized_pnl=settlement.realized_pnl,
             )
             all_fills.append(fill)
             observer.on_fill(fill)
@@ -811,25 +772,27 @@ class BacktestEngine:
     def _positions_market_value(self, positions: dict, bar, ctx=None, sim_time=None) -> float:
         total = 0.0
         for (sym,), ps in positions.items():
-            multiplier = 100 if ps.asset_type == "options" else 1
-            if ps.asset_type == "options":
+            svc = self._asset_registry.get_service(sym)
+            # Options need the chain-cache mid-price; equities can use the bar close.
+            if svc.asset_type == AssetType.OPTIONS:
                 option_price = self._lookup_option_mtm_price(sym, ctx)
                 price = option_price if option_price is not None else ps.avg_price
             else:
                 price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
-            total += ps.quantity * price * multiplier
+            total += ps.quantity * price * svc.get_multiplier()
         return total
 
     def _positions_snapshot(self, positions: dict, bar, ctx=None, sim_time=None) -> list[dict]:
         result = []
         for k, ps in positions.items():
             sym = k[0]
-            multiplier = 100 if ps.asset_type == "options" else 1
-            if ps.asset_type == "options":
+            svc = self._asset_registry.get_service(sym)
+            if svc.asset_type == AssetType.OPTIONS:
                 option_price = self._lookup_option_mtm_price(sym, ctx)
                 current_price = option_price if option_price is not None else ps.avg_price
             else:
                 current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+            multiplier = svc.get_multiplier()
             result.append({
                 "symbol": sym, "quantity": ps.quantity, "avg_price": ps.avg_price,
                 "current_price": current_price,
@@ -868,7 +831,8 @@ class BacktestEngine:
         from sdk.models import Position
         out: dict = {}
         for (sym,), ps in positions.items():
-            if ps.asset_type == "options":
+            svc = self._asset_registry.get_service(sym)
+            if svc.asset_type == AssetType.OPTIONS:
                 option_price = self._lookup_option_mtm_price(sym, ctx)
                 current_price = option_price if option_price is not None else ps.avg_price
             else:
