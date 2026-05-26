@@ -155,26 +155,28 @@ export function AvailableDataTab() {
     return map;
   }, [coverageData]);
 
-  const toggleGroup = useCallback((underlying: string, provider?: string) => {
+  const toggleGroup = useCallback((key: string, provider?: string) => {
     setExpandedGroups((prev) => {
       const next = new Set(prev);
-      if (next.has(underlying)) {
-        next.delete(underlying);
+      if (next.has(key)) {
+        next.delete(key);
       } else {
-        next.add(underlying);
-        if (!lazyContractData[underlying]) {
-          const provs = optionsProviders[underlying] ?? (provider ? [provider] : []);
+        next.add(key);
+        // For options groups (key starts with "opt:"), lazy-load contracts
+        const sym = key.startsWith("opt:") ? key.slice(4) : null;
+        if (sym && !lazyContractData[sym]) {
+          const provs = optionsProviders[sym] ?? (provider ? [provider] : []);
           if (provs.length > 0) {
-            setLoadingGroups((p) => new Set(p).add(underlying));
-            Promise.all(provs.map((p) => api.listOptionContracts(underlying, p))).then((results) => {
+            setLoadingGroups((p) => new Set(p).add(sym));
+            Promise.all(provs.map((p) => api.listOptionContracts(sym, p))).then((results) => {
               const providerData = results.map((r) => ({
                 provider: r.provider,
                 expirations: r.expirations,
               }));
-              setLazyContractData((prev) => ({ ...prev, [underlying]: providerData }));
-              setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
+              setLazyContractData((prev) => ({ ...prev, [sym]: providerData }));
+              setLoadingGroups((p) => { const n = new Set(p); n.delete(sym); return n; });
             }).catch(() => {
-              setLoadingGroups((p) => { const n = new Set(p); n.delete(underlying); return n; });
+              setLoadingGroups((p) => { const n = new Set(p); n.delete(sym); return n; });
             });
           }
         }
@@ -417,14 +419,15 @@ export function AvailableDataTab() {
         ) : (
           filteredRows.map((row) => {
             if (row.kind === "options-group") {
-              const isExpanded = expandedGroups.has(row.underlying);
+              const optKey = `opt:${row.underlying}`;
+              const isExpanded = expandedGroups.has(optKey);
               const ds = makeCompareDataset(row.provider, row.underlying, row.timeframes);
               const isSelected = selectedKeys.has(selectionKey(ds));
               return (
                 <div key={`optgrp-${row.underlying}-${row.provider}`}>
                   <div className="flex items-center gap-3 px-3 py-2 bg-gray-900 hover:bg-gray-800/50 transition-colors rounded-sm">
                     <input type="checkbox" checked={isSelected} onChange={() => toggleSelected(ds)} className="accent-indigo-500 shrink-0" />
-                    <button onClick={() => toggleGroup(row.underlying, row.provider)} className="flex items-center gap-1.5 text-sm font-mono text-gray-200 hover:text-white shrink-0 w-44 text-left">
+                    <button onClick={() => toggleGroup(optKey, row.provider)} className="flex items-center gap-1.5 text-sm font-mono text-gray-200 hover:text-white shrink-0 w-44 text-left">
                       {isExpanded ? <ChevronDown size={12} className="text-gray-500" /> : <ChevronRight size={12} className="text-gray-500" />}
                       {row.label}
                     </button>
