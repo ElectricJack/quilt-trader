@@ -89,7 +89,7 @@ export function AlgorithmsWidget() {
           />
           <span className="text-right text-xs tabular-nums">{r.trades}</span>
           <span className={`text-right text-xs tabular-nums ${r.win_rate >= 50 ? "text-emerald-400" : ""}`}>
-            {(r.win_rate * 100).toFixed(0)}%
+            {r.win_rate.toFixed(0)}%
           </span>
           <span className={`text-right text-xs tabular-nums font-semibold ${r.lifetime >= 0 ? "text-emerald-400" : "text-red-400"}`}>
             {formatMoney(r.lifetime)}
