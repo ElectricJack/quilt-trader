@@ -133,6 +133,14 @@ def create_app(
         else:
             logger.info("Theta credentials not configured; ThetaDataProvider will be unavailable.")
 
+        # yfinance — free historical provider for indices (VIX, SPX), equities, crypto
+        try:
+            from coordinator.services.data_providers.yfinance_provider import YFinanceProvider
+            providers["yfinance"] = YFinanceProvider()
+            logger.info("YFinanceProvider wired into DownloadManager (historical only)")
+        except ImportError:
+            logger.info("yfinance not installed; YFinanceProvider unavailable")
+
         # Build Tradier provider from first Tradier account
         tradier_provider = None
         try:
