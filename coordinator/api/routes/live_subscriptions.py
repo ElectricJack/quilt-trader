@@ -66,8 +66,12 @@ class SubscriptionCreate(BaseModel):
     @field_validator("asset_class")
     @classmethod
     def _validate_asset_class(cls, v: str) -> str:
-        if v not in ("equities", "crypto", "options"):
-            raise ValueError(f"asset_class must be one of equities, crypto, options; got {v!r}")
+        from coordinator.services.asset_services import AssetType
+        try:
+            AssetType(v)
+        except ValueError:
+            valid = [t.value for t in AssetType]
+            raise ValueError(f"asset_class must be one of {valid}; got {v!r}")
         return v
 
     @field_validator("provider_type")

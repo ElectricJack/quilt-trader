@@ -25,9 +25,6 @@ US_EQUITIES_HOLIDAYS: set[date] = {
     date(2026, 7, 3), date(2026, 9, 7), date(2026, 11, 26), date(2026, 12, 25),
 }
 
-EQUITIES_TYPES = {"equities", "equity_options"}
-
-
 def _to_et(ts_utc: datetime) -> datetime:
     """Convert UTC to America/New_York wall clock."""
     try:
@@ -36,18 +33,41 @@ def _to_et(ts_utc: datetime) -> datetime:
             ts_utc = ts_utc.replace(tzinfo=timezone.utc)
         return ts_utc.astimezone(ZoneInfo("America/New_York"))
     except Exception:
-        # Last-resort fallback assumes EST (no DST). Bounded but acceptable.
         return (ts_utc - timedelta(hours=5)).replace(tzinfo=None)
 
 
-def is_market_open(asset_type: str, ts: datetime) -> bool:
-    if asset_type not in EQUITIES_TYPES:
+def is_market_open(symbol_or_asset_type: str, ts: datetime) -> bool:
+    """Whether the market is open at ``ts``.
+
+    Accepts either a symbol (preferred — routes through registry) or
+    a legacy asset_type string like "equities" / "crypto" / "options".
+
+    Unrecognized asset_type strings (e.g. "futures", "fx") return True,
+    preserving the legacy "unknown asset types trade 24/7" semantic.
+    Holiday checks remain here (registry services don't track holidays).
+    """
+    from coordinator.services.asset_services import (
+        AssetType,
+        get_default_registry,
+    )
+    registry = get_default_registry()
+    # Legacy alias: "equity_options" → AssetType.OPTIONS
+    if symbol_or_asset_type == "equity_options":
+        symbol_or_asset_type = AssetType.OPTIONS.value
+
+    try:
+        at = AssetType(symbol_or_asset_type)
+        svc = registry.get_service_by_type(at)
+    except ValueError:
+        # Lowercase strings that aren't valid AssetType values are
+        # treated as legacy unknown asset types → 24/7.
+        if symbol_or_asset_type.islower():
+            return True
+        svc = registry.get_service(symbol_or_asset_type)
+
+    if svc.asset_type == AssetType.CRYPTO:
         return True
     et = _to_et(ts)
-    if et.weekday() >= 5:
-        return False
     if et.date() in US_EQUITIES_HOLIDAYS:
         return False
-    open_t = time(9, 30)
-    close_t = time(16, 0)
-    return open_t <= et.time() <= close_t
+    return svc.is_market_open(ts)

@@ -176,7 +176,10 @@ class _InstanceContext:
         try:
             while True:
                 now = datetime.now(timezone.utc)
-                if is_market_open(self.asset_type, now):
+                # Prefer a real symbol so registry dispatches accurately;
+                # fall back to legacy asset_type for back-compat.
+                probe = (self.symbols[0]["symbol"] if self.symbols else self.asset_type)
+                if is_market_open(probe, now):
                     tick = {
                         "instance_id": self.instance_id,
                         "run_id": self.run_id,

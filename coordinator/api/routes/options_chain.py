@@ -20,7 +20,8 @@ async def _check_lock_and_get_account(account_id: str, db: AsyncSession) -> Acco
     if a.locked_by:
         raise HTTPException(status_code=423,
                             detail={"locked_by": a.locked_by})
-    if "options" not in (a.supported_asset_types or []):
+    from coordinator.services.asset_services import AssetType
+    if AssetType.OPTIONS.value not in (a.supported_asset_types or []):
         raise HTTPException(status_code=422,
                             detail="Account does not support options")
     return a

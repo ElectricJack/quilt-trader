@@ -20,9 +20,11 @@ class PDTMonitor:
         if pdt_mode == "off":
             return PDTResult(approved=True, would_be_day_trade=False, day_trade_count=0)
 
+        from coordinator.services.asset_services import get_default_registry
+        registry = get_default_registry()
         would_be_day_trade = False
         for leg in signal_legs:
-            if leg["asset_type"] == "crypto":
+            if registry.get_service(leg["symbol"]).is_pdt_exempt():
                 continue
             symbol = leg["symbol"]
             side = leg["side"]
