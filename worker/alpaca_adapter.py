@@ -302,13 +302,43 @@ class AlpacaAdapter(BrokerAdapter):
 
     # ---- Options chain (Spec C) ----
     def list_option_expiries(self, underlying: str):
+        """List all known expiration dates for ``underlying``.
+
+        Alpaca's /v2/options/contracts paginates at 10000 rows per page.
+        Walk all pages and also sweep multiple expiration_date windows so
+        we surface the full expiry calendar (weeklies + monthlies +
+        LEAPS), not just the soonest ones — Alpaca's default sort
+        otherwise returns the nearest contracts first and may stop
+        before reaching LEAPS.
+        """
         from alpaca.trading.requests import GetOptionContractsRequest
+        from datetime import date, timedelta
         self._ensure_clients()
-        req = GetOptionContractsRequest(
-            underlying_symbols=[underlying], limit=10000
-        )
-        resp = self._data_client.get_option_contracts(req)
-        dates = {c.expiration_date for c in (resp.option_contracts or [])}
+        dates: set = set()
+        # Sweep ~2 years out in 90-day windows. Each window paginates
+        # independently. The union covers weeklies + monthlies + LEAPS.
+        today = date.today()
+        windows = [
+            (today + timedelta(days=i), today + timedelta(days=i + 90))
+            for i in range(0, 730, 90)
+        ]
+        for win_start, win_end in windows:
+            page_token = None
+            for _ in range(20):  # defensive page cap per window
+                req = GetOptionContractsRequest(
+                    underlying_symbols=[underlying],
+                    expiration_date_gte=win_start,
+                    expiration_date_lte=win_end,
+                    limit=10000,
+                    page_token=page_token,
+                )
+                resp = self._data_client.get_option_contracts(req)
+                contracts = resp.option_contracts or []
+                for c in contracts:
+                    dates.add(c.expiration_date)
+                page_token = getattr(resp, "next_page_token", None)
+                if not page_token or not contracts:
+                    break
         return sorted(dates)
 
     def get_option_chain(self, underlying: str, expiry) -> OptionChainSnapshot:
