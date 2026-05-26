@@ -113,9 +113,12 @@ async def portfolio_kpis(db: AsyncSession = Depends(get_db)):
     visible_ids = [a.id for a in accounts]
 
     # Fetch live broker values for total equity + positions
-    live_positions, total_cash = await _fetch_live_positions(accounts)
+    live_positions, total_cash, total_equity = await _fetch_live_positions(accounts)
     total_positions_value = sum(p.get("market_value", 0) for p in live_positions)
-    total_equity = total_positions_value + total_cash
+    # Use broker's portfolio_value as authoritative total (includes unsettled, margin, etc.)
+    # Fall back to positions + cash if broker didn't report portfolio_value
+    if total_equity == 0:
+        total_equity = total_positions_value + total_cash
     open_risk = sum(p.get("unrealized_pnl", 0) for p in live_positions)
 
     # Today's P&L: live broker value minus most recent materialized close
@@ -210,8 +213,9 @@ SYMBOL_PALETTE = [
 ]
 
 
-async def _fetch_live_positions(accts) -> tuple[list[dict], float]:
-    """Fetch live positions from brokers for all visible accounts."""
+async def _fetch_live_positions(accts) -> tuple[list[dict], float, float]:
+    """Fetch live positions from brokers for all visible accounts.
+    Returns (positions, total_cash, total_portfolio_value)."""
     import asyncio
     import json as _json
     from worker.adapter_factory import make_broker_adapter
@@ -219,6 +223,7 @@ async def _fetch_live_positions(accts) -> tuple[list[dict], float]:
 
     all_positions: list[dict] = []
     total_cash = 0.0
+    total_portfolio_value = 0.0
     for acct in accts:
         try:
             creds = _json.loads(container.encryption.decrypt(acct.credentials))
@@ -226,6 +231,7 @@ async def _fetch_live_positions(accts) -> tuple[list[dict], float]:
             positions = await asyncio.to_thread(adapter.get_positions)
             info = await asyncio.to_thread(adapter.get_account_info)
             total_cash += float(info.get("cash", 0))
+            total_portfolio_value += float(info.get("portfolio_value", 0))
             for sym, pos in positions.items():
                 all_positions.append({
                     "symbol": sym,
@@ -240,13 +246,13 @@ async def _fetch_live_positions(accts) -> tuple[list[dict], float]:
                 })
         except Exception:
             logger.warning("Failed to fetch positions for %s", acct.name, exc_info=True)
-    return all_positions, total_cash
+    return all_positions, total_cash, total_portfolio_value
 
 
 @router.get("/allocation")
 async def portfolio_allocation(db: AsyncSession = Depends(get_db)):
     accts = await _visible_accounts(db)
-    all_positions, total_cash = await _fetch_live_positions(accts)
+    all_positions, total_cash, _ = await _fetch_live_positions(accts)
 
     class_totals: dict[str, float] = {}
     symbol_totals: dict[str, float] = {}
