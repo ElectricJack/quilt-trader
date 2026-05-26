@@ -856,49 +856,30 @@ export function Data() {
               </div>
             </FormField>
 
-            {/* Advanced section: timeframe selector (defaults to 1min) */}
-            <div>
-              <button
-                type="button"
-                onClick={() => form.setValue("show_advanced", !form.watch("show_advanced"))}
-                className="text-xs text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1"
-              >
-                <span>{form.watch("show_advanced") ? "▾" : "▸"}</span>
-                <span>Advanced</span>
-              </button>
-              {form.watch("show_advanced") && (
-                <FormField
-                  label="Timeframes"
-                  error={form.formState.errors.timeframes?.message as string | undefined}
-                >
-                  <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm mt-2">
-                    {TIMEFRAMES.map((tf) => {
-                      const selectedProvider = form.watch("provider");
-                      const provInfo = providerList.find((p) => p.name === selectedProvider);
-                      const supported = !provInfo || provInfo.timeframes.includes(tf);
-                      return (
-                      <label key={tf} className={`inline-flex items-center gap-2 ${supported ? "cursor-pointer" : "cursor-not-allowed opacity-40"}`}>
-                        <input
-                          type="checkbox"
-                          value={tf}
-                          disabled={!supported}
-                          {...form.register("timeframes")}
-                          className="accent-indigo-500"
-                        />
-                        <span>{tf}{!supported && " ✗"}</span>
-                      </label>
-                      );
-                    })}
-                  </div>
-                  <p className="text-[10px] text-gray-500 mt-1">
-                    Defaults to 1min. Each selected timeframe queues its own download.
-                  </p>
-                </FormField>
-              )}
-              {!form.watch("show_advanced") && (
-                <p className="text-[10px] text-gray-500 mt-1">Timeframe: 1min (canonical — higher timeframes are derived on read)</p>
-              )}
-            </div>
+            <FormField
+              label="Timeframes"
+              error={form.formState.errors.timeframes?.message as string | undefined}
+            >
+              <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+                {TIMEFRAMES.map((tf) => {
+                  const selectedProvider = form.watch("provider");
+                  const provInfo = providerList.find((p) => p.name === selectedProvider);
+                  const supported = !provInfo || provInfo.timeframes.includes(tf);
+                  return (
+                    <label key={tf} className={`inline-flex items-center gap-2 ${supported ? "cursor-pointer" : "cursor-not-allowed opacity-40"}`}>
+                      <input
+                        type="checkbox"
+                        value={tf}
+                        disabled={!supported}
+                        {...form.register("timeframes")}
+                        className="accent-indigo-500"
+                      />
+                      <span>{tf}{!supported && " ✗"}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </FormField>
           </>
         )}
       </FormModal>
