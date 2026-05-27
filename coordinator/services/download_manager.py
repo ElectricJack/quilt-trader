@@ -408,7 +408,12 @@ class DownloadManager:
 
         logger.info("Download %s finished: %s", download_id, final_status)
 
-        if self._on_download_complete and final_status in ("completed", "completed_with_errors"):
+        # Fire the completion callback on every terminal state — including
+        # 'failed'. Consumers (goal_processor, coverage_index) need to know
+        # the lane is free so they can enqueue the next contract; gating on
+        # success-only kept the polygon lane idle whenever a download
+        # returned "no data."
+        if self._on_download_complete:
             try:
                 self._on_download_complete(provider_name, symbols)
             except Exception:

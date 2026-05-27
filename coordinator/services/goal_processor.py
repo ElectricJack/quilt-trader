@@ -225,6 +225,11 @@ class GoalProcessor:
             g = (await session.execute(
                 select(DataGoal).where(DataGoal.id == goal.id)
             )).scalar_one()
+            # Keep total_items in sync with the discovered list. The PUT
+            # /goals/{id} route resets total_items to 0 on edit — without
+            # this, the dashboard shows 0% forever after a goal edit even
+            # though completed_items climbs.
+            g.total_items = len(discovered)
             g.completed_items = completed
             g.failed_items = len(terminal)
             g.error_message = None
