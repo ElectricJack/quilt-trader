@@ -112,18 +112,18 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ### Sweep / walk-forward need proper dependency injection for BacktestRunner
 - **Surfaced during:** Task C3 (`run_sweep`) and D2 (`run_walk_forward`) implementation on 2026-05-27.
-- **Current state:** `_run_one_backtest` and `_run_oos_backtest` pass `_session_factory`, `_download_manager`, `_data_service` through `base_config` magic keys to construct a `BacktestRunner`. Works in mocked tests; sketchy for real runs.
-- **What's needed:** define a `RunnerFactory` callable that the sweep/walk-forward orchestrators accept as an explicit parameter, and have the CLI / API layer construct it once with the real services. Replace the magic `_session_factory` keys.
+- **Why deferred:** magic config keys worked under heavy mocking; fixing it required introducing a new public-API parameter on the orchestrators.
+- **RESOLVED** (2026-05-27): Sweep and walk-forward orchestrators now accept an explicit `runner_factory: Callable[[int], Awaitable[None]]` parameter. CLI constructs a real factory via `coordinator/services/runner_bootstrap.py:bootstrap_runner_services` which mirrors the part of `coordinator/main.py` startup needed to run backtests. `_run_one_backtest` and `_run_oos_backtest` now `db.commit()` before invoking the factory so the async runner sees the BacktestRun row.
 
 ### Sync vs async DB session split in validation lab
 - **Surfaced during:** Task G1 CLI implementation on 2026-05-27.
-- **Current state:** the coordinator uses an async SQLAlchemy session (FastAPI). Validation services (`optimization_session.py`, `sweep.py`, `walk_forward.py`, `report.py`) consume a sync `sqlalchemy.orm.Session`. The CLI inlines a sync engine reading `QUILT_DB_URL`. This works for manual CLI use but won't smoothly integrate with the coordinator's HTTP API.
-- **What's needed:** decide between (a) ship a proper sync session factory in `coordinator/database/session.py` and document the dual-session policy, or (b) port validation services to async. Option (a) is less risky if other coordinator code already needs sync sessions; option (b) is cleaner long-term.
+- **Why deferred:** the validation lab is sync (consumes `sqlalchemy.orm.Session`); the coordinator HTTP API is async; the CLI started by inlining a sync engine, which worked but duplicated config logic.
+- **RESOLVED** (2026-05-27): Added `coordinator/database/session.py:get_session_factory()` — a proper cached sync sessionmaker reading `QUILT_DB_URL` (stripping the `aiosqlite` driver prefix when present). CLI now imports this instead of inlining the engine. The lab stays sync; the coordinator HTTP API stays async; both share the same `QUILT_DB_URL` config.
 
 ### `BacktestScheduler` not wired to `cost_profile`
-- **Surfaced during:** Task A4b on 2026-05-27 (intentionally deferred from the wiring fix).
-- **Current state:** `BacktestRunner` constructs a `BacktestConfig` with `cost_profile` and passes it to `BacktestEngine(config=...)`. `BacktestScheduler` (used by live-vs-backtest comparison) still calls `BacktestEngine()` with no args.
-- **What's needed:** when live-vs-backtest comparison features use cost profiles, mirror the A4b fix in `backtest_scheduler.py`. Not blocking for the current research workflow.
+- **Surfaced during:** Task A4b on 2026-05-27.
+- **Why deferred:** A4b focused on wiring `BacktestRunner`; the scheduler comparison path was orthogonal.
+- **RESOLVED** (2026-05-27): `backtest_scheduler.py` now constructs `BacktestEngine(config=BacktestConfig(cost_profile=...))` instead of `BacktestEngine()`. Reads `cost_profile` from `instance.cost_profile` or `algorithm.cost_profile` if those columns exist (neither does today; the hook is ready for when they do). Default behavior — legacy flat fee/slippage — unchanged.
 
 ### SPA / White's Reality Check significance test
 - **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
