@@ -52,6 +52,7 @@ from sdk.cli.commands.settings import settings_group
 from sdk.cli.commands.deployment import deployment_group
 from sdk.cli.commands.backtest import backtest_group
 from sdk.cli.commands.data import data_group
+from sdk.cli.commands.research import research_group
 quilt.add_command(algorithm_group)
 quilt.add_command(algorithm_group, name="algo")
 quilt.add_command(worker_group)
@@ -61,6 +62,7 @@ quilt.add_command(deployment_group)
 quilt.add_command(deployment_group, name="deploy")
 quilt.add_command(backtest_group)
 quilt.add_command(data_group)
+quilt.add_command(research_group)
 
 
 @quilt.command("up")
