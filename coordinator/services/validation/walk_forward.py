@@ -90,15 +90,25 @@ async def _run_oos_backtest(
 ) -> int:
     """Run a single OOS backtest with the winning config on the test window.
     Returns the BacktestRun.id."""
+    from datetime import date, datetime
+
     from coordinator.database.models import BacktestRun
     from coordinator.services.validation.sweep import config_hash
 
     merged = {**base_config, **config, "_fold_index": fold_index, "_oos": True}
 
+    def _as_date(v):
+        if v is None or isinstance(v, (date, datetime)):
+            return v
+        if isinstance(v, str):
+            return date.fromisoformat(v)
+        raise TypeError(f"Cannot coerce {v!r} to date")
+
     run_row = BacktestRun(
         algorithm_id=merged.get("algorithm_id", ""),
-        date_range_start=merged.get("start"),
-        date_range_end=merged.get("end"),
+        date_range_start=_as_date(merged.get("start")),
+        date_range_end=_as_date(merged.get("end")),
+        initial_cash=float(merged.get("initial_cash", 1000.0)),
         config_overrides=merged,
         config_hash=config_hash(config),
         optimization_session_id=session_id,

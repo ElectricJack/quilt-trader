@@ -1,18 +1,10 @@
-"""Verify the CLI runner factory actually constructs real services.
+"""Verify runner_bootstrap (LIBRARY USE) constructs the service graph.
 
-We don't run a full backtest here (no algorithm package is loaded). We just
-construct the factory and verify it returns a callable that the validation
-lab can pass to its orchestrators without raising NotImplementedError.
+The CLI no longer consumes runner_bootstrap (it's a thin HTTP client now;
+see coordinator/api/routes/research.py). This module remains for programmatic
+users who want to run validation lab functions without a running coordinator.
 """
 import pytest
-
-
-def test_make_cli_runner_factory_returns_callable(tmp_path, monkeypatch):
-    monkeypatch.setenv("QUILT_DB_URL", f"sqlite:///{tmp_path / 't.db'}")
-    from sdk.cli.commands.research import _make_cli_runner_factory
-
-    factory = _make_cli_runner_factory()
-    assert callable(factory)
 
 
 def test_bootstrap_runner_services_constructs():
