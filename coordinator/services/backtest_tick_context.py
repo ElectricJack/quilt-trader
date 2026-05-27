@@ -175,14 +175,19 @@ class BacktestTickContext(TickContext):
         cutoff = pd.Timestamp(self._sim_time_now)
         if cutoff.tz is not None:
             cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-        cutoff_ns = np.datetime64(cutoff).view("int64") - duration_s * 1_000_000_000
+        # pandas 3.0 uses datetime64[us] by default; .view('int64') no longer
+        # returns nanoseconds. Use Timestamp.value (always ns) for the cutoff
+        # and convert the column to datetime64[ns] before viewing.
+        cutoff_ns = cutoff.value - duration_s * 1_000_000_000
 
         cache_key = id(df)
         if cache_key not in self._ts_index_cache:
             ts_col = pd.to_datetime(df["timestamp"])
             if ts_col.dt.tz is not None:
                 ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-            ns = ts_col.values.view("int64")
+            # Force nanosecond precision so .view('int64') yields ns regardless
+            # of the default pandas resolution.
+            ns = ts_col.values.astype("datetime64[ns]").view("int64")
             self._ts_index_cache[cache_key] = ns
         ns = self._ts_index_cache[cache_key]
 
