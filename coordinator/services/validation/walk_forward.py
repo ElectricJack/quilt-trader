@@ -223,7 +223,10 @@ def concatenate_oos_curves(parquet_paths: list[Path]) -> pd.Series:
     """Chain OOS equity curves into one continuous series.
 
     Each fold's equity series is rescaled so its first value equals the prior
-    fold's terminal value, producing a continuous compounding curve.
+    fold's terminal value, producing a continuous compounding curve. When
+    folds overlap (e.g. step_months < test_years × 12), the LATER fold's
+    prediction wins on the overlapping dates — that fold was trained with
+    more recent data and is the more honest OOS evaluation.
 
     Returns a Series indexed by timestamp.
     """
@@ -243,9 +246,19 @@ def concatenate_oos_curves(parquet_paths: list[Path]) -> pd.Series:
         if running_anchor is None:
             segments.append(s)
         else:
+            # Trim this fold's series to dates strictly after the prior fold's
+            # last timestamp so overlapping windows don't produce duplicate index
+            # entries. The later fold "owns" dates from where the prior fold ended.
+            prior_last_ts = segments[-1].index[-1]
+            s = s[s.index > prior_last_ts]
+            if s.empty:
+                continue
             scale = running_anchor / s.iloc[0]
             segments.append(s * scale)
 
         running_anchor = float(segments[-1].iloc[-1])
 
-    return pd.concat(segments)
+    combined = pd.concat(segments)
+    # Defensive: drop any remaining duplicate timestamps (keep last)
+    combined = combined[~combined.index.duplicated(keep="last")]
+    return combined
