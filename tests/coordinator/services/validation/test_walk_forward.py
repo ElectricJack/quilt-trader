@@ -99,6 +99,47 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
     assert len(result.oos_run_ids) == result.n_folds
 
 
+@pytest.mark.asyncio
+async def test_pick_best_train_config_reads_real_schema(db_session):
+    """Regression: previously _pick_best_train_config read a non-existent
+    `config_json` attribute on BacktestRun. Verify it reads the real column."""
+    from coordinator.database.models import Algorithm, BacktestRun
+    from coordinator.services.validation.walk_forward import _pick_best_train_config
+
+    # Insert a stub Algorithm row (algorithm_id is NOT NULL on BacktestRun)
+    algo = Algorithm(
+        name="test-algo",
+        repo_url="https://example.com/algo",
+    )
+    db_session.add(algo)
+    db_session.flush()
+
+    # Insert two BacktestRun rows with different sharpe and config_overrides
+    from datetime import datetime, timezone
+    _now = datetime.now(timezone.utc)
+    r1 = BacktestRun(
+        algorithm_id=algo.id,
+        sharpe_ratio=0.5,
+        config_overrides={"x": 1},
+        status="completed",
+        date_range_start=_now,
+        date_range_end=_now,
+    )
+    r2 = BacktestRun(
+        algorithm_id=algo.id,
+        sharpe_ratio=1.2,
+        config_overrides={"x": 2},
+        status="completed",
+        date_range_start=_now,
+        date_range_end=_now,
+    )
+    db_session.add_all([r1, r2])
+    db_session.commit()
+
+    winner = await _pick_best_train_config(db_session, [r1.id, r2.id], "sharpe")
+    assert winner == {"x": 2}  # r2 has the higher sharpe
+
+
 def test_concatenate_oos_curves(tmp_path):
     """Concatenate OOS equity curves from N folds into one continuous series.
 

@@ -76,15 +76,13 @@ async def _pick_best_train_config(
     }[objective]
     rows.sort(key=lambda r: getattr(r, metric_col, 0.0) or 0.0, reverse=True)
     best = rows[0]
-    import json
-    return json.loads(best.config_json)
+    return best.config_overrides or {}
 
 
 async def _run_oos_backtest(
     db: Session,
     *,
     session_id: int,
-    manifest_path: str,
     base_config: dict[str, Any],
     config: dict[str, Any],
     fold_index: int,
@@ -92,7 +90,6 @@ async def _run_oos_backtest(
     """Run a single OOS backtest with the winning config on the test window.
     Returns the BacktestRun.id."""
     from coordinator.database.models import BacktestRun
-    import json
     from coordinator.services.validation.sweep import config_hash
 
     merged = {**base_config, **config, "_fold_index": fold_index, "_oos": True}
@@ -188,7 +185,6 @@ async def run_walk_forward(
         oos_id = await _run_oos_backtest(
             db,
             session_id=session_id,
-            manifest_path=manifest_path,
             base_config=oos_cfg,
             config=winner,
             fold_index=fold.index,

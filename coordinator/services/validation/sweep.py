@@ -103,7 +103,6 @@ class SweepResult:
 async def _run_one_backtest(
     db: Any,
     session_id: int,
-    manifest_path: str,
     base_config: dict[str, Any],
     config: dict[str, Any],
     config_hash_str: str,
@@ -199,7 +198,6 @@ async def run_sweep(
             return await _run_one_backtest(
                 db=db,
                 session_id=session_id,
-                manifest_path=str(manifest_path),
                 base_config=base_config,
                 config=cfg,
                 config_hash_str=config_hash(cfg),

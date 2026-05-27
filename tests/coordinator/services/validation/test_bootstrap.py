@@ -54,3 +54,16 @@ def test_bootstrap_metrics_returns_named_dict():
     assert "sharpe" in out
     assert "max_drawdown" in out
     assert isinstance(out["sharpe"], MetricCI)
+
+
+def test_bootstrap_metrics_includes_sortino_cagr_calmar():
+    rng = np.random.default_rng(0)
+    daily = rng.normal(0.0005, 0.015, 1000)
+    equity = pd.Series(np.cumprod(1.0 + daily))
+    out = bootstrap_metrics(equity, n_resamples=200, seed=4)
+    assert "sortino" in out
+    assert "cagr" in out
+    assert "calmar" in out
+    for k in ("sortino", "cagr", "calmar"):
+        assert isinstance(out[k], MetricCI)
+        assert out[k].lower <= out[k].point <= out[k].upper

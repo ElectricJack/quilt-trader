@@ -177,12 +177,19 @@ def cmd_report(session_id: int, out_dir: str) -> None:
             raise click.ClickException(f"Session {session_id} not found")
 
         runs = get_session_runs(db, session_id)
-        oos_paths = [
-            Path(f"data/backtests/{r.id}/equity_native.parquet")
-            for r in runs
-            if "\"_oos\": true" in (r.config_json or "")
-            and Path(f"data/backtests/{r.id}/equity_native.parquet").exists()
-        ]
+        oos_paths = []
+        for r in runs:
+            overrides = r.config_overrides or {}
+            if isinstance(overrides, str):
+                import json as _json
+                try:
+                    overrides = _json.loads(overrides)
+                except Exception:
+                    overrides = {}
+            if overrides.get("_oos") is True:
+                path = Path(f"data/backtests/{r.id}/equity_native.parquet")
+                if path.exists():
+                    oos_paths.append(path)
         if not oos_paths:
             raise click.ClickException("No OOS runs found for this session.")
 
