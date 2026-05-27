@@ -489,6 +489,7 @@ class BacktestRun(Base):
     sell_trading_fees: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     slippage_model: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     cost_profile: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    config_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     benchmark_symbol: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     benchmark_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 

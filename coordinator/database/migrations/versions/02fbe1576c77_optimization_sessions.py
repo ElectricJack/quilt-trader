@@ -31,6 +31,7 @@ def upgrade() -> None:
     )
     with op.batch_alter_table("backtest_runs") as batch_op:
         batch_op.add_column(sa.Column("optimization_session_id", sa.Integer(), nullable=True))
+        batch_op.add_column(sa.Column("config_hash", sa.String(length=64), nullable=True))
         batch_op.create_foreign_key(
             "fk_backtest_runs_optimization_session",
             "optimization_sessions",
@@ -42,6 +43,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.batch_alter_table("backtest_runs") as batch_op:
+        batch_op.drop_column("config_hash")
         batch_op.drop_constraint("fk_backtest_runs_optimization_session", type_="foreignkey")
         batch_op.drop_column("optimization_session_id")
     op.drop_table("optimization_sessions")
