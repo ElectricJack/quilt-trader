@@ -6,6 +6,8 @@ from pathlib import Path
 
 import click
 
+from coordinator.database.session import get_session_factory
+
 
 @click.group("research")
 def research_group() -> None:
@@ -15,24 +17,6 @@ def research_group() -> None:
 @research_group.group("session")
 def session_group() -> None:
     """Manage OptimizationSession records."""
-
-
-def _get_sync_session_factory():
-    """Return a SQLAlchemy sync sessionmaker, built from QUILT_DB_URL or the default path.
-
-    The validation services (optimization_session, sweep, walk_forward) use a
-    synchronous sqlalchemy.orm.Session.  The coordinator's connection.py only
-    exposes an async engine, so we build a separate sync engine here for CLI use.
-    """
-    import os
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    url = os.environ.get("QUILT_DB_URL", "sqlite:///data/quilt_trader.db")
-    # Strip the async driver prefix if someone passes the async URL.
-    url = url.replace("sqlite+aiosqlite://", "sqlite://")
-    engine = create_engine(url, connect_args={"check_same_thread": False})
-    return sessionmaker(bind=engine, expire_on_commit=False)
 
 
 @session_group.command("create")
@@ -53,7 +37,7 @@ def session_create(name: str, hypothesis: str, parameter_space: str, criteria: s
     """Create a new OptimizationSession (pre-registration step)."""
     from coordinator.services.validation.optimization_session import create_session
 
-    SessionLocal = _get_sync_session_factory()
+    SessionLocal = get_session_factory()
     with SessionLocal() as db:
         sess = create_session(
             db,
@@ -72,7 +56,7 @@ def session_list() -> None:
     """List all OptimizationSessions."""
     from coordinator.database.models import OptimizationSession
 
-    SessionLocal = _get_sync_session_factory()
+    SessionLocal = get_session_factory()
     with SessionLocal() as db:
         rows = db.query(OptimizationSession).order_by(OptimizationSession.created_at.desc()).all()
         for r in rows:
@@ -95,7 +79,7 @@ def cmd_sweep(session_id: int, manifest: str, base_config: str, search: str, max
     base_cfg = json.loads(Path(base_config).read_text())
 
     async def _go() -> None:
-        SessionLocal = _get_sync_session_factory()
+        SessionLocal = get_session_factory()
         with SessionLocal() as db:
             sess = db.query(OptimizationSession).get(session_id)
             if sess is None:
@@ -135,7 +119,7 @@ def cmd_walk_forward(session_id: int, manifest: str, base_config: str, train_yea
     base_cfg = json.loads(Path(base_config).read_text())
 
     async def _go() -> None:
-        SessionLocal = _get_sync_session_factory()
+        SessionLocal = get_session_factory()
         with SessionLocal() as db:
             sess = db.query(OptimizationSession).get(session_id)
             if sess is None:
@@ -170,7 +154,7 @@ def cmd_report(session_id: int, out_dir: str) -> None:
     from coordinator.services.validation.bootstrap import bootstrap_metrics
     from coordinator.services.validation.optimization_session import get_session_runs
 
-    SessionLocal = _get_sync_session_factory()
+    SessionLocal = get_session_factory()
     with SessionLocal() as db:
         sess = db.query(OptimizationSession).get(session_id)
         if sess is None:
