@@ -65,7 +65,13 @@ class WalkForwardResult:
 async def _pick_best_train_config(
     db: Session, run_ids: list[str], objective: str
 ) -> dict[str, Any]:
-    """Pick the in-sample winner based on the objective metric."""
+    """Pick the in-sample winner based on the objective metric.
+
+    Returns ONLY the sweep-over parameters (strategy hyperparameters), not the
+    base-config keys (start, end, algorithm_id, initial_cash, etc.). If we
+    returned the full config, the train-window dates would overwrite the
+    OOS-window dates when the caller merges with the OOS base_config.
+    """
     from coordinator.database.models import BacktestRun
 
     rows = db.query(BacktestRun).filter(BacktestRun.id.in_(run_ids)).all()
@@ -76,7 +82,13 @@ async def _pick_best_train_config(
     }[objective]
     rows.sort(key=lambda r: getattr(r, metric_col, 0.0) or 0.0, reverse=True)
     best = rows[0]
-    return best.config_overrides or {}
+    full = best.config_overrides or {}
+    # Strip base-config keys — only the sweep parameters should be returned.
+    _BASE_KEYS = {
+        "algorithm_id", "start", "end", "initial_cash", "symbols",
+        "data_source", "cost_profile", "_fold_index", "_oos",
+    }
+    return {k: v for k, v in full.items() if k not in _BASE_KEYS}
 
 
 async def _run_oos_backtest(
