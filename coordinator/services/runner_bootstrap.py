@@ -1,9 +1,9 @@
 """Standalone bootstrap helpers for backtest execution outside the FastAPI app.
 
-The coordinator's HTTP API wires services through `coordinator/main.py` at
-startup. CLI commands and other non-HTTP entry points need the same services
-but without the FastAPI app. This module exposes a helper that constructs the
-minimum dependency graph needed to execute backtests.
+LIBRARY USE ONLY. The CLI no longer consumes this module — it now goes through
+the coordinator's /api/research/* endpoints (which use the coordinator's
+already-wired BacktestRunner). This helper remains for programmatic users who
+want to run validation lab functions without a running coordinator.
 """
 from __future__ import annotations
 

@@ -1,33 +1,26 @@
+"""Research CLI — thin client against /api/research/* endpoints."""
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
 from pathlib import Path
 
 import click
 
-from coordinator.database.session import get_session_factory
+from sdk.cli.client import CLIError, CoordinatorClient
+from sdk.cli.config import resolve_coordinator_url
+from sdk.cli.output import fail, print_json
 
-logger = logging.getLogger(__name__)
+
+def _client(ctx) -> CoordinatorClient:
+    return CoordinatorClient(resolve_coordinator_url(ctx.obj.get("coord_url")))
 
 
-def _make_cli_runner_factory():
-    """Construct a real async runner_factory for the CLI.
-
-    Bootstraps the same service graph that coordinator/main.py wires at startup:
-    async session factory, DataService, DownloadManager, CoverageIndex, and
-    BacktestRunner. Providers are left empty (no auto-download); symbols must be
-    pre-downloaded via `quilt data fetch` before running a sweep or walk-forward.
-    """
-    from coordinator.services.runner_bootstrap import bootstrap_runner_services
-
-    services = bootstrap_runner_services()
-
-    async def runner_factory(run_id: int) -> None:
-        await services.runner.run(run_id)
-
-    return runner_factory
+def _run(coro):
+    import asyncio
+    try:
+        return asyncio.run(coro)
+    except CLIError as e:
+        fail(e.code, str(e))
 
 
 @click.group("research")
@@ -46,176 +39,179 @@ def session_group() -> None:
 @click.option(
     "--parameter-space",
     required=True,
-    help="JSON parameter space, e.g., '{\"vol_target\": [0.10, 0.15]}'.",
+    help='JSON parameter space, e.g., \'{"vol_target": [0.10, 0.15]}\'. May also be a path to a JSON or YAML file.',
 )
 @click.option(
     "--criteria",
     required=True,
-    help="JSON pre-registered criteria, e.g., '{\"oos_sharpe_lci\": 0.5}'.",
+    help='JSON pre-registered criteria, e.g., \'{"oos_sharpe_lci": 0.5}\'.',
 )
 @click.option("--notes", default="", help="Free-form notes.")
-def session_create(name: str, hypothesis: str, parameter_space: str, criteria: str, notes: str) -> None:
+@click.pass_context
+def session_create(ctx, name, hypothesis, parameter_space, criteria, notes):
     """Create a new OptimizationSession (pre-registration step)."""
-    from coordinator.services.validation.optimization_session import create_session
-
-    SessionLocal = get_session_factory()
-    with SessionLocal() as db:
-        sess = create_session(
-            db,
-            name=name,
-            hypothesis=hypothesis,
-            parameter_space=json.loads(parameter_space),
-            pre_registered_criteria=json.loads(criteria),
-            notes=notes,
-        )
-        db.commit()
-        click.echo(f"Created OptimizationSession id={sess.id} name={sess.name}")
+    payload = {
+        "name": name,
+        "hypothesis": hypothesis,
+        "parameter_space": _parse_json_or_yaml_or_file(parameter_space),
+        "pre_registered_criteria": _parse_json_or_yaml_or_file(criteria),
+        "notes": notes,
+    }
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.post("/api/research/sessions", json=payload)
+        finally:
+            await c.aclose()
+    body = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(body)
+    else:
+        click.echo(f"Created OptimizationSession id={body['id']} name={body['name']}")
 
 
 @session_group.command("list")
-def session_list() -> None:
+@click.pass_context
+def session_list(ctx):
     """List all OptimizationSessions."""
-    from coordinator.database.models import OptimizationSession
-
-    SessionLocal = get_session_factory()
-    with SessionLocal() as db:
-        rows = db.query(OptimizationSession).order_by(OptimizationSession.created_at.desc()).all()
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.get("/api/research/sessions")
+        finally:
+            await c.aclose()
+    rows = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(rows)
+    else:
         for r in rows:
-            click.echo(f"{r.id}\t{r.name}\t{r.status}\t{r.created_at.isoformat() if r.created_at else ''}")
+            click.echo(f"{r['id']}\t{r['name']}\t{r['status']}\truns={r['n_runs']}\t{r['created_at']}")
+
+
+@session_group.command("show")
+@click.argument("session_id", type=int)
+@click.pass_context
+def session_show(ctx, session_id):
+    """Show details of one OptimizationSession."""
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.get(f"/api/research/sessions/{session_id}")
+        finally:
+            await c.aclose()
+    body = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(body)
+    else:
+        click.echo(json.dumps(body, indent=2))
 
 
 @research_group.command("sweep")
 @click.option("--session-id", type=int, required=True)
-@click.option("--manifest", type=click.Path(exists=True, dir_okay=False), required=True)
-@click.option("--base-config", type=click.Path(exists=True, dir_okay=False), required=True, help="JSON file with base BacktestConfig.")
+@click.option("--manifest", required=True, help="Path to the strategy's quilt.yaml (server-resolvable).")
+@click.option("--base-config", required=True, help="Path to JSON file with base BacktestConfig (or inline JSON).")
+@click.option("--parameter-space", default=None, help='Optional override of the session\'s parameter_space (inline JSON or file path).')
 @click.option("--search", type=click.Choice(["grid", "random", "latin"]), default="grid")
 @click.option("--max-trials", type=int, default=50)
 @click.option("--parallelism", type=int, default=1)
 @click.option("--seed", type=int, default=0)
-def cmd_sweep(session_id: int, manifest: str, base_config: str, search: str, max_trials: int, parallelism: int, seed: int) -> None:
+@click.pass_context
+def cmd_sweep(ctx, session_id, manifest, base_config, parameter_space, search, max_trials, parallelism, seed):
     """Run a hyperparameter sweep under an existing session."""
-    from coordinator.database.models import OptimizationSession
-    from coordinator.services.validation.sweep import run_sweep
+    payload = {
+        "manifest_path": manifest,
+        "base_config": _parse_json_or_yaml_or_file(base_config),
+        "search": search,
+        "max_trials": max_trials,
+        "parallelism": parallelism,
+        "seed": seed,
+    }
+    if parameter_space:
+        payload["parameter_space"] = _parse_json_or_yaml_or_file(parameter_space)
 
-    base_cfg = json.loads(Path(base_config).read_text())
-
-    async def _go() -> None:
-        SessionLocal = get_session_factory()
-        runner_factory = _make_cli_runner_factory()
-        with SessionLocal() as db:
-            sess = db.query(OptimizationSession).get(session_id)
-            if sess is None:
-                raise click.ClickException(f"Session {session_id} not found")
-            param_space = json.loads(sess.parameter_space)
-            result = await run_sweep(
-                db,
-                runner_factory,
-                session_id=session_id,
-                manifest_path=manifest,
-                base_config=base_cfg,
-                parameter_space=param_space,
-                search=search,
-                max_trials=max_trials,
-                parallelism=parallelism,
-                seed=seed,
-            )
-            db.commit()
-            click.echo(f"Sweep done: {result.n_configs} configs, {len(result.run_ids)} runs.")
-
-    asyncio.run(_go())
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.post(f"/api/research/sessions/{session_id}/sweep", json=payload)
+        finally:
+            await c.aclose()
+    body = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(body)
+    else:
+        click.echo(f"Sweep done: {body['n_configs']} configs, {len(body['run_ids'])} runs.")
 
 
 @research_group.command("walk-forward")
 @click.option("--session-id", type=int, required=True)
-@click.option("--manifest", type=click.Path(exists=True, dir_okay=False), required=True)
-@click.option("--base-config", type=click.Path(exists=True, dir_okay=False), required=True)
+@click.option("--manifest", required=True)
+@click.option("--base-config", required=True)
+@click.option("--parameter-space", default=None)
 @click.option("--train-years", type=float, default=4.0)
 @click.option("--test-years", type=float, default=1.0)
 @click.option("--step-months", type=float, default=6.0)
 @click.option("--objective", type=click.Choice(["sharpe", "calmar", "sortino"]), default="sharpe")
 @click.option("--parallelism", type=int, default=1)
-def cmd_walk_forward(session_id: int, manifest: str, base_config: str, train_years: float, test_years: float, step_months: float, objective: str, parallelism: int) -> None:
+@click.pass_context
+def cmd_walk_forward(ctx, session_id, manifest, base_config, parameter_space, train_years, test_years, step_months, objective, parallelism):
     """Run a walk-forward optimization under an existing session."""
-    from coordinator.database.models import OptimizationSession
-    from coordinator.services.validation.walk_forward import run_walk_forward
+    payload = {
+        "manifest_path": manifest,
+        "base_config": _parse_json_or_yaml_or_file(base_config),
+        "train_years": train_years,
+        "test_years": test_years,
+        "step_months": step_months,
+        "objective": objective,
+        "parallelism": parallelism,
+    }
+    if parameter_space:
+        payload["parameter_space"] = _parse_json_or_yaml_or_file(parameter_space)
 
-    base_cfg = json.loads(Path(base_config).read_text())
-
-    async def _go() -> None:
-        SessionLocal = get_session_factory()
-        runner_factory = _make_cli_runner_factory()
-        with SessionLocal() as db:
-            sess = db.query(OptimizationSession).get(session_id)
-            if sess is None:
-                raise click.ClickException(f"Session {session_id} not found")
-            result = await run_walk_forward(
-                db,
-                runner_factory,
-                session_id=session_id,
-                manifest_path=manifest,
-                base_config=base_cfg,
-                parameter_space=json.loads(sess.parameter_space),
-                train_years=train_years,
-                test_years=test_years,
-                step_months=step_months,
-                objective=objective,
-                parallelism=parallelism,
-            )
-            db.commit()
-            click.echo(f"Walk-forward done: {result.n_folds} folds, OOS runs: {result.oos_run_ids}")
-
-    asyncio.run(_go())
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.post(f"/api/research/sessions/{session_id}/walk-forward", json=payload)
+        finally:
+            await c.aclose()
+    body = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(body)
+    else:
+        click.echo(f"Walk-forward done: {body['n_folds']} folds, OOS runs: {body['oos_run_ids']}")
 
 
 @research_group.command("report")
 @click.option("--session-id", type=int, required=True)
-@click.option("--out-dir", type=click.Path(file_okay=False), default="data/research_reports")
-def cmd_report(session_id: int, out_dir: str) -> None:
+@click.option("--out-dir", default="data/research_reports")
+@click.pass_context
+def cmd_report(ctx, session_id, out_dir):
     """Build the markdown + HTML report for a completed session."""
-    from coordinator.database.models import OptimizationSession
-    from coordinator.services.validation.report import ReportInputs, build_html_report
-    from coordinator.services.validation.walk_forward import concatenate_oos_curves
-    from coordinator.services.validation.regime import tag_regimes, regime_conditional_metrics
-    from coordinator.services.validation.bootstrap import bootstrap_metrics
-    from coordinator.services.validation.optimization_session import get_session_runs
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.post(f"/api/research/sessions/{session_id}/report?out_dir={out_dir}", json={})
+        finally:
+            await c.aclose()
+    body = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(body)
+    else:
+        click.echo(f"Report written: {body['html_path']}")
 
-    SessionLocal = get_session_factory()
-    with SessionLocal() as db:
-        sess = db.query(OptimizationSession).get(session_id)
-        if sess is None:
-            raise click.ClickException(f"Session {session_id} not found")
 
-        runs = get_session_runs(db, session_id)
-        oos_paths = []
-        for r in runs:
-            overrides = r.config_overrides or {}
-            if isinstance(overrides, str):
-                import json as _json
-                try:
-                    overrides = _json.loads(overrides)
-                except Exception:
-                    overrides = {}
-            if overrides.get("_oos") is True:
-                path = Path(f"data/backtests/{r.id}/equity_native.parquet")
-                if path.exists():
-                    oos_paths.append(path)
-        if not oos_paths:
-            raise click.ClickException("No OOS runs found for this session.")
+def _parse_json_or_yaml_or_file(s: str):
+    """Accept either inline JSON, a path to a JSON file, or a path to a YAML file.
 
-        equity = concatenate_oos_curves(oos_paths)
-        regimes = tag_regimes(equity)
-        boot = bootstrap_metrics(equity, n_resamples=1000)
-        regime_m = regime_conditional_metrics(equity, regimes)
-
-        inputs = ReportInputs(
-            session=sess,
-            oos_equity_curve=equity,
-            regimes=regimes,
-            bootstrap_metrics={k: v.__dict__ for k, v in boot.items()},
-            regime_metrics=regime_m,
-            corrected_p_values=[],
-        )
-
-        target = Path(out_dir) / str(session_id)
-        result = build_html_report(inputs, out_dir=target)
-        click.echo(f"Report written: {result['html']}")
+    YAML is allowed for convenience (e.g., hyperparameters.yaml from a strategy
+    package). Inline JSON is the most common form.
+    """
+    if not isinstance(s, str):
+        return s
+    p = Path(s)
+    if p.exists() and p.is_file():
+        text = p.read_text()
+        if p.suffix in (".yaml", ".yml"):
+            import yaml
+            return yaml.safe_load(text)
+        return json.loads(text)
+    return json.loads(s)
