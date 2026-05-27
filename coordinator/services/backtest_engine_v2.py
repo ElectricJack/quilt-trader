@@ -26,6 +26,7 @@ import pandas as pd
 from coordinator.services.asset_services import AssetServiceRegistry, AssetType
 from coordinator.services.backtest_tick_context import BacktestTickContext, timeframe_to_seconds
 from coordinator.services.backtest_config import SlippageModel, TradingFee
+from coordinator.services.validation.cost_model import CostModelProfile, load_named_profile
 from sdk.signals import Signal, SignalLeg, SignalType, OrderType
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,11 @@ class _PositionState:
 
 
 class BacktestEngine:
+    def __init__(self, *, config=None):
+        self._cost_profile: CostModelProfile | None = None
+        if getattr(config, "cost_profile", None):
+            self._cost_profile = load_named_profile(config.cost_profile)
+
     def run(
         self,
         *,
@@ -387,6 +393,21 @@ class BacktestEngine:
         ot = leg.order_type
         side = "buy" if leg.signal_type in (SignalType.BUY, SignalType.BUY_TO_COVER) else "sell"
         fees_list = buy_fees if side == "buy" else sell_fees
+
+        # Cost-profile override: when a named profile is loaded, replace the
+        # legacy slippage/fees with the profile-resolved bundle.  The legacy
+        # path (no profile) is unchanged.
+        if self._cost_profile is not None:
+            venue = ""
+            if ctx is not None and hasattr(ctx, "broker_name"):
+                venue = getattr(ctx, "broker_name", "") or ""
+            bundle = self._cost_profile.resolve(
+                venue=venue,
+                asset_type=getattr(po.leg, "asset_type", None) or "equity",
+                symbol=po.leg.symbol,
+            )
+            slippage = bundle.slippage
+            fees_list = bundle.fees
 
         if ot == OrderType.MARKET or po.is_stop_triggered:
             return self._fill_market(po, bar, side, slippage, fees_list, rng, sim_time, ctx=ctx), False

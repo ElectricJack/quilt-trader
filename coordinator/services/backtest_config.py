@@ -21,3 +21,19 @@ class SlippageModel(BaseModel):
     limit_bps: float = Field(default=0.0, ge=0)
     use_bar_range: bool = False
     volume_impact_bps_per_pct: float = Field(default=0.0, ge=0)
+
+
+class BacktestConfig(BaseModel):
+    """Top-level configuration for a single backtest run.
+
+    Accepted by BacktestEngine and BacktestRunner. All fields are optional
+    except start/end/initial_cash; defaults match the legacy behaviour so
+    existing callers continue to work unchanged.
+    """
+    start: str
+    end: str
+    initial_cash: float = Field(gt=0)
+    slippage: SlippageModel = Field(default_factory=SlippageModel)
+    buy_fees: list[TradingFee] = Field(default_factory=list)
+    sell_fees: list[TradingFee] = Field(default_factory=list)
+    cost_profile: str | None = Field(default=None)

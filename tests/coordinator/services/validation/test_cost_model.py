@@ -84,3 +84,43 @@ def test_load_named_profile_default():
 def test_load_named_profile_unknown_raises():
     with pytest.raises(FileNotFoundError):
         load_named_profile("does-not-exist")
+
+
+from coordinator.services.backtest_config import BacktestConfig
+
+
+def test_backtest_config_accepts_cost_profile_name():
+    config = BacktestConfig.model_validate(
+        {
+            "start": "2024-01-01",
+            "end": "2024-02-01",
+            "initial_cash": 1000.0,
+            "cost_profile": "default",
+        }
+    )
+    assert config.cost_profile == "default"
+
+
+def test_backtest_config_defaults_cost_profile_to_none():
+    config = BacktestConfig.model_validate(
+        {"start": "2024-01-01", "end": "2024-02-01", "initial_cash": 1000.0}
+    )
+    assert config.cost_profile is None
+
+
+def test_engine_loads_cost_profile_when_named():
+    """Lightweight check: BacktestEngine instantiates with a cost_profile name
+    and exposes a CostModelProfile attribute."""
+    from coordinator.services.backtest_engine_v2 import BacktestEngine
+
+    config = BacktestConfig.model_validate(
+        {
+            "start": "2024-01-01",
+            "end": "2024-02-01",
+            "initial_cash": 1000.0,
+            "cost_profile": "default",
+        }
+    )
+    engine = BacktestEngine(config=config)
+    assert engine._cost_profile is not None
+    assert engine._cost_profile.name == "default"
