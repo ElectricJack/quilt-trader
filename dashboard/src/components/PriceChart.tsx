@@ -164,6 +164,19 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
       ? chart?.timeScale().getVisibleRange() ?? null
       : null;
 
+    // If a live candle is ahead of the historical data, keep it in the
+    // series after setData so it doesn't disappear when the parent re-renders
+    // (the Data page polls active downloads every 2s, which recreates the
+    // bars array reference and re-runs this effect). Without this, the live
+    // bar gets removed by setData and re-added by the next tick — a 2-second
+    // add/remove flicker.
+    const liveAhead =
+      liveCandleRef.current &&
+      (deduped.length === 0 ||
+        liveCandleRef.current.time > deduped[deduped.length - 1].time)
+        ? liveCandleRef.current
+        : null;
+
     if (chartType === "bars") {
       const data: CandlestickData<Time>[] = deduped.map((r) => ({
         time: r.time as Time,
@@ -173,12 +186,27 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
         close: r.close,
       }));
       (series as ISeriesApi<"Candlestick">).setData(data);
+      if (liveAhead) {
+        (series as ISeriesApi<"Candlestick">).update({
+          time: liveAhead.time as Time,
+          open: liveAhead.open,
+          high: liveAhead.high,
+          low: liveAhead.low,
+          close: liveAhead.close,
+        });
+      }
     } else {
       const data: LineData<Time>[] = deduped.map((r) => ({
         time: r.time as Time,
         value: r.close,
       }));
       (series as ISeriesApi<"Line">).setData(data);
+      if (liveAhead) {
+        (series as ISeriesApi<"Line">).update({
+          time: liveAhead.time as Time,
+          value: liveAhead.close,
+        });
+      }
     }
 
     if (deduped.length > 0 && chart) {
@@ -201,10 +229,15 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
       }
     }
 
-    // Seed the live candle from the last bar so incoming ticks continue from it.
+    // Seed the live candle from the last historical bar — but only if we
+    // don't already have a live candle that's ahead of historical data.
+    // Otherwise the parent's 2s polling re-runs this effect and resets the
+    // live bar back to the prior closed minute on every render.
     if (deduped.length > 0) {
       const last = deduped[deduped.length - 1];
-      liveCandleRef.current = { ...last };
+      if (!liveCandleRef.current || liveCandleRef.current.time <= last.time) {
+        liveCandleRef.current = { ...last };
+      }
     }
   }, [bars, chartType]);
 
@@ -271,6 +304,15 @@ export function PriceChart({ bars, height = 280, chartType = "bars", liveBroker,
       if (!series) return;
 
       const current = liveCandleRef.current;
+
+      // Skip late-arriving ticks for already-closed minutes. Coinbase and
+      // other crypto feeds routinely deliver trades out of timestamp order;
+      // calling series.update() with an older time collapses that bar's OHLC
+      // to a single-price spike, which looks like bars appearing and
+      // disappearing on every tick.
+      if (current && tickMinute < current.time) {
+        return;
+      }
 
       if (current && current.time === tickMinute) {
         // Same minute — update existing candle.
