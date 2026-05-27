@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
-from coordinator.services.validation.sweep import run_sweep
+from coordinator.services.validation.sweep import RunnerFactory, run_sweep
 
 
 @dataclass
@@ -81,6 +81,7 @@ async def _pick_best_train_config(
 
 async def _run_oos_backtest(
     db: Session,
+    runner_factory: RunnerFactory,
     *,
     session_id: int,
     base_config: dict[str, Any],
@@ -94,11 +95,6 @@ async def _run_oos_backtest(
 
     merged = {**base_config, **config, "_fold_index": fold_index, "_oos": True}
 
-    # Extract runner infrastructure from merged config (stripped from DB row).
-    session_factory = merged.pop("_session_factory", None)
-    download_manager = merged.pop("_download_manager", None)
-    data_service = merged.pop("_data_service", None)
-
     run_row = BacktestRun(
         algorithm_id=merged.get("algorithm_id", ""),
         date_range_start=merged.get("start"),
@@ -111,22 +107,14 @@ async def _run_oos_backtest(
     db.add(run_row)
     db.flush()
 
-    if session_factory is not None and download_manager is not None and data_service is not None:
-        from coordinator.services.backtest_runner import BacktestRunner
-
-        runner = BacktestRunner(
-            session_factory=session_factory,
-            download_manager=download_manager,
-            data_service=data_service,
-        )
-        await runner.run(run_row.id)
-        db.refresh(run_row)
+    await runner_factory(run_row.id)
 
     return run_row.id
 
 
 async def run_walk_forward(
     db: Session,
+    runner_factory: RunnerFactory,
     *,
     session_id: int,
     manifest_path: str,
@@ -165,7 +153,8 @@ async def run_walk_forward(
             "end": fold.train_end.isoformat(),
         }
         sweep_result = await run_sweep(
-            db=db,
+            db,
+            runner_factory,
             session_id=session_id,
             manifest_path=manifest_path,
             base_config=train_cfg,
@@ -184,6 +173,7 @@ async def run_walk_forward(
         }
         oos_id = await _run_oos_backtest(
             db,
+            runner_factory,
             session_id=session_id,
             base_config=oos_cfg,
             config=winner,

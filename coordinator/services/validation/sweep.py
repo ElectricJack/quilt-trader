@@ -4,9 +4,16 @@ import asyncio
 import hashlib
 import itertools
 import json
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
+
+# A RunnerFactory is any callable that accepts a persisted BacktestRun id and
+# returns an awaitable that executes the run.  The orchestrators are agnostic
+# about which services the factory uses; the CLI / API constructs it once with
+# real services and passes it through.
+RunnerFactory = Callable[[int], Awaitable[None]]
 
 import numpy as np
 
@@ -102,6 +109,8 @@ class SweepResult:
 
 async def _run_one_backtest(
     db: Any,
+    runner_factory: RunnerFactory,
+    *,
     session_id: int,
     base_config: dict[str, Any],
     config: dict[str, Any],
@@ -109,23 +118,13 @@ async def _run_one_backtest(
 ) -> dict[str, Any]:
     """Spawn a single backtest with the given config.
 
-    Returns a dict with at least ``run_id``, ``config_hash``, and ``config``.
-    This is the seam mocked in tests. The real implementation creates a
-    BacktestRun row and dispatches BacktestRunner.
-
-    Note: BacktestRunner requires session_factory, download_manager, and
-    data_service — infrastructure that must be supplied via base_config keys
-    ``_session_factory``, ``_download_manager``, and ``_data_service`` when
-    invoking outside of tests.
+    Creates a ``BacktestRun`` row, flushes to obtain its id, then delegates
+    execution to ``runner_factory``.  Returns a dict with at least ``run_id``,
+    ``config_hash``, and ``config``.  This function is the seam mocked in tests.
     """
     from coordinator.database.models import BacktestRun
 
     merged = {**base_config, **config}
-
-    # Extract runner infrastructure from base_config (stripped from DB row).
-    session_factory = merged.pop("_session_factory", None)
-    download_manager = merged.pop("_download_manager", None)
-    data_service = merged.pop("_data_service", None)
 
     run_row = BacktestRun(
         algorithm_id=merged.get("algorithm_id", ""),
@@ -139,16 +138,7 @@ async def _run_one_backtest(
     db.add(run_row)
     db.flush()
 
-    if session_factory is not None and download_manager is not None and data_service is not None:
-        from coordinator.services.backtest_runner import BacktestRunner
-
-        runner = BacktestRunner(
-            session_factory=session_factory,
-            download_manager=download_manager,
-            data_service=data_service,
-        )
-        await runner.run(run_row.id)
-        db.refresh(run_row)
+    await runner_factory(run_row.id)
 
     return {
         "run_id": run_row.id,
@@ -159,6 +149,8 @@ async def _run_one_backtest(
 
 async def run_sweep(
     db: Any,
+    runner_factory: RunnerFactory,
+    *,
     session_id: int,
     manifest_path: str | Path,
     base_config: dict[str, Any],
@@ -196,7 +188,8 @@ async def run_sweep(
     async def _bounded(cfg: dict[str, Any]) -> dict[str, Any]:
         async with semaphore:
             return await _run_one_backtest(
-                db=db,
+                db,
+                runner_factory,
                 session_id=session_id,
                 base_config=base_config,
                 config=cfg,

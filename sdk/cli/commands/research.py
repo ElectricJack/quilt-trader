@@ -2,11 +2,41 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 import click
 
 from coordinator.database.session import get_session_factory
+
+logger = logging.getLogger(__name__)
+
+
+def _make_cli_runner_factory():
+    """Construct a RunnerFactory for use in CLI sweep / walk-forward commands.
+
+    LIMITATION: BacktestRunner requires an *async* session_factory
+    (async_sessionmaker[AsyncSession]), a DownloadManager wired with real
+    providers, and a DataService — all of which are only available from the
+    coordinator's startup context (coordinator/main.py).  The CLI's
+    get_session_factory() returns a *sync* sessionmaker, which is incompatible.
+
+    Until the CLI is given its own async-session bootstrap (or the coordinator
+    exposes a lightweight async-session helper), the runner_factory raises at
+    call time to surface the gap rather than silently skipping execution.
+
+    See backlog: "CLI runner_factory needs real async DI from coordinator startup."
+    """
+    async def _runner_factory(run_id: int) -> None:
+        raise NotImplementedError(
+            f"CLI runner_factory cannot execute BacktestRun id={run_id}: "
+            "BacktestRunner requires an async session factory and a wired "
+            "DownloadManager/DataService that are not available in the CLI "
+            "context.  Start the coordinator API and trigger the run via the "
+            "HTTP endpoint, or wire the CLI with an async session bootstrap."
+        )
+
+    return _runner_factory
 
 
 @click.group("research")
@@ -80,13 +110,15 @@ def cmd_sweep(session_id: int, manifest: str, base_config: str, search: str, max
 
     async def _go() -> None:
         SessionLocal = get_session_factory()
+        runner_factory = _make_cli_runner_factory()
         with SessionLocal() as db:
             sess = db.query(OptimizationSession).get(session_id)
             if sess is None:
                 raise click.ClickException(f"Session {session_id} not found")
             param_space = json.loads(sess.parameter_space)
             result = await run_sweep(
-                db=db,
+                db,
+                runner_factory,
                 session_id=session_id,
                 manifest_path=manifest,
                 base_config=base_cfg,
@@ -120,12 +152,14 @@ def cmd_walk_forward(session_id: int, manifest: str, base_config: str, train_yea
 
     async def _go() -> None:
         SessionLocal = get_session_factory()
+        runner_factory = _make_cli_runner_factory()
         with SessionLocal() as db:
             sess = db.query(OptimizationSession).get(session_id)
             if sess is None:
                 raise click.ClickException(f"Session {session_id} not found")
             result = await run_walk_forward(
-                db=db,
+                db,
+                runner_factory,
                 session_id=session_id,
                 manifest_path=manifest,
                 base_config=base_cfg,
