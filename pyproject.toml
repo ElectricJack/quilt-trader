@@ -36,6 +36,7 @@ coordinator = [
     # Broker SDKs (used by coordinator for test-connection/sync/broker-info endpoints).
     "alpaca-py>=0.30.0",
     "matplotlib>=3.8",
+    "markdown>=3.5",
 ]
 dev = [
     "pytest>=8.0.0",

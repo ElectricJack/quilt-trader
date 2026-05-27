@@ -166,3 +166,52 @@ def render_charts(*, equity: pd.Series, regimes: pd.Series, out_dir: Path) -> di
     paths["regime_returns"] = rr_path
 
     return paths
+
+
+import markdown as md_mod  # python-markdown library
+
+
+_HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 920px; margin: 2em auto; padding: 0 1em; color: #222; }}
+  h1, h2 {{ border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }}
+  table {{ border-collapse: collapse; margin: 1em 0; }}
+  th, td {{ border: 1px solid #ccc; padding: 0.4em 0.8em; text-align: left; }}
+  th {{ background: #f6f8fa; }}
+  img {{ max-width: 100%; }}
+  code, pre {{ font-family: 'SF Mono', monospace; }}
+  pre {{ background: #f6f8fa; padding: 1em; overflow-x: auto; }}
+</style>
+</head>
+<body>
+{body}
+<div class="charts">
+  <h2>Charts</h2>
+  <img src="equity.png" alt="Equity Curve">
+  <img src="drawdown.png" alt="Drawdown">
+  <img src="regime_returns.png" alt="Regime Returns">
+</div>
+</body>
+</html>
+"""
+
+
+def build_html_report(inputs: ReportInputs, *, out_dir: Path) -> dict[str, Path]:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    md = build_markdown_report(inputs)
+    md_path = out_dir / "report.md"
+    md_path.write_text(md)
+
+    render_charts(equity=inputs.oos_equity_curve, regimes=inputs.regimes, out_dir=out_dir)
+
+    body_html = md_mod.markdown(md, extensions=["tables", "fenced_code"])
+    html = _HTML_TEMPLATE.format(title=f"OptimizationSession: {inputs.session.name}", body=body_html)
+    html_path = out_dir / "report.html"
+    html_path.write_text(html)
+
+    return {"md": md_path, "html": html_path}

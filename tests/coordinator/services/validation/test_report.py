@@ -73,3 +73,39 @@ def test_render_charts_writes_files(db_session, tmp_path):
     assert (tmp_path / "drawdown.png").exists()
     assert (tmp_path / "regime_returns.png").exists()
     assert "equity" in paths and "drawdown" in paths and "regime_returns" in paths
+
+
+from coordinator.services.validation.report import build_html_report
+
+
+def test_build_html_report_embeds_charts(db_session, tmp_path):
+    sess = OptimizationSession(
+        name="html-test-001",
+        hypothesis="H",
+        parameter_space=json.dumps({}),
+        pre_registered_criteria=json.dumps({"oos_sharpe_lci": 0.5}),
+        status="completed",
+    )
+    db_session.add(sess)
+    db_session.commit()
+
+    idx = pd.date_range("2024-01-01", periods=100, freq="D")
+    equity = pd.Series(np.linspace(1000.0, 1100.0, 100), index=idx)
+    regimes = pd.Series(["bull"] * 100, index=idx)
+
+    inputs = ReportInputs(
+        session=sess,
+        oos_equity_curve=equity,
+        regimes=regimes,
+        bootstrap_metrics={"sharpe": {"point": 0.7, "lower": 0.5, "upper": 0.9}, "max_drawdown": {"point": -0.05, "lower": -0.10, "upper": -0.02}},
+        regime_metrics={"bull": {"sharpe": 0.7, "total_return": 0.10, "win_rate": 0.55, "n_days": 100}},
+        corrected_p_values=[{"raw_p": 0.01, "corrected_p": 0.05, "significant": True}],
+    )
+
+    paths = build_html_report(inputs, out_dir=tmp_path)
+    assert paths["html"].exists()
+    html = paths["html"].read_text()
+    assert "html-test-001" in html
+    assert "equity.png" in html or "data:image" in html
+    assert "Bootstrap CIs" in html
+    assert "<table" in html
