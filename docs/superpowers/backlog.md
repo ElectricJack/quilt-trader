@@ -125,6 +125,12 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** A4b focused on wiring `BacktestRunner`; the scheduler comparison path was orthogonal.
 - **RESOLVED** (2026-05-27): `backtest_scheduler.py` now constructs `BacktestEngine(config=BacktestConfig(cost_profile=...))` instead of `BacktestEngine()`. Reads `cost_profile` from `instance.cost_profile` or `algorithm.cost_profile` if those columns exist (neither does today; the hook is ready for when they do). Default behavior — legacy flat fee/slippage — unchanged.
 
+### `quilt research *` should be a thin HTTP client like `quilt data *`
+- **Surfaced during:** crypto-tsmom strategy work on 2026-05-27.
+- **Why deferred:** initial validation lab shipped with the CLI bootstrapping services locally via `runner_bootstrap.py`. Functional but architecturally inconsistent with the rest of the CLI, which goes through coordinator HTTP endpoints (`/api/data/...`, `/api/backtest-runs/...`, etc.). The local-bootstrap path also doesn't get the coordinator's wired providers (yfinance, polygon, tradier, alpaca), forcing users into pre-download workflows.
+- **What's needed:** Add coordinator HTTP endpoints `POST /api/research/sessions`, `POST /api/research/sessions/{id}/sweep`, `POST /api/research/sessions/{id}/walk-forward`, `GET /api/research/sessions/{id}/report`. Rewrite `sdk/cli/commands/research.py` as a thin client following the pattern in `sdk/cli/commands/data.py`. Once shipped, `runner_bootstrap.py` can stay as a library for programmatic users but the CLI no longer needs it.
+- **Design principle:** Any framework capability an agent (or human) needs should be exposed through the CLI as a thin client to the coordinator HTTP API. Bespoke scripts and local bootstrapping should be the exception, not the rule.
+
 ### SPA / White's Reality Check significance test
 - **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
 - **Why deferred:** v1 ships Bonferroni and Benjamini-Hochberg corrections. SPA is more powerful for dependent hypothesis sets (which is what parameter sweeps produce) but the implementation requires bootstrap-of-bootstraps and is meaningfully more involved.
