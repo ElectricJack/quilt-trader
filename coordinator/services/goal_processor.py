@@ -4,24 +4,39 @@ Phase 1 (discovering): Scan all expirations, call discover_option_contracts
 for each, accumulate the full contract list. No downloads. Updates
 discovery_progress ("45/105 expirations") each tick.
 
-Phase 2 (downloading): Iterate discovered contracts, check what's on disk,
-queue downloads for what's missing. Updates completed_items each tick.
+Phase 2 (downloading): Keep at most (provider concurrency + 1) downloads
+in flight per goal, driven by completion events. See
+docs/superpowers/specs/2026-05-27-options-goal-incremental-download-design.md.
 """
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from coordinator.database.models import DataGoal
+from coordinator.database.models import DataGoal, MarketDataDownload
 
 logger = logging.getLogger(__name__)
 
 DISCOVERY_BATCH = 20
-DOWNLOAD_BATCH = 50
+DOWNLOAD_BATCH = 50  # legacy: still used by _process_bars_goal
+DISK_CACHE_TTL_SECONDS = 60
+
+
+def _utcnow() -> datetime:
+    """Indirection point for tests to pin time."""
+    return datetime.now(timezone.utc)
+
+
+def _backoff_seconds(failure_count: int) -> int:
+    """Exponential backoff capped at 24h. 1 failure → 60s, 2 → 120s, ... cap at 86_400s."""
+    if failure_count <= 0:
+        return 0
+    return min(60 * (2 ** (failure_count - 1)), 86_400)
 
 
 class GoalProcessor:
@@ -31,11 +46,18 @@ class GoalProcessor:
         download_manager: Any,
         data_service: Any,
         providers: dict[str, Any],
+        market_dir: str = "data/market",
     ) -> None:
         self._sf = session_factory
         self._dm = download_manager
         self._ds = data_service
         self._providers = providers
+        self._market_dir = market_dir
+        # Per-provider cache of symbols with <provider>/<sym>/1day.parquet
+        # on disk. Refreshed via full scandir at most every DISK_CACHE_TTL_SECONDS
+        # and updated incrementally by on_download_complete events.
+        self._disk_cache: dict[str, set[str]] = {}
+        self._disk_cache_ts: dict[str, datetime] = {}
 
     async def tick(self) -> None:
         async with self._sf() as session:
@@ -158,36 +180,25 @@ class GoalProcessor:
                 await session.commit()
 
     async def _download_options(self, goal: DataGoal) -> None:
+        """Reconcile and enqueue up to (concurrency + 1) downloads for this goal.
+
+        Per-tick: refresh disk cache if TTL expired, compute (on_disk, in_flight,
+        recently_failed) sets restricted to discovered contracts, enqueue up to
+        the cap from eligible pending, update goal counters, transition phase
+        if everything's on disk.
+        """
         config = goal.config
         provider_name = config.get("provider", "polygon")
-        start = date.fromisoformat(config["date_start"])
-        end = date.fromisoformat(config["date_end"])
         contracts = goal.discovered_contracts or []
 
-        completed = 0
-        queued = 0
+        await self._refresh_disk_cache_if_stale(provider_name)
+        await self._enqueue_for_goal(goal, contracts, provider_name)
 
-        for c in contracts:
-            sym = c.get("symbol")
-            if not isinstance(sym, str) or not sym:
-                continue
-            df = self._ds.load_market_data(provider_name, sym, "1day")
-            if df is not None and len(df) > 1:
-                completed += 1
-                continue
-            if queued >= DOWNLOAD_BATCH:
-                continue
-            exp = date.fromisoformat(c["expiration"])
-            dl_start = max(start, exp - timedelta(days=90))
-            dl_end = min(end, exp)
-            await self._dm.create_download(
-                symbols=[sym],
-                date_range_start=dl_start,
-                date_range_end=dl_end,
-                provider=provider_name,
-                timeframe="1day",
-            )
-            queued += 1
+        # Recount after enqueue (disk cache is already current).
+        on_disk = self._disk_cache.get(provider_name, set())
+        discovered = {c.get("symbol") for c in contracts if c.get("symbol")}
+        completed = len(discovered & on_disk)
+        in_flight = await self._count_in_flight(provider_name, discovered)
 
         async with self._sf() as session:
             g = (await session.execute(
@@ -195,11 +206,192 @@ class GoalProcessor:
             )).scalar_one()
             g.completed_items = completed
             g.error_message = None
-            g.last_processed_at = datetime.now(timezone.utc)
-            if completed >= len(contracts) and queued == 0:
+            g.last_processed_at = _utcnow()
+            if completed >= len(discovered) and in_flight == 0:
                 g.phase = "completed"
                 g.status = "completed"
             await session.commit()
+
+    async def on_download_complete(self, provider: str, symbols: list[str]) -> None:
+        """Called by DownloadManager when any download finishes (success OR
+        failure). Updates the disk cache incrementally if the parquet now
+        exists, then tries to top up the in-flight queue for any active
+        options goal that owns this symbol."""
+        cache = self._disk_cache.setdefault(provider, set())
+        for sym in symbols:
+            if isinstance(sym, str) and sym and self._has_parquet(provider, sym):
+                cache.add(sym)
+
+        # Top up each affected goal.
+        async with self._sf() as session:
+            goals = (await session.execute(
+                select(DataGoal).where(
+                    DataGoal.status == "active",
+                    DataGoal.phase == "downloading",
+                    DataGoal.goal_type == "options",
+                )
+            )).scalars().all()
+            relevant: list[tuple[Any, list[dict]]] = []
+            for goal in goals:
+                if (goal.config or {}).get("provider", "polygon") != provider:
+                    continue
+                cs = goal.discovered_contracts or []
+                if any(c.get("symbol") in symbols for c in cs):
+                    session.expunge(goal)
+                    relevant.append((goal, cs))
+        for goal, cs in relevant:
+            try:
+                await self._enqueue_for_goal(goal, cs, provider)
+            except Exception:
+                logger.exception("on_download_complete enqueue failed for goal %s", goal.id)
+
+    # ─── internals ───────────────────────────────────────────────────────────
+
+    async def _enqueue_for_goal(self, goal: Any, contracts: list[dict], provider: str) -> None:
+        """Enqueue (cap - in_flight) eligible pending contracts for one goal."""
+        cap = self._dm.concurrency_for(provider) + 1
+        discovered = {c.get("symbol") for c in contracts if c.get("symbol")}
+        if not discovered:
+            return
+
+        on_disk = self._disk_cache.get(provider, set())
+        in_flight = await self._in_flight_symbols(provider, discovered)
+        slot = cap - len(in_flight)
+        if slot <= 0:
+            return
+
+        recently_failed = await self._recently_failed_symbols(provider, discovered)
+        eligible = discovered - on_disk - in_flight - recently_failed
+        if not eligible:
+            return
+
+        # Preserve discovery order so progress is human-legible.
+        sym_to_contract = {c["symbol"]: c for c in contracts if c.get("symbol") in eligible}
+        ordered = [c for c in contracts if c.get("symbol") in sym_to_contract]
+
+        config = goal.config or {}
+        start = date.fromisoformat(config["date_start"])
+        end = date.fromisoformat(config["date_end"])
+
+        for c in ordered[:slot]:
+            sym = c["symbol"]
+            try:
+                exp = date.fromisoformat(c["expiration"])
+            except Exception:
+                continue
+            dl_start = max(start, exp - timedelta(days=90))
+            dl_end = min(end, exp)
+            await self._dm.create_download(
+                symbols=[sym],
+                date_range_start=dl_start,
+                date_range_end=dl_end,
+                provider=provider,
+                timeframe="1day",
+            )
+
+    def _has_parquet(self, provider: str, symbol: str) -> bool:
+        path = os.path.join(self._market_dir, provider, symbol, "1day.parquet")
+        return os.path.exists(path)
+
+    async def _refresh_disk_cache_if_stale(self, provider: str) -> None:
+        last = self._disk_cache_ts.get(provider)
+        now = _utcnow()
+        if last is not None and now - last < timedelta(seconds=DISK_CACHE_TTL_SECONDS):
+            return
+        provider_dir = os.path.join(self._market_dir, provider)
+        found: set[str] = set()
+        try:
+            with os.scandir(provider_dir) as it:
+                for entry in it:
+                    if not entry.is_dir():
+                        continue
+                    if os.path.exists(os.path.join(entry.path, "1day.parquet")):
+                        found.add(entry.name)
+        except FileNotFoundError:
+            pass
+        self._disk_cache[provider] = found
+        self._disk_cache_ts[provider] = now
+
+    async def _in_flight_symbols(self, provider: str, candidates: set[str]) -> set[str]:
+        """Symbols belonging to `candidates` that have a queued/running row
+        in market_data_downloads for this provider."""
+        if not candidates:
+            return set()
+        async with self._sf() as session:
+            stmt = (
+                select(MarketDataDownload.symbols)
+                .where(
+                    MarketDataDownload.provider == provider,
+                    MarketDataDownload.timeframe == "1day",
+                    MarketDataDownload.status.in_(("queued", "running")),
+                )
+            )
+            rows = (await session.execute(stmt)).all()
+        out: set[str] = set()
+        for (syms,) in rows:
+            for s in syms or []:
+                if s in candidates:
+                    out.add(s)
+        return out
+
+    async def _count_in_flight(self, provider: str, candidates: set[str]) -> int:
+        return len(await self._in_flight_symbols(provider, candidates))
+
+    async def _recently_failed_symbols(
+        self, provider: str, candidates: set[str],
+    ) -> set[str]:
+        """Symbols whose exponential-backoff window hasn't expired.
+
+        For each candidate symbol, count `failed` rows since the most recent
+        `completed` row; compute the required delay; exclude if
+        ``now - last_failed_at < delay``.
+        """
+        if not candidates:
+            return set()
+        async with self._sf() as session:
+            stmt = (
+                select(MarketDataDownload)
+                .where(
+                    MarketDataDownload.provider == provider,
+                    MarketDataDownload.timeframe == "1day",
+                    MarketDataDownload.status.in_(("failed", "completed")),
+                )
+                .order_by(MarketDataDownload.completed_at.asc())
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+
+        # Aggregate per symbol: count failures since the last completed row,
+        # and remember the most recent failed completed_at.
+        from collections import defaultdict
+        fail_count: dict[str, int] = defaultdict(int)
+        last_failed_at: dict[str, datetime] = {}
+        for row in rows:
+            for s in row.symbols or []:
+                if s not in candidates:
+                    continue
+                if row.status == "completed":
+                    fail_count[s] = 0
+                    last_failed_at.pop(s, None)
+                elif row.status == "failed":
+                    fail_count[s] += 1
+                    if row.completed_at is not None:
+                        last_failed_at[s] = row.completed_at
+
+        now = _utcnow()
+        out: set[str] = set()
+        for sym, n in fail_count.items():
+            if n <= 0:
+                continue
+            last = last_failed_at.get(sym)
+            if last is None:
+                continue
+            delay = _backoff_seconds(n)
+            # last may be naive on some SQLite paths — normalize to UTC-aware.
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            if (now - last).total_seconds() < delay:
+                out.add(sym)
+        return out
 
     async def _process_bars_goal(self, goal: DataGoal) -> None:
         config = goal.config

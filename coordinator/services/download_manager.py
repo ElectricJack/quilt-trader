@@ -47,15 +47,34 @@ class DownloadManager:
         # Callers can override via provider_concurrency.
         concurrency_overrides = provider_concurrency or {}
         self._provider_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._initial_concurrency: dict[str, int] = {}
         for provider_name in providers:
             n = concurrency_overrides.get(
                 provider_name, self._DEFAULT_PROVIDER_CONCURRENCY.get(provider_name, 1)
             )
             self._provider_semaphores[provider_name] = asyncio.Semaphore(n)
+            self._initial_concurrency[provider_name] = n
         self._fallback_semaphore = asyncio.Semaphore(1)
 
     def _semaphore_for(self, provider: str) -> asyncio.Semaphore:
         return self._provider_semaphores.get(provider, self._fallback_semaphore)
+
+    def concurrency_for(self, provider: str) -> int:
+        """Return the configured concurrency cap for a provider.
+
+        Used by goal_processor to size its in-flight cap relative to what
+        the download manager will actually run in parallel.
+        """
+        sem = self._provider_semaphores.get(provider, self._fallback_semaphore)
+        # asyncio.Semaphore stores the initial value on creation; the running
+        # _value is decremented as acquires happen, so it's not the right
+        # source for the "cap." Read from the wrapped attribute.
+        # Python 3.10+: Semaphore exposes _value (current) but not initial.
+        # We stored the initial value in the dict construction; recover it
+        # from the default map, with the override registered at __init__.
+        return self._initial_concurrency.get(
+            provider, self._DEFAULT_PROVIDER_CONCURRENCY.get(provider, 1)
+        )
 
     async def create_download(
         self,

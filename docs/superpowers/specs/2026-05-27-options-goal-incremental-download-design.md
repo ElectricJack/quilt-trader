@@ -144,12 +144,12 @@ Per-symbol exponential backoff computed from `market_data_downloads` rows:
 failure_count = number of rows for this (provider, symbol) with
                 status='failed' since the most recent 'completed' row
                 (or since row 0 if none).
-delay_seconds = min(60 * 2**failure_count, 86_400)
+delay_seconds = min(60 * 2**(failure_count - 1), 86_400)
 last_failed   = max(completed_at where status='failed') for that symbol
 eligible      = now - last_failed >= delay_seconds
 ```
 
-- 1st failure → 1 min, 2nd → 2 min, 3rd → 4 min, ... ~10th → 24 h cap.
+- 1st failure → 1 min, 2nd → 2 min, 3rd → 4 min, 4th → 8 min, ... 12th → 24 h cap.
 - After a successful download, the count resets (the next failure starts
   over at 1 min).
 - Single grouped query against `market_data_downloads`, restricted to the

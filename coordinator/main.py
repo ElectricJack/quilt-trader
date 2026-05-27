@@ -311,6 +311,15 @@ def create_app(
         def _on_download_complete(provider: str, symbols: list[str]) -> None:
             for sym in symbols:
                 coverage_index.invalidate(provider, sym)
+            # Fan out to the goal processor (if constructed) so it can top up
+            # its in-flight queue without waiting for the next cron tick.
+            gp = getattr(container, "goal_processor", None)
+            if gp is not None:
+                try:
+                    asyncio.create_task(gp.on_download_complete(provider, symbols))
+                except RuntimeError:
+                    # No running loop (e.g. during unit-test teardown) — skip.
+                    pass
 
         download_manager._on_download_complete = _on_download_complete
 
