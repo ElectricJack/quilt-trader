@@ -106,6 +106,50 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+## Validation Lab
+
+### SPA / White's Reality Check significance test
+- **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
+- **Why deferred:** v1 ships Bonferroni and Benjamini-Hochberg corrections. SPA is more powerful for dependent hypothesis sets (which is what parameter sweeps produce) but the implementation requires bootstrap-of-bootstraps and is meaningfully more involved.
+- **What's needed:** implement Hansen's SPA test or White's bootstrap reality check in `coordinator/services/validation/multi_test.py`. Should accept a list of strategy return series and return a corrected p-value for the best performer.
+
+### Pluggable regime taggers
+- **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
+- **Why deferred:** v1 ships only a BTC-trailing-return tagger, which is circular for crypto strategies (the regime measures what the strategy trades). Acknowledged limitation noted in spec.
+- **What's needed:** make `regime.py` accept a `RegimeTagger` protocol; ship a VIX-based equity tagger and a user-supplied function tagger. Each strategy's manifest declares which tagger it consumes.
+
+### Bayesian / TPE search in sweep
+- **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
+- **Why deferred:** grid + random + latin-hypercube cover the v1 needs. TPE / Bayesian search would be more sample-efficient for large parameter spaces.
+- **What's needed:** add Optuna integration to `sweep.py` as a fourth search type. The DB schema for `OptimizationSession` already stores the search type as a string, so this is additive.
+
+### Dashboard UI for OptimizationSession browsing
+- **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
+- **Why deferred:** v1 reports are static markdown + HTML files. A dashboard page would let users browse sessions, drill into folds, compare parameter sets visually.
+- **What's needed:** new dashboard route `/research/sessions/:id`, fetched via a `GET /api/optimization-sessions/:id` endpoint. Render walk-forward equity curves, fold-level fills, parameter heatmaps.
+
+### Live deployment automation hook after a session passes
+- **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
+- **Why deferred:** v1 keeps the deploy step manual after the kill criteria pass; safer while methodology is being shaken out.
+- **What's needed:** a "promote to live" action on a passing OptimizationSession that creates a deployment with the winning parameter set, paper-traded first, then a CLI-confirmed live cutover.
+
+### Crypto perpetual futures venue integration
+- **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
+- **Why deferred:** the funding-carry edge has decayed since 2024 per BIS WP 1087; US retail access to Binance/Bybit/OKX is blocked; Hyperliquid is DEX-only.
+- **What's needed:** if Phase 2+ wants funding carry or true L/S crypto, evaluate Hyperliquid DEX adapter (no KYC, perps available) vs. CME micro BTC futures. Both have nontrivial integration cost.
+
+### Equity VRP defined-risk strategy (Phase 2 of research roadmap)
+- **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
+- **Why deferred:** Phase 2 of the broader edge-discovery roadmap. Consumes the same validation lab.
+- **What's needed:** strategy package at `data/packages/equity-vrp/` implementing put credit spreads / iron condors on SPY with defined risk. Cost profile for Tradier options. Pre-registered hypothesis around CBOE PUT-equivalent Sharpe.
+
+### Cross-sectional momentum via MTUM (Phase 3 of research roadmap)
+- **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
+- **Why deferred:** Phase 3 of the broader edge-discovery roadmap.
+- **What's needed:** strategy package implementing monthly-rebalanced MTUM-anchored momentum with TSMOM overlay. Same lab.
+
+---
+
 ## How to use this file
 
 When **deferring work** in a new spec:
