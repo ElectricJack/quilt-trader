@@ -16,7 +16,6 @@ import {
   useClosePosition,
   useWebSocketTopic,
 } from "../api/hooks";
-import { OpenPositionModal } from "../components/OpenPositionModal";
 import type { CashFlow, AlgorithmInstance, TradeRow } from "../types";
 import type { BrokerPosition } from "../api/client";
 import { DataTable, type ColumnDef } from "../components/DataTable";
@@ -143,7 +142,6 @@ export function AccountDetail() {
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [cashFlowOpen, setCashFlowOpen] = useState(false);
-  const [openPositionOpen, setOpenPositionOpen] = useState(false);
   const [syncRange, setSyncRange] = useState<"incremental" | "30d" | "90d" | "1y" | "all">("incremental");
   const [chartRange, setChartRange] = useState<"30d" | "90d" | "1y" | "all">("90d");
   const [closeTarget, setCloseTarget] = useState<BrokerPosition | null>(null);
@@ -579,10 +577,10 @@ export function AccountDetail() {
               </div>
             )}
           </div>
-          {/* Open Position */}
+          {/* Open Position — unified equity/crypto/options page */}
           <button
             className="flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={() => setOpenPositionOpen(true)}
+            onClick={() => navigate(`/accounts/${account.id}/open-position`)}
             disabled={!!account.locked_by}
             title={account.locked_by
               ? "Locked by algorithm. Stop the algo to open positions manually."
@@ -590,20 +588,6 @@ export function AccountDetail() {
           >
             Open Position
           </button>
-
-          {/* Strategies (options only) */}
-          {(account.supported_asset_types ?? []).includes("options") && (
-            <button
-              className="flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-gray-200 bg-gray-700 hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={() => navigate(`/accounts/${account.id}/strategies`)}
-              disabled={!!account.locked_by}
-              title={account.locked_by
-                ? "Locked by algorithm. Stop the algo to use the strategy builder."
-                : "Open the options strategy builder"}
-            >
-              Strategies
-            </button>
-          )}
 
           <button
             className="flex items-center gap-1.5 px-3 py-2 rounded text-sm font-medium text-gray-300 bg-gray-700 hover:bg-gray-600 transition-colors"
@@ -967,15 +951,6 @@ export function AccountDetail() {
         onCancel={() => setDeleteOpen(false)}
       />
 
-      {/* Open Position Modal */}
-      {account && (
-        <OpenPositionModal
-          open={openPositionOpen}
-          onClose={() => setOpenPositionOpen(false)}
-          accountId={account.id}
-          allowedAssetTypes={account.supported_asset_types ?? []}
-        />
-      )}
     </div>
   );
 }

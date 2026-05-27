@@ -1,8 +1,15 @@
-// dashboard/src/pages/Strategies.tsx
-// Options strategy builder. Account-bound at /accounts/:id/strategies.
-// Pulls option expiries/chain from the broker, builds + edits leg lists
-// (templates + manual), shows client-side Black-Scholes P&L + Greeks, and
-// submits the constructed spread via Spec A's positions/open endpoint.
+// dashboard/src/pages/Strategies.tsx (page title: "Open Position")
+// Unified order-placement page. Routed at /accounts/:id/open-position
+// (and /accounts/:id/strategies for back-compat).
+//
+// Asset-class tabs at the top adapt the body:
+//   - Equities / Crypto → SimpleOrderForm (single-leg, single broker ticket)
+//   - Options           → full chain matrix + templates + multi-leg builder
+//                         (broker-atomic multi-leg via submit_multileg_order)
+//
+// Equities/crypto are restricted to a single leg deliberately: the
+// broker layer doesn't support atomic multi-leg execution for them,
+// so multi-leg would risk partial fills with no automatic rollback.
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
@@ -26,6 +33,15 @@ import { StrategyChainMatrix } from "../components/strategy/StrategyChainMatrix"
 import { PnlChart } from "../components/strategy/PnlChart";
 import { DateSlider } from "../components/strategy/DateSlider";
 import { GreeksPanel } from "../components/strategy/GreeksPanel";
+import { SimpleOrderForm } from "../components/strategy/SimpleOrderForm";
+
+type AssetClass = "equities" | "crypto" | "options";
+
+const ASSET_CLASS_LABELS: Record<AssetClass, string> = {
+  equities: "Equities",
+  crypto: "Crypto",
+  options: "Options",
+};
 
 function legMidPrice(l: OptionLeg): number {
   if (l.bid != null && l.ask != null) return (l.bid + l.ask) / 2;
@@ -41,6 +57,22 @@ export function Strategies() {
   const addAlert = useUIStore((s) => s.addAlert);
 
   const { data: account } = useAccount(accountId);
+
+  // Account-derived list of asset classes the user can pick.
+  const supportedAssetClasses = useMemo<AssetClass[]>(() => {
+    const allowed = new Set(account?.supported_asset_types ?? []);
+    return (["equities", "crypto", "options"] as AssetClass[])
+      .filter((c) => allowed.has(c));
+  }, [account]);
+
+  const [assetClass, setAssetClass] = useState<AssetClass>("equities");
+  // Re-anchor the active tab to one the account actually supports.
+  useEffect(() => {
+    if (supportedAssetClasses.length === 0) return;
+    if (!supportedAssetClasses.includes(assetClass)) {
+      setAssetClass(supportedAssetClasses[0]);
+    }
+  }, [supportedAssetClasses, assetClass]);
 
   const [underlying, setUnderlying] = useState<string>("");
   const [expiry, setExpiry] = useState<string | null>(null);
@@ -248,6 +280,23 @@ export function Strategies() {
     return <p className="text-gray-400">Loading…</p>;
   }
 
+  function handleAfterSimpleSubmit() {
+    addAlert({ message: "Order submitted", severity: "success" });
+    // Don't navigate away — let the user place another quickly.
+  }
+
+  // Wire mutation error toasts for the simple form (options path
+  // surfaces its own via handleSubmit).
+  useEffect(() => {
+    if (submitMut.isError && submitMut.error) {
+      addAlert({
+        message: `Order failed: ${submitMut.error.message}`,
+        severity: "error",
+      });
+      submitMut.reset();
+    }
+  }, [submitMut.isError, submitMut.error, submitMut, addAlert]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -259,25 +308,54 @@ export function Strategies() {
           >
             <ChevronLeft size={20} />
           </Link>
-          <h1 className="text-xl font-bold">Strategies — {account.name}</h1>
+          <h1 className="text-xl font-bold">Open Position — {account.name}</h1>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-1 px-3 py-1.5 rounded text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
-          >
-            <RotateCcw size={14} /> Reset
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={legs.length === 0 || submitMut.isPending || !underlying.trim()}
-            className="px-3 py-1.5 rounded text-sm text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitMut.isPending ? "Submitting…" : "Submit Order"}
-          </button>
-        </div>
+        {assetClass === "options" && (
+          <div className="flex gap-2">
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-1 px-3 py-1.5 rounded text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
+            >
+              <RotateCcw size={14} /> Reset
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={legs.length === 0 || submitMut.isPending || !underlying.trim()}
+              className="px-3 py-1.5 rounded text-sm text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submitMut.isPending ? "Submitting…" : "Submit Order"}
+            </button>
+          </div>
+        )}
       </div>
 
+      {/* Asset-class segmented control */}
+      {supportedAssetClasses.length > 0 && (
+        <div className="inline-flex rounded-lg border border-gray-700 bg-gray-900 p-0.5">
+          {supportedAssetClasses.map((c) => (
+            <button
+              key={c}
+              onClick={() => setAssetClass(c)}
+              className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                assetClass === c
+                  ? "bg-indigo-600 text-white"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              {ASSET_CLASS_LABELS[c]}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {assetClass !== "options" ? (
+        <SimpleOrderForm
+          assetType={assetClass}
+          submitMut={submitMut}
+          onAfterSubmit={handleAfterSimpleSubmit}
+        />
+      ) : (
+      <>
       <div className="flex flex-wrap items-center gap-3">
         <label className="text-xs text-gray-400">
           Underlying
@@ -329,6 +407,8 @@ export function Strategies() {
           <GreeksPanel legs={legs} spot={chain?.spot} scrubMs={scrubMs} />
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

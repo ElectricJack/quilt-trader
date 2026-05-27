@@ -50,7 +50,9 @@ export function App() {
             <Route path="/" element={<Overview />} />
             <Route path="/accounts" element={<Accounts />} />
             <Route path="/accounts/:id" element={<AccountDetail />} />
-            {/* U6: Options strategy builder */}
+            {/* Unified Open Position page (equities/crypto/options).
+                /strategies kept as a back-compat alias. */}
+            <Route path="/accounts/:id/open-position" element={<Strategies />} />
             <Route path="/accounts/:id/strategies" element={<Strategies />} />
             <Route path="/algorithms" element={<Algorithms />} />
             <Route path="/algorithms/:id" element={<AlgorithmDetail />} />
