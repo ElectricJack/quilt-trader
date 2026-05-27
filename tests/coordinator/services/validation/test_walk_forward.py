@@ -97,3 +97,34 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
 
     assert result.n_folds >= 10
     assert len(result.oos_run_ids) == result.n_folds
+
+
+def test_concatenate_oos_curves(tmp_path):
+    """Concatenate OOS equity curves from N folds into one continuous series.
+
+    Each fold's parquet starts with its own initial_cash; concatenation
+    must scale each successive fold to chain off the prior fold's terminal value.
+    """
+    import pandas as pd
+    from coordinator.services.validation.walk_forward import concatenate_oos_curves
+
+    # Fold 1: 1000 → 1100 over 3 days
+    f1 = tmp_path / "f1.parquet"
+    pd.DataFrame(
+        {"timestamp": pd.date_range("2024-01-01", periods=3, freq="D"), "equity": [1000.0, 1050.0, 1100.0]}
+    ).to_parquet(f1)
+
+    # Fold 2: 1000 → 990 over 3 days
+    f2 = tmp_path / "f2.parquet"
+    pd.DataFrame(
+        {"timestamp": pd.date_range("2024-01-04", periods=3, freq="D"), "equity": [1000.0, 995.0, 990.0]}
+    ).to_parquet(f2)
+
+    curve = concatenate_oos_curves([f1, f2])
+    assert len(curve) == 6
+    assert curve.iloc[0] == 1000.0
+    assert curve.iloc[2] == 1100.0   # end of fold 1
+    # Fold 2: scaled to start at 1100 (fold 1 terminal)
+    assert abs(curve.iloc[3] - 1100.0) < 1e-6
+    # Fold 2 lost 1% over its window → terminal should be 1100 * (990/1000) = 1089
+    assert abs(curve.iloc[5] - 1089.0) < 1e-6

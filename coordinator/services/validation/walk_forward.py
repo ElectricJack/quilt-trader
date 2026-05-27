@@ -201,3 +201,35 @@ async def run_walk_forward(
         oos_run_ids=oos_run_ids,
         train_run_ids=train_run_ids,
     )
+
+
+import pandas as pd
+from pathlib import Path
+
+
+def concatenate_oos_curves(parquet_paths: list[Path]) -> pd.Series:
+    """Chain OOS equity curves into one continuous series.
+
+    Each fold's equity series is rescaled so its first value equals the prior
+    fold's terminal value, producing a continuous compounding curve.
+
+    Returns a Series indexed by timestamp.
+    """
+    segments: list[pd.Series] = []
+    running_anchor: float | None = None
+
+    for path in parquet_paths:
+        df = pd.read_parquet(path)
+        if "timestamp" not in df.columns or "equity" not in df.columns:
+            raise ValueError(f"Expected timestamp + equity columns in {path}")
+        s = df.set_index("timestamp")["equity"].astype(float)
+
+        if running_anchor is None:
+            segments.append(s)
+        else:
+            scale = running_anchor / s.iloc[0]
+            segments.append(s * scale)
+
+        running_anchor = float(segments[-1].iloc[-1])
+
+    return pd.concat(segments)
