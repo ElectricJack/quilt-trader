@@ -35,6 +35,7 @@ coordinator = [
     "discord.py>=2.4.0",
     # Broker SDKs (used by coordinator for test-connection/sync/broker-info endpoints).
     "alpaca-py>=0.30.0",
+    "matplotlib>=3.8",
 ]
 dev = [
     "pytest>=8.0.0",

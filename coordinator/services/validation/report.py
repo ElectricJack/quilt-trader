@@ -115,3 +115,54 @@ def build_markdown_report(inputs: ReportInputs) -> str:
         lines.append("No criteria defined.\n")
 
     return "".join(lines)
+
+
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")  # headless
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def render_charts(*, equity: pd.Series, regimes: pd.Series, out_dir: Path) -> dict[str, Path]:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: dict[str, Path] = {}
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(equity.index, equity.values, color="#1f77b4")
+    ax.set_title("OOS Equity Curve")
+    ax.set_ylabel("Equity")
+    ax.grid(alpha=0.3)
+    eq_path = out_dir / "equity.png"
+    fig.savefig(eq_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    paths["equity"] = eq_path
+
+    peak = equity.cummax()
+    dd = (equity - peak) / peak
+    fig, ax = plt.subplots(figsize=(10, 3))
+    ax.fill_between(dd.index, dd.values, 0, color="#d62728", alpha=0.5)
+    ax.set_title("Drawdown")
+    ax.set_ylabel("Drawdown")
+    ax.grid(alpha=0.3)
+    dd_path = out_dir / "drawdown.png"
+    fig.savefig(dd_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    paths["drawdown"] = dd_path
+
+    aligned = pd.concat([equity, regimes], axis=1, join="inner")
+    aligned.columns = ["equity", "regime"]
+    returns = aligned["equity"].pct_change().fillna(0)
+    grouped = returns.groupby(aligned["regime"]).agg(["mean", "std", "count"])
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(grouped.index.astype(str), grouped["mean"] * 252, color=["#2ca02c", "#7f7f7f", "#d62728"][: len(grouped)])
+    ax.set_title("Annualized Return by Regime")
+    ax.set_ylabel("Annualized Mean Return")
+    rr_path = out_dir / "regime_returns.png"
+    fig.savefig(rr_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    paths["regime_returns"] = rr_path
+
+    return paths

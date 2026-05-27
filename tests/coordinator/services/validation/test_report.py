@@ -53,3 +53,23 @@ def test_build_markdown_report_contains_required_sections(db_session, tmp_path):
     assert "## Regime-Conditional Metrics" in md
     assert "## Multi-Test-Corrected Significance" in md
     assert "## Deploy / Kill Decision" in md
+
+
+from coordinator.services.validation.report import render_charts
+
+
+def test_render_charts_writes_files(db_session, tmp_path):
+    idx = pd.date_range("2024-01-01", periods=300, freq="D")
+    rng = np.random.default_rng(7)
+    equity = pd.Series(1000.0 * np.cumprod(1.0 + rng.normal(0.0008, 0.015, 300)), index=idx)
+    regimes = pd.Series(["bull"] * 150 + ["chop"] * 150, index=idx)
+
+    paths = render_charts(
+        equity=equity,
+        regimes=regimes,
+        out_dir=tmp_path,
+    )
+    assert (tmp_path / "equity.png").exists()
+    assert (tmp_path / "drawdown.png").exists()
+    assert (tmp_path / "regime_returns.png").exists()
+    assert "equity" in paths and "drawdown" in paths and "regime_returns" in paths
