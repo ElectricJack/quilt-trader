@@ -15,22 +15,47 @@ logger = logging.getLogger(__name__)
 
 
 class DownloadManager:
+    # Per-provider concurrency. Polygon is rate-limited at ~13s/request so it
+    # must stay at 1. yfinance/alpaca/tradier have no aggressive rate limit and
+    # benefit from running alongside other providers. Unknown providers default
+    # to 1 (safe — sequential).
+    _DEFAULT_PROVIDER_CONCURRENCY: dict[str, int] = {
+        "polygon": 1,
+        "theta": 1,
+        "yfinance": 4,
+        "alpaca": 4,
+        "tradier": 4,
+        "coinbase": 4,
+    }
+
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         data_service: DataService,
         providers: dict[str, Any],
         on_download_complete: Callable[[str, list[str]], None] | None = None,
+        provider_concurrency: dict[str, int] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._data_service = data_service
         self._providers = providers
         self._on_download_complete = on_download_complete
         self._active_tasks: dict[str, asyncio.Task] = {}
-        # Serialize downloads: only one runs at a time so we don't fan out parallel
-        # API requests and trip provider rate limits. Queued downloads wait inside
-        # their own task on this semaphore and remain cancellable while waiting.
-        self._download_semaphore = asyncio.Semaphore(1)
+        # Per-provider semaphores so one slow provider (polygon) doesn't block
+        # fast providers (yfinance). Concurrency reflects each provider's
+        # tolerance: polygon = 1 (rate-limited), yfinance/alpaca/tradier = 4.
+        # Callers can override via provider_concurrency.
+        concurrency_overrides = provider_concurrency or {}
+        self._provider_semaphores: dict[str, asyncio.Semaphore] = {}
+        for provider_name in providers:
+            n = concurrency_overrides.get(
+                provider_name, self._DEFAULT_PROVIDER_CONCURRENCY.get(provider_name, 1)
+            )
+            self._provider_semaphores[provider_name] = asyncio.Semaphore(n)
+        self._fallback_semaphore = asyncio.Semaphore(1)
+
+    def _semaphore_for(self, provider: str) -> asyncio.Semaphore:
+        return self._provider_semaphores.get(provider, self._fallback_semaphore)
 
     async def create_download(
         self,
@@ -184,9 +209,18 @@ class DownloadManager:
             return False
 
     async def _run_download(self, download_id: str) -> None:
-        # Wait our turn — only one download fetches at a time. The row stays
-        # status="queued" while we wait; this task is still cancellable.
-        async with self._download_semaphore:
+        # Look up the row to discover which provider this download targets, then
+        # acquire that provider's semaphore. The row stays status="queued" while
+        # we wait; the task is still cancellable.
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MarketDataDownload.provider).where(MarketDataDownload.id == download_id)
+            )
+            provider_for_semaphore = result.scalar_one_or_none()
+        if provider_for_semaphore is None:
+            return  # row vanished — nothing to do
+        semaphore = self._semaphore_for(provider_for_semaphore)
+        async with semaphore:
             async with self._session_factory() as session:
                 result = await session.execute(
                     select(MarketDataDownload).where(MarketDataDownload.id == download_id)
