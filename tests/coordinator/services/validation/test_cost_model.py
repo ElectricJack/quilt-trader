@@ -60,3 +60,27 @@ fallback:
     bundle = profile.resolve(venue="alpaca", asset_type="equity", symbol="AAPL")
     assert bundle.fees[0].percent_fee == 0.0025
     assert bundle.slippage.market_bps == 15.0
+
+
+from coordinator.services.validation.cost_model import load_named_profile
+
+
+def test_load_named_profile_default():
+    profile = load_named_profile("default")
+    bundle_crypto = profile.resolve(venue="alpaca", asset_type="crypto", symbol="BTC/USD")
+    assert bundle_crypto.fees[0].percent_fee == 0.0025  # taker default
+    assert bundle_crypto.slippage.market_bps == 15.0
+
+    bundle_equity = profile.resolve(venue="alpaca", asset_type="equity", symbol="SPY")
+    assert bundle_equity.fees[0].flat_fee == 0.0
+    assert bundle_equity.fees[0].percent_fee == 0.0
+    assert bundle_equity.slippage.market_bps == 2.0
+
+    bundle_options = profile.resolve(venue="tradier", asset_type="options", symbol="SPY230101C00400000")
+    assert bundle_options.fees[0].flat_fee == 0.67  # 0.65 + 0.02 regulatory
+    assert bundle_options.slippage.market_bps == 50.0
+
+
+def test_load_named_profile_unknown_raises():
+    with pytest.raises(FileNotFoundError):
+        load_named_profile("does-not-exist")

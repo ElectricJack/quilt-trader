@@ -40,3 +40,13 @@ class CostModelProfile(BaseModel):
     def from_yaml(cls, path: str | Path) -> "CostModelProfile":
         data = yaml.safe_load(Path(path).read_text())
         return cls.model_validate(data)
+
+
+_PROFILES_DIR = Path(__file__).parent / "cost_profiles"
+
+
+def load_named_profile(name: str) -> CostModelProfile:
+    path = _PROFILES_DIR / f"{name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"Cost profile not found: {path}")
+    return CostModelProfile.from_yaml(path)
