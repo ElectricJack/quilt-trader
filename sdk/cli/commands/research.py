@@ -13,30 +13,21 @@ logger = logging.getLogger(__name__)
 
 
 def _make_cli_runner_factory():
-    """Construct a RunnerFactory for use in CLI sweep / walk-forward commands.
+    """Construct a real async runner_factory for the CLI.
 
-    LIMITATION: BacktestRunner requires an *async* session_factory
-    (async_sessionmaker[AsyncSession]), a DownloadManager wired with real
-    providers, and a DataService — all of which are only available from the
-    coordinator's startup context (coordinator/main.py).  The CLI's
-    get_session_factory() returns a *sync* sessionmaker, which is incompatible.
-
-    Until the CLI is given its own async-session bootstrap (or the coordinator
-    exposes a lightweight async-session helper), the runner_factory raises at
-    call time to surface the gap rather than silently skipping execution.
-
-    See backlog: "CLI runner_factory needs real async DI from coordinator startup."
+    Bootstraps the same service graph that coordinator/main.py wires at startup:
+    async session factory, DataService, DownloadManager, CoverageIndex, and
+    BacktestRunner. Providers are left empty (no auto-download); symbols must be
+    pre-downloaded via `quilt data fetch` before running a sweep or walk-forward.
     """
-    async def _runner_factory(run_id: int) -> None:
-        raise NotImplementedError(
-            f"CLI runner_factory cannot execute BacktestRun id={run_id}: "
-            "BacktestRunner requires an async session factory and a wired "
-            "DownloadManager/DataService that are not available in the CLI "
-            "context.  Start the coordinator API and trigger the run via the "
-            "HTTP endpoint, or wire the CLI with an async session bootstrap."
-        )
+    from coordinator.services.runner_bootstrap import bootstrap_runner_services
 
-    return _runner_factory
+    services = bootstrap_runner_services()
+
+    async def runner_factory(run_id: int) -> None:
+        await services.runner.run(run_id)
+
+    return runner_factory
 
 
 @click.group("research")

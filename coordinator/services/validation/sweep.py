@@ -137,8 +137,12 @@ async def _run_one_backtest(
     )
     db.add(run_row)
     db.flush()
+    db.commit()  # make row visible to async runner via its own separate connection
 
-    await runner_factory(run_row.id)
+    run_id = run_row.id
+    await runner_factory(run_id)
+
+    db.refresh(run_row)  # pull updated status/metrics written by the runner
 
     return {
         "run_id": run_row.id,
