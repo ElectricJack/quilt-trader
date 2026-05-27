@@ -222,29 +222,39 @@ class BacktestEngine:
                 # Resolve the fill bar: prefer the SYMBOL's own data over the
                 # clock bar. The clock may be a different symbol (multi-asset
                 # algo) or synthetic (scraper-only algo with no market deps).
+                # The bars cache is keyed by provider-specific symbol (e.g.
+                # "BTC-USD" for yfinance) while leg.symbol is the algorithm-
+                # canonical form (e.g. "BTC/USD"). Resolve through the asset
+                # registry to match.
                 fill_bar = bar
                 sym = po.leg.symbol
                 if sym != clock_symbol:
+                    svc_for_sym = self._asset_registry.get_service(sym)
                     for (src, s, tf), df in ctx._bars.items():
-                        if s == sym and not df.empty:
-                            import numpy as np
-                            cache_key = id(df)
-                            if cache_key not in self._ts_cache:
-                                ts_col = pd.to_datetime(df["timestamp"])
-                                if ts_col.dt.tz is not None:
-                                    ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                                ns = ts_col.values.view("int64")
-                                closes = df["close"].values.astype(float)
-                                self._ts_cache[cache_key] = (ns, closes)
-                            ns, _ = self._ts_cache[cache_key]
-                            cutoff = pd.Timestamp(sim_time)
-                            if cutoff.tz is not None:
-                                cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-                            cutoff_ns = np.datetime64(cutoff).view("int64")
-                            idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
-                            if idx >= 0:
-                                fill_bar = df.iloc[idx]
-                            break
+                        if df.empty:
+                            continue
+                        resolved = svc_for_sym.resolve_symbol(sym, src)
+                        if s != sym and s != resolved:
+                            continue
+                        import numpy as np
+                        cache_key = id(df)
+                        if cache_key not in self._ts_cache:
+                            ts_col = pd.to_datetime(df["timestamp"])
+                            if ts_col.dt.tz is not None:
+                                ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                            # pandas 3.0 datetime64[us] default — force ns
+                            ns = ts_col.values.astype("datetime64[ns]").view("int64")
+                            closes = df["close"].values.astype(float)
+                            self._ts_cache[cache_key] = (ns, closes)
+                        ns, _ = self._ts_cache[cache_key]
+                        cutoff = pd.Timestamp(sim_time)
+                        if cutoff.tz is not None:
+                            cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                        cutoff_ns = cutoff.value  # always ns
+                        idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
+                        if idx >= 0:
+                            fill_bar = df.iloc[idx]
+                        break
                 # Try to fill against THIS bar
                 po.fill_attempted = True
                 fill, advance_for_stop = self._try_fill(

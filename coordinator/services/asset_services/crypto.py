@@ -73,8 +73,11 @@ class CryptoAssetService:
     def get_price(self, symbol: str, sim_time: Any, ctx: Any) -> Optional[float]:
         if ctx is None or not hasattr(ctx, "_bars"):
             return None
-        for (_src, sym, _tf), df in ctx._bars.items():
-            if sym == symbol:
+        # Bars cache may be keyed by either the algorithm-canonical symbol
+        # ("BTC/USD") or the provider-specific form ("BTC-USD"). Try both so
+        # the symbol-normalization layer is honored on fill lookup too.
+        for (src, sym, _tf), df in ctx._bars.items():
+            if sym == symbol or sym == self.resolve_symbol(symbol, src):
                 return _bar_lookup(df, sim_time)
         return None
 
