@@ -182,6 +182,20 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+## Data acquisition
+
+### Multi-consumer `on_download_complete` listener registry
+- **Deferred from:** [2026-05-27-options-goal-incremental-download-design.md](specs/2026-05-27-options-goal-incremental-download-design.md)
+- **Why deferred:** `DownloadManager.on_download_complete` is currently a single `Callable`. The new options-goal design adds a second consumer (the goal processor) alongside the existing portfolio tracker. v1 wraps both in a fan-out function in `coordinator/main.py`; converting the slot to a proper `list[Callable]` with `add_listener` / `remove_listener` methods is a small structural cleanup that's only worth doing if a third consumer appears.
+- **What's needed:** change `DownloadManager.__init__` to accept `on_download_complete: list[Callable]` (or expose `add_completion_listener`); rewire `coordinator/main.py` to register each consumer separately instead of through a fan-out function.
+
+### Paid-tier polygon concurrency setting
+- **Surfaced by:** [2026-05-27-options-goal-incremental-download-design.md](specs/2026-05-27-options-goal-incremental-download-design.md)
+- **Why deferred:** the user is on polygon's free tier (1 concurrent / ~13s latency). A paid-tier upgrade will allow higher concurrency. The new download design uses `concurrency + 1` as the goal's in-flight cap, so raising the setting automatically scales the queue.
+- **What's needed:** a settings UI / env var that overrides `DownloadManager._DEFAULT_PROVIDER_CONCURRENCY["polygon"]`. Plumb through `coordinator/main.py` startup. No goal-side changes required.
+
+---
+
 ## How to use this file
 
 When **deferring work** in a new spec:
