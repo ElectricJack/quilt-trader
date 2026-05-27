@@ -4,7 +4,7 @@
 // Strikes/expiries are populated from the live chain (read-only). The
 // "Add leg" button promotes a default at-the-money call onto the table.
 
-import { X, Plus } from "lucide-react";
+import { X, Plus, Trash2 } from "lucide-react";
 import type { OptionLeg } from "../../lib/options";
 import type { OptionChainResponse } from "../../api/client";
 
@@ -109,14 +109,25 @@ export function LegsTable({ legs, onChange, chain, expiry, underlying }: LegsTab
     <div className="rounded-lg border border-gray-800 bg-gray-900">
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
         <h3 className="text-sm font-semibold text-gray-200">Legs</h3>
-        <button
-          onClick={addLeg}
-          disabled={!chain || !expiry}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white"
-          title={!chain ? "Select an expiry to load the chain first" : ""}
-        >
-          <Plus size={12} /> Add leg
-        </button>
+        <div className="flex items-center gap-2">
+          {legs.length > 0 && (
+            <button
+              onClick={() => onChange([])}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
+              title="Remove all legs"
+            >
+              <Trash2 size={12} /> Clear
+            </button>
+          )}
+          <button
+            onClick={addLeg}
+            disabled={!chain || !expiry}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+            title={!chain ? "Select an expiry to load the chain first" : ""}
+          >
+            <Plus size={12} /> Add leg
+          </button>
+        </div>
       </div>
       {legs.length === 0 ? (
         <div className="px-3 py-6 text-center text-sm text-gray-500">
