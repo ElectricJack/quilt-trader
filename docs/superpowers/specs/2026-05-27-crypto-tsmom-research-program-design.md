@@ -1,8 +1,9 @@
 # Crypto TSMOM Research Program — Strategy Validation Lab + First Strategy
 
 **Date:** 2026-05-27
-**Status:** Approved (pending user review of written spec)
+**Status:** Validation lab shipped 2026-05-27 (Deliverable 1, Phases 1-5). TSMOM strategy (Deliverable 2, Phases 6-7) plan pending.
 **Related research:** [2026-05-27-quant-edge-survey.md](../research/2026-05-27-quant-edge-survey.md)
+**Implementation plan:** [2026-05-27-validation-lab.md](../plans/2026-05-27-validation-lab.md) (Phases 1-5)
 
 ## Problem
 
@@ -369,15 +370,15 @@ Per the pre-registered hypothesis, the session permits one parameter sweep of up
 
 ## Phasing
 
-| Phase | What ships | Acceptance |
-|---|---|---|
-| Phase 1 — Cost model foundation | `cost_model.py` with YAML profiles + engine hook | Existing backtests run unchanged with `default` profile; new Alpaca-crypto profile measurably differs from old single-config |
-| Phase 2 — Optimization session + sweep | DB model, `sweep.py`, `optimization_session.py` + CLI integration | A 24-config grid sweep on a dummy strategy completes; all runs grouped under one session |
-| Phase 3 — Walk-forward orchestrator | `walk_forward.py` consuming sweep | A 13-fold walk-forward on the dummy strategy produces a concatenated OOS curve |
-| Phase 4 — Bootstrap + regime + multi-test | `bootstrap.py`, `regime.py`, `multi_test.py` | CI bounds appear on metrics; regime tags exist on OOS dates; corrected p-values computed |
-| Phase 5 — Reporter | `report.py` produces markdown + HTML | Reports render with all sections for the dummy session |
-| Phase 6 — TSMOM strategy + ingestion | `data/packages/crypto-tsmom/` + yfinance ingestion | Strategy loads, runs single backtest, passes unit tests |
-| Phase 7 — TSMOM full session | Run the pre-registered session | Report.md and report.html exist; deployment-or-kill decision recorded |
+| Phase | What ships | Acceptance | Status |
+|---|---|---|---|
+| Phase 1 — Cost model foundation | `cost_model.py` with YAML profiles + engine hook | Existing backtests run unchanged with `default` profile; new Alpaca-crypto profile measurably differs from old single-config | ✅ Shipped 2026-05-27 |
+| Phase 2 — Optimization session + sweep | DB model, `sweep.py`, `optimization_session.py` + CLI integration | A 24-config grid sweep on a dummy strategy completes; all runs grouped under one session | ✅ Shipped 2026-05-27 |
+| Phase 3 — Walk-forward orchestrator | `walk_forward.py` consuming sweep | A 13-fold walk-forward on the dummy strategy produces a concatenated OOS curve | ✅ Shipped 2026-05-27 |
+| Phase 4 — Bootstrap + regime + multi-test | `bootstrap.py`, `regime.py`, `multi_test.py` | CI bounds appear on metrics; regime tags exist on OOS dates; corrected p-values computed | ✅ Shipped 2026-05-27 |
+| Phase 5 — Reporter | `report.py` produces markdown + HTML | Reports render with all sections for the dummy session | ✅ Shipped 2026-05-27 |
+| Phase 6 — TSMOM strategy + ingestion | `data/packages/crypto-tsmom/` + yfinance ingestion | Strategy loads, runs single backtest, passes unit tests | ⏳ Pending (separate plan) |
+| Phase 7 — TSMOM full session | Run the pre-registered session | Report.md and report.html exist; deployment-or-kill decision recorded | ⏳ Pending |
 
 ## Deferred work
 
