@@ -20,6 +20,11 @@ _YFINANCE_MAP = {
 }
 
 
+def _to_canonical(symbol: str) -> str:
+    """Normalize 'BTC/USD', 'BTC-USD', 'BTCUSD' all → 'BTCUSD'."""
+    return symbol.replace("/", "").replace("-", "")
+
+
 def _to_slash(symbol: str) -> str:
     if "/" in symbol:
         return symbol
@@ -48,15 +53,16 @@ class CryptoAssetService:
         return normalized.endswith("USD") or normalized.endswith("USDT")
 
     def resolve_symbol(self, symbol: str, provider: str) -> str:
+        canon = _to_canonical(symbol)
         if provider == "yfinance":
-            return _YFINANCE_MAP.get(symbol, _to_dash(symbol))
+            return _YFINANCE_MAP.get(canon, _to_dash(canon))
         if provider == "alpaca_stream":
-            return _to_slash(symbol)
+            return _to_slash(canon)
         if provider == "alpaca":
-            return symbol
+            return _to_slash(canon)  # Alpaca spot crypto uses slash form
         if provider == "coinbase":
-            return _to_dash(symbol)
-        return symbol
+            return _to_dash(canon)
+        return symbol  # unknown provider — pass through
 
     def compose_order_symbol(self, leg: Any) -> str:
         return leg.symbol
