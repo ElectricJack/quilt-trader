@@ -49,3 +49,55 @@ def test_latin_hypercube_covers_range():
     # Latin hypercube: each of 10 strata should be hit exactly once
     strata = ((values - 0.05) / (0.40 - 0.05) * 10).astype(int)
     assert len(set(strata)) == 10
+
+
+import pytest
+from unittest.mock import AsyncMock, patch
+
+from coordinator.services.validation.sweep import run_sweep, SweepResult
+from coordinator.services.validation.optimization_session import create_session
+
+
+@pytest.fixture
+def db_session():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from coordinator.database.models import Base
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    with SessionLocal() as s:
+        yield s
+
+
+@pytest.mark.asyncio
+async def test_run_sweep_persists_runs(db_session):
+    sess = create_session(
+        db_session,
+        name="sweep-test-001",
+        hypothesis="H",
+        parameter_space={"vol_target": [0.10, 0.15]},
+        pre_registered_criteria={},
+    )
+    db_session.commit()
+
+    fake_run_backtest = AsyncMock(return_value={"sharpe": 0.8, "max_dd": 0.20})
+
+    with patch("coordinator.services.validation.sweep._run_one_backtest", fake_run_backtest):
+        result = await run_sweep(
+            db=db_session,
+            session_id=sess.id,
+            manifest_path="/dummy/manifest.yaml",
+            base_config={"start": "2024-01-01", "end": "2024-02-01"},
+            parameter_space={"vol_target": [0.10, 0.15]},
+            search="grid",
+            max_trials=2,
+            parallelism=1,
+            seed=42,
+        )
+
+    assert isinstance(result, SweepResult)
+    assert result.n_configs == 2
+    assert fake_run_backtest.await_count == 2

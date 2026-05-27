@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import itertools
 import json
-from typing import Any
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal, Optional
 
 import numpy as np
 
@@ -88,3 +91,124 @@ def sample_latin_hypercube(
         else:
             raise ValueError(f"Unknown distribution: {dist}")
     return [dict(zip(keys, row)) for row in zip(*[columns[k] for k in keys])]
+
+
+@dataclass
+class SweepResult:
+    session_id: int
+    n_configs: int
+    run_ids: list[str] = field(default_factory=list)
+
+
+async def _run_one_backtest(
+    db: Any,
+    session_id: int,
+    manifest_path: str,
+    base_config: dict[str, Any],
+    config: dict[str, Any],
+    config_hash_str: str,
+) -> dict[str, Any]:
+    """Spawn a single backtest with the given config.
+
+    Returns a dict with at least ``run_id``, ``config_hash``, and ``config``.
+    This is the seam mocked in tests. The real implementation creates a
+    BacktestRun row and dispatches BacktestRunner.
+
+    Note: BacktestRunner requires session_factory, download_manager, and
+    data_service — infrastructure that must be supplied via base_config keys
+    ``_session_factory``, ``_download_manager``, and ``_data_service`` when
+    invoking outside of tests.
+    """
+    from coordinator.database.models import BacktestRun
+
+    merged = {**base_config, **config}
+
+    # Extract runner infrastructure from base_config (stripped from DB row).
+    session_factory = merged.pop("_session_factory", None)
+    download_manager = merged.pop("_download_manager", None)
+    data_service = merged.pop("_data_service", None)
+
+    run_row = BacktestRun(
+        algorithm_id=merged.get("algorithm_id", ""),
+        date_range_start=merged.get("start"),
+        date_range_end=merged.get("end"),
+        config_overrides=merged,
+        config_hash=config_hash_str,
+        optimization_session_id=session_id,
+        status="pending",
+    )
+    db.add(run_row)
+    db.flush()
+
+    if session_factory is not None and download_manager is not None and data_service is not None:
+        from coordinator.services.backtest_runner import BacktestRunner
+
+        runner = BacktestRunner(
+            session_factory=session_factory,
+            download_manager=download_manager,
+            data_service=data_service,
+        )
+        await runner.run(run_row.id)
+        db.refresh(run_row)
+
+    return {
+        "run_id": run_row.id,
+        "config_hash": config_hash_str,
+        "config": config,
+    }
+
+
+async def run_sweep(
+    db: Any,
+    session_id: int,
+    manifest_path: str | Path,
+    base_config: dict[str, Any],
+    parameter_space: dict[str, Any],
+    search: Literal["grid", "random", "latin"] = "grid",
+    max_trials: int = 50,
+    parallelism: int = 1,
+    seed: int = 0,
+    distributions: Optional[dict[str, str]] = None,
+) -> SweepResult:
+    """Run a parameter sweep under an existing OptimizationSession.
+
+    Expands or samples ``parameter_space`` according to ``search``, then
+    dispatches up to ``parallelism`` concurrent backtests via
+    ``_run_one_backtest``.  Returns a :class:`SweepResult` summarising
+    the session once all trials have completed.
+    """
+    if search == "grid":
+        configs = expand_grid(parameter_space)[:max_trials]
+    elif search == "random":
+        configs = sample_random(
+            parameter_space, n=max_trials, seed=seed,
+            distributions=distributions or {},
+        )
+    elif search == "latin":
+        configs = sample_latin_hypercube(
+            parameter_space, n=max_trials, seed=seed,
+            distributions=distributions or {},
+        )
+    else:
+        raise ValueError(f"Unknown search strategy: {search!r}")
+
+    semaphore = asyncio.Semaphore(parallelism)
+
+    async def _bounded(cfg: dict[str, Any]) -> dict[str, Any]:
+        async with semaphore:
+            return await _run_one_backtest(
+                db=db,
+                session_id=session_id,
+                manifest_path=str(manifest_path),
+                base_config=base_config,
+                config=cfg,
+                config_hash_str=config_hash(cfg),
+            )
+
+    results = await asyncio.gather(*[_bounded(c) for c in configs])
+
+    return SweepResult(
+        session_id=session_id,
+        n_configs=len(configs),
+        run_ids=[r["run_id"] for r in results if "run_id" in r],
+    )
