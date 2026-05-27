@@ -9,9 +9,23 @@ import yaml
 
 TRIGGER_REGEX = re.compile(r"^(bar:[a-z0-9]+|event|interval:\d+[smh])$")
 
+# Canonical asset_type values. Mirrors coordinator AssetType enum — kept
+# inline since the SDK can't import the coordinator.
+_VALID_ASSET_TYPES = frozenset({"equities", "options", "crypto", "index"})
+
 
 class ManifestError(Exception):
     pass
+
+
+def _validate_asset_type_list(values: list[str], field_name: str) -> list[str]:
+    bad = [v for v in values if v not in _VALID_ASSET_TYPES]
+    if bad:
+        raise ManifestError(
+            f"invalid asset_type values in {field_name}: {bad}; "
+            f"must be one of {sorted(_VALID_ASSET_TYPES)}"
+        )
+    return values
 
 
 @dataclass
@@ -79,8 +93,11 @@ class QuiltManifest:
                 raise ManifestError("Scraper manifest must have a 'schedule' field")
 
         reqs_data = data.get("requirements", {})
+        asset_types = _validate_asset_type_list(
+            reqs_data.get("asset_types", []), "requirements.asset_types",
+        )
         requirements = ManifestRequirements(
-            asset_types=reqs_data.get("asset_types", []),
+            asset_types=asset_types,
             options_level=reqs_data.get("options_level"),
             account_features=reqs_data.get("account_features", []),
             brokers=reqs_data.get("brokers"),
@@ -137,9 +154,15 @@ class QuiltManifest:
                 symbol = a.get("symbol")
                 if not symbol:
                     continue
+                asset_class = a.get("asset_class", "equities")
+                if asset_class not in _VALID_ASSET_TYPES:
+                    raise ManifestError(
+                        f"invalid asset_class {asset_class!r} for symbol {symbol!r}; "
+                        f"must be one of {sorted(_VALID_ASSET_TYPES)}"
+                    )
                 entry = {
                     "symbol": symbol,
-                    "asset_class": a.get("asset_class", "equities"),
+                    "asset_class": asset_class,
                 }
                 if a.get("timeframe"):
                     entry["timeframe"] = a["timeframe"]

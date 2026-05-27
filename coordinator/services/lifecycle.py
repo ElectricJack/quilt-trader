@@ -55,7 +55,13 @@ def _check_compatibility(account: dict, algorithm: dict) -> CompatibilityResult:
 
 
 def _parse_assets(assets: Any) -> list[dict]:
-    """Return list of {symbol, asset_class} dicts."""
+    """Return list of {symbol, asset_class} dicts.
+
+    Asset class is determined by the registry from the symbol — any
+    incoming asset_class field is ignored (registry is authoritative).
+    """
+    from coordinator.services.asset_services import get_default_registry
+    registry = get_default_registry()
     out: list[dict] = []
     if not assets:
         return out
@@ -63,9 +69,11 @@ def _parse_assets(assets: Any) -> list[dict]:
         if not isinstance(a, dict):
             continue
         symbol = a.get("symbol")
-        asset_class = a.get("asset_class", "equities")
         if symbol:
-            out.append({"symbol": symbol, "asset_class": asset_class})
+            out.append({
+                "symbol": symbol,
+                "asset_class": registry.classify(symbol).value,
+            })
     return out
 
 

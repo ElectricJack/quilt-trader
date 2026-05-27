@@ -197,19 +197,15 @@ class TradierAdapter(BrokerAdapter):
     def supports_multileg_orders(self, legs):
         if len(legs) < 2:
             return False
-        if not all(l.asset_type == "options" for l in legs):
+        from coordinator.services.asset_services import get_default_registry
+        registry = get_default_registry()
+        if not all(registry.get_service_by_type(l.asset_type).supports_multileg() for l in legs):
             return False
         return len({l.symbol for l in legs}) == 1
 
     def compose_symbol(self, leg):
-        if leg.asset_type != "options":
-            return leg.symbol
-        if not (leg.expiry and leg.strike is not None and leg.right):
-            raise ValueError(f"Options leg missing expiry/strike/right: {leg}")
-        y, m, d = leg.expiry.split("-")
-        right_ch = "C" if leg.right == "call" else "P"
-        strike_int = round(leg.strike * 1000)
-        return f"{leg.symbol}{y[2:]}{m}{d}{right_ch}{strike_int:08d}"
+        from coordinator.services.asset_services import get_default_registry
+        return get_default_registry().compose_order_symbol(leg)
 
     def submit_multileg_order(self, legs, order_type, limit_price):
         import requests
@@ -383,8 +379,14 @@ class TradierAdapter(BrokerAdapter):
         on_quote,
         asset_class: str = "equities",
     ) -> "MarketDataStreamHandle":
-        if asset_class == "crypto":
-            raise ValueError("Tradier does not support crypto streaming")
+        from coordinator.services.asset_services import get_default_registry
+        if symbols:
+            cfg = get_default_registry().stream_config(symbols[0], "tradier")
+            if not cfg.supported:
+                raise ValueError(
+                    f"Tradier does not support streaming for {symbols[0]} "
+                    f"(asset_class={asset_class})"
+                )
         # Note: streaming uses the production base URL even from sandbox keys.
         stream_base = _LIVE_BASE
         return _TradierStreamHandle(

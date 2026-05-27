@@ -4,7 +4,7 @@
 // Strikes/expiries are populated from the live chain (read-only). The
 // "Add leg" button promotes a default at-the-money call onto the table.
 
-import { X, Plus } from "lucide-react";
+import { X, Plus, Trash2 } from "lucide-react";
 import type { OptionLeg } from "../../lib/options";
 import type { OptionChainResponse } from "../../api/client";
 
@@ -13,6 +13,15 @@ interface LegsTableProps {
   onChange: (legs: OptionLeg[]) => void;
   chain: OptionChainResponse | undefined;
   expiry: string | null;
+  underlying?: string;
+}
+
+// Human-readable contract identifier — matches the OCC layout users see
+// elsewhere. e.g. SPY 2026-06-20 750C
+function contractLabel(underlying: string | undefined, l: OptionLeg): string {
+  const sym = underlying?.toUpperCase() || "—";
+  const right = l.right === "call" ? "C" : "P";
+  return `${sym} ${l.expiry} ${l.strike}${right}`;
 }
 
 function midPrice(l: OptionLeg): number | null {
@@ -22,7 +31,7 @@ function midPrice(l: OptionLeg): number | null {
   return null;
 }
 
-export function LegsTable({ legs, onChange, chain, expiry }: LegsTableProps) {
+export function LegsTable({ legs, onChange, chain, expiry, underlying }: LegsTableProps) {
   function updateLeg(idx: number, patch: Partial<OptionLeg>) {
     const next = legs.map((l, i) => (i === idx ? { ...l, ...patch } : l));
     onChange(next);
@@ -100,14 +109,25 @@ export function LegsTable({ legs, onChange, chain, expiry }: LegsTableProps) {
     <div className="rounded-lg border border-gray-800 bg-gray-900">
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
         <h3 className="text-sm font-semibold text-gray-200">Legs</h3>
-        <button
-          onClick={addLeg}
-          disabled={!chain || !expiry}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white"
-          title={!chain ? "Select an expiry to load the chain first" : ""}
-        >
-          <Plus size={12} /> Add leg
-        </button>
+        <div className="flex items-center gap-2">
+          {legs.length > 0 && (
+            <button
+              onClick={() => onChange([])}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
+              title="Remove all legs"
+            >
+              <Trash2 size={12} /> Clear
+            </button>
+          )}
+          <button
+            onClick={addLeg}
+            disabled={!chain || !expiry}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+            title={!chain ? "Select an expiry to load the chain first" : ""}
+          >
+            <Plus size={12} /> Add leg
+          </button>
+        </div>
       </div>
       {legs.length === 0 ? (
         <div className="px-3 py-6 text-center text-sm text-gray-500">
@@ -117,6 +137,8 @@ export function LegsTable({ legs, onChange, chain, expiry }: LegsTableProps) {
         <table className="w-full text-sm">
           <thead className="text-xs text-gray-500 uppercase tracking-wide">
             <tr>
+              <th className="text-left px-2 py-2 font-medium">#</th>
+              <th className="text-left px-3 py-2 font-medium">Contract</th>
               <th className="text-left px-3 py-2 font-medium">Side</th>
               <th className="text-left px-3 py-2 font-medium">Type</th>
               <th className="text-left px-3 py-2 font-medium">Strike</th>
@@ -133,6 +155,20 @@ export function LegsTable({ legs, onChange, chain, expiry }: LegsTableProps) {
               const hasOwnStrike = strikes.includes(leg.strike);
               return (
                 <tr key={idx} className="border-t border-gray-800">
+                  <td className="px-2 py-1.5">
+                    <span
+                      className={`inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold ${
+                        leg.side === "buy"
+                          ? "bg-emerald-900/80 text-emerald-200 ring-1 ring-emerald-400"
+                          : "bg-amber-900/80 text-amber-200 ring-1 ring-amber-400"
+                      }`}
+                    >
+                      {idx + 1}
+                    </span>
+                  </td>
+                  <td className="px-3 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
+                    {contractLabel(underlying, leg)}
+                  </td>
                   <td className="px-3 py-1.5">
                     <select
                       value={leg.side}

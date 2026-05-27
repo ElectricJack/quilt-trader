@@ -57,6 +57,8 @@ async def _fetch_broker_positions(db: AsyncSession) -> list[dict]:
             adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
             positions = await asyncio.to_thread(adapter.get_positions)
             for sym, pos in positions.items():
+                from coordinator.services.asset_services import get_default_registry
+                registry = get_default_registry()
                 items.append({
                     "id": f"{acct.id}:{sym}",
                     "instance_id": None,
@@ -68,7 +70,7 @@ async def _fetch_broker_positions(db: AsyncSession) -> list[dict]:
                     "quantity": float(pos.get("quantity", 0)),
                     "avg_price": float(pos.get("avg_price", 0)),
                     "current_price": float(pos.get("current_price", 0)),
-                    "asset_type": pos.get("asset_class", "equities"),
+                    "asset_type": registry.classify(sym).value,
                     "unrealized_pnl": float(pos.get("unrealized_pnl", 0)),
                     "net_pnl": None,
                     "net_cost": float(pos.get("avg_price", 0)) * float(pos.get("quantity", 0)),
@@ -90,15 +92,10 @@ async def list_positions(
     if status:
         query = query.where(Position.status == status)
     query = query.order_by(Position.opened_at.desc()).limit(limit)
-    positions = (await db.execute(query)).scalars().all()
+    db_positions = (await db.execute(query)).scalars().all()
 
-    # If no positions in DB, fetch live from brokers
-    if not positions and (status is None or status == "open"):
-        broker_positions = await _fetch_broker_positions(db)
-        return {"items": broker_positions[:limit]}
-
-    # Resolve algorithm names via instance_id
-    instance_ids = {p.instance_id for p in positions if p.instance_id}
+    # Resolve algorithm names via instance_id for DB-tracked positions.
+    instance_ids = {p.instance_id for p in db_positions if p.instance_id}
     algo_names: dict[str, str] = {}
     if instance_ids:
         joined = await db.execute(
@@ -108,6 +105,23 @@ async def list_positions(
         )
         algo_names = {row[0]: row[1] for row in joined.all()}
 
-    return {
-        "items": [_expand(p, algo_names.get(p.instance_id) if p.instance_id else None) for p in positions]
-    }
+    db_items = [
+        _expand(p, algo_names.get(p.instance_id) if p.instance_id else None)
+        for p in db_positions
+    ]
+
+    # For open-position views, always merge in live broker positions so
+    # things the user holds at the broker (but isn't tracked by an
+    # algorithm) still surface. DB rows win on (account_id, symbol)
+    # because they carry algorithm metadata.
+    if status is None or status == "open":
+        broker_items = await _fetch_broker_positions(db)
+        seen_keys = {(it["account_id"], it["symbol"]) for it in db_items}
+        merged = list(db_items)
+        for bi in broker_items:
+            if (bi["account_id"], bi["symbol"]) in seen_keys:
+                continue
+            merged.append(bi)
+        return {"items": merged[:limit]}
+
+    return {"items": db_items}

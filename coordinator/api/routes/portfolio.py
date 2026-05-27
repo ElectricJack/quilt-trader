@@ -218,82 +218,31 @@ async def _compute_portfolio_var(
     confidence: float = 0.95,
     lookback_days: int = 60,
 ) -> float:
-    """Compute daily Value at Risk for the portfolio.
+    """Portfolio VaR via per-symbol risk contribution from the asset service layer.
 
-    Uses historical simulation: get daily returns for each held symbol,
-    compute portfolio daily returns weighted by position size, take the
-    percentile loss.
+    Each position's service computes its own risk:
+    - Equities/indexes: historical 5th-percentile loss × market_value
+    - Crypto: same model with broader fallback
+    - Options: delta-adjusted underlying VaR
 
     Returns dollar VaR (positive number = potential loss).
     """
-    import numpy as np
-    from coordinator.services.data_service import DataService
-
     if not positions:
         return 0.0
-
+    from coordinator.services.asset_services import get_default_registry
+    from coordinator.services.data_service import DataService
+    registry = get_default_registry()
     ds = DataService(market_data_dir="data/market", custom_data_dir="data/custom")
-
-    symbols = []
-    weights = []
-    total_value = sum(p.get("market_value", 0) for p in positions)
-    if total_value <= 0:
-        return 0.0
-
-    # Group positions by symbol (aggregate across accounts)
-    sym_values: dict[str, float] = {}
+    total_risk = 0.0
     for p in positions:
-        sym = p["symbol"]
-        sym_values[sym] = sym_values.get(sym, 0) + p.get("market_value", 0)
-
-    # Load daily returns for each symbol
-    returns_matrix = []
-    valid_symbols = []
-    for sym, value in sym_values.items():
-        if value <= 0:
+        mv = float(p.get("market_value", 0))
+        if mv <= 0:
             continue
-        # Try multiple providers
-        df = None
-        for provider in ("polygon", "tradier", "yfinance", "alpaca_live", "tradier_live"):
-            df = ds.load_market_data(provider, sym, "1day")
-            if df is not None and len(df) >= 10:
-                break
-        if df is None or len(df) < 10:
-            continue
-
-        import pandas as pd
-        closes = pd.to_datetime(df["timestamp"])
-        close_prices = df["close"].astype(float).values
-        if len(close_prices) < 10:
-            continue
-
-        # Daily log returns, last N days
-        tail = close_prices[-lookback_days:]
-        if len(tail) < 10:
-            continue
-        daily_returns = np.diff(np.log(tail))
-        returns_matrix.append(daily_returns)
-        valid_symbols.append(sym)
-        weights.append(value / total_value)
-
-    if not returns_matrix:
-        return 0.0
-
-    # Align lengths (some may differ by a day)
-    min_len = min(len(r) for r in returns_matrix)
-    returns_matrix = [r[-min_len:] for r in returns_matrix]
-    weights = np.array(weights[:len(returns_matrix)])
-    weights = weights / weights.sum()
-
-    # Portfolio daily returns = weighted sum
-    returns_arr = np.array(returns_matrix)
-    portfolio_returns = returns_arr.T @ weights
-
-    # VaR = percentile loss × total portfolio value
-    var_pct = np.percentile(portfolio_returns, (1 - confidence) * 100)
-    var_dollars = abs(var_pct) * total_value
-
-    return round(var_dollars, 2)
+        svc = registry.get_service(p["symbol"])
+        total_risk += svc.risk_contribution(
+            p["symbol"], mv, data_service=ds, lookback_days=lookback_days,
+        )
+    return round(total_risk, 2)
 
 
 async def _fetch_live_positions(accts) -> tuple[list[dict], float, float]:

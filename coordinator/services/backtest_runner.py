@@ -167,6 +167,7 @@ class BacktestRunner:
             buy_fees_cfg = run.buy_trading_fees
             sell_fees_cfg = run.sell_trading_fees
             config_overrides = run.config_overrides or {}
+            cost_profile = run.cost_profile
             await session.commit()
 
         try:
@@ -391,11 +392,20 @@ class BacktestRunner:
             cancel = CancelToken()
             loop = asyncio.get_running_loop()
             pump = asyncio.create_task(self._progress_pump(run_id, observer))
+
+            from coordinator.services.backtest_config import BacktestConfig as _BacktestConfig
+            engine_config = _BacktestConfig(
+                start=str(date_range_start.date()),
+                end=str(date_range_end.date()),
+                initial_cash=float(initial_cash),
+                cost_profile=cost_profile,
+            )
+
             try:
                 await loop.run_in_executor(
                     None,
                     functools.partial(
-                        BacktestEngine().run,
+                        BacktestEngine(config=engine_config).run,
                         algorithm=algorithm, ctx=ctx, clock_series=clock_series,
                         clock_timeframe=clock_tf, clock_source=clock_source,
                         clock_symbol=clock_symbol,

@@ -25,6 +25,20 @@ class TimeInForce(Enum):
     IOC = "IOC"
 
 
+# Canonical asset_type values. Mirrors coordinator AssetType enum — kept
+# inline since the SDK can't import the coordinator. Contract test in
+# tests/sdk/test_asset_type_contract.py asserts these stay in sync.
+_VALID_ASSET_TYPES = frozenset({"equities", "options", "crypto", "index"})
+
+
+def _validate_asset_type(value: str) -> str:
+    if value not in _VALID_ASSET_TYPES:
+        raise ValueError(
+            f"asset_type must be one of {sorted(_VALID_ASSET_TYPES)}, got {value!r}"
+        )
+    return value
+
+
 @dataclass
 class SignalLeg:
     symbol: str
@@ -35,6 +49,9 @@ class SignalLeg:
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None
     time_in_force: TimeInForce = TimeInForce.DAY
+
+    def __post_init__(self) -> None:
+        _validate_asset_type(self.asset_type)
 
     def to_dict(self) -> dict:
         return {

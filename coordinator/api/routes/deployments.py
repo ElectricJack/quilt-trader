@@ -120,14 +120,16 @@ async def list_deployments(
                     adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
                     positions = await asyncio.to_thread(adapter.get_positions)
                     pos_list = []
+                    from coordinator.services.asset_services import get_default_registry
+                    registry = get_default_registry()
                     for sym, p in positions.items():
                         mv = float(p.get("market_value", 0))
                         qty = float(p.get("quantity", 0))
                         avg = float(p.get("avg_price", 0))
                         upnl = float(p.get("unrealized_pnl", 0))
-                        # Compute unrealized P&L if broker didn't provide it
                         if upnl == 0 and mv > 0 and avg > 0 and qty > 0:
-                            upnl = mv - (avg * qty)
+                            svc = registry.get_service(sym)
+                            upnl = svc.compute_unrealized_pnl(sym, qty, avg, mv)
                         pos_list.append({"symbol": sym, "unrealized_pnl": upnl, "market_value": mv, "quantity": qty})
                     live_positions_by_account[acct_id] = pos_list
             except Exception:

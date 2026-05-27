@@ -1,20 +1,27 @@
-// dashboard/src/pages/Strategies.tsx
-// Options strategy builder. Account-bound at /accounts/:id/strategies.
-// Pulls option expiries/chain from the broker, builds + edits leg lists
-// (templates + manual), shows client-side Black-Scholes P&L + Greeks, and
-// submits the constructed spread via Spec A's positions/open endpoint.
+// dashboard/src/pages/Strategies.tsx (page title: "Open Position")
+// Unified order-placement page. Routed at /accounts/:id/open-position
+// (and /accounts/:id/strategies for back-compat).
+//
+// Asset-class tabs at the top adapt the body:
+//   - Equities / Crypto → SimpleOrderForm (single-leg, single broker ticket)
+//   - Options           → full chain matrix + templates + multi-leg builder
+//                         (broker-atomic multi-leg via submit_multileg_order)
+//
+// Equities/crypto are restricted to a single leg deliberately: the
+// broker layer doesn't support atomic multi-leg execution for them,
+// so multi-leg would risk partial fills with no automatic rollback.
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { ChevronLeft, RotateCcw } from "lucide-react";
 import {
   useAccount,
-  useOptionExpiries,
-  useOptionChain,
+  useOptionChainMatrix,
   useOpenPosition,
 } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
 import type { OptionLeg } from "../lib/options";
+import type { OptionChainResponse } from "../api/client";
 import {
   buildTemplate,
   TEMPLATE_LABELS,
@@ -22,10 +29,19 @@ import {
 } from "../components/strategy/templates";
 import { usePersistedBuilderState } from "../components/strategy/usePersistedBuilderState";
 import { LegsTable } from "../components/strategy/LegsTable";
-import { ChainBrowser } from "../components/strategy/ChainBrowser";
+import { StrategyChainMatrix } from "../components/strategy/StrategyChainMatrix";
 import { PnlChart } from "../components/strategy/PnlChart";
 import { DateSlider } from "../components/strategy/DateSlider";
 import { GreeksPanel } from "../components/strategy/GreeksPanel";
+import { SimpleOrderForm } from "../components/strategy/SimpleOrderForm";
+
+type AssetClass = "equities" | "crypto" | "options";
+
+const ASSET_CLASS_LABELS: Record<AssetClass, string> = {
+  equities: "Equities",
+  crypto: "Crypto",
+  options: "Options",
+};
 
 function legMidPrice(l: OptionLeg): number {
   if (l.bid != null && l.ask != null) return (l.bid + l.ask) / 2;
@@ -41,6 +57,22 @@ export function Strategies() {
   const addAlert = useUIStore((s) => s.addAlert);
 
   const { data: account } = useAccount(accountId);
+
+  // Account-derived list of asset classes the user can pick.
+  const supportedAssetClasses = useMemo<AssetClass[]>(() => {
+    const allowed = new Set(account?.supported_asset_types ?? []);
+    return (["equities", "crypto", "options"] as AssetClass[])
+      .filter((c) => allowed.has(c));
+  }, [account]);
+
+  const [assetClass, setAssetClass] = useState<AssetClass>("equities");
+  // Re-anchor the active tab to one the account actually supports.
+  useEffect(() => {
+    if (supportedAssetClasses.length === 0) return;
+    if (!supportedAssetClasses.includes(assetClass)) {
+      setAssetClass(supportedAssetClasses[0]);
+    }
+  }, [supportedAssetClasses, assetClass]);
 
   const [underlying, setUnderlying] = useState<string>("");
   const [expiry, setExpiry] = useState<string | null>(null);
@@ -72,37 +104,54 @@ export function Strategies() {
     if (needsToastMsg) addAlert({ message: needsToastMsg, severity: "warning" });
   }, [needsToastMsg, addAlert]);
 
-  const { data: expData } = useOptionExpiries(
+  const { data: matrix, isLoading: matrixLoading } = useOptionChainMatrix(
     accountId,
     underlying.trim() ? underlying.trim() : null
   );
-  const { data: chain, isLoading: chainLoading } = useOptionChain(
-    accountId,
-    underlying.trim() ? underlying.trim() : null,
-    expiry
-  );
 
-  // When the chain loads, refresh bid/ask/iv on any leg that matches a
-  // contract in the new chain. Structural fields (side/right/strike/expiry)
-  // are left alone — those came from the persisted state.
+  // Build a synthetic single-expiry chain for the template builder + greeks.
+  // Picks the active expiry (or falls back to the nearest available).
+  const chain: OptionChainResponse | undefined = useMemo(() => {
+    if (!matrix || matrix.expiries.length === 0) return undefined;
+    const targetExp = expiry && matrix.expiries.find((e) => e.expiry === expiry)
+      ? expiry
+      : matrix.expiries[0].expiry;
+    const slice = matrix.expiries.find((e) => e.expiry === targetExp)!;
+    return {
+      underlying: matrix.underlying,
+      spot: matrix.spot ?? 0,
+      expiry: slice.expiry,
+      as_of: null,
+      contracts: slice.contracts,
+    };
+  }, [matrix, expiry]);
+
+  // Refresh bid/ask/iv on any leg whose (expiry, right, strike) appears in
+  // the matrix. Structural fields are left alone — they came from
+  // persisted state or template builder.
   useEffect(() => {
-    if (!chain) return;
+    if (!matrix) return;
+    const byKey = new Map<string, { bid: number | null; ask: number | null; iv: number | null }>();
+    for (const e of matrix.expiries) {
+      for (const c of e.contracts) {
+        byKey.set(`${e.expiry}|${c.right}|${c.strike}`, {
+          bid: c.bid, ask: c.ask, iv: c.iv,
+        });
+      }
+    }
     setLegs((prev) =>
       prev.map((l) => {
-        if (l.expiry !== chain.expiry) return l;
-        const match = chain.contracts.find(
-          (c) => c.right === l.right && c.strike === l.strike
-        );
-        if (!match) return l;
+        const m = byKey.get(`${l.expiry}|${l.right}|${l.strike}`);
+        if (!m) return l;
         return {
           ...l,
-          bid: match.bid ?? undefined,
-          ask: match.ask ?? undefined,
-          iv: match.iv ?? l.iv,
+          bid: m.bid ?? undefined,
+          ask: m.ask ?? undefined,
+          iv: m.iv ?? l.iv,
         };
       })
     );
-  }, [chain]);
+  }, [matrix]);
 
   // Persist the full builder state on every change (debounced inside the hook).
   useEffect(() => {
@@ -153,6 +202,34 @@ export function Strategies() {
   function handlePickFromChain(leg: OptionLeg) {
     setLegs((prev) => [...prev, leg]);
     setTemplate("custom");
+    // Remember which expiry the user is exploring — used as the
+    // template-builder target if they apply a template afterwards.
+    setExpiry(leg.expiry);
+  }
+
+  // Re-anchor the current template at a clicked strike + expiry.
+  function handleAnchor(strike: number, exp: string, _right: "call" | "put") {
+    if (template === "custom") return;
+    setExpiry(exp);
+    if (!matrix) return;
+    const slice = matrix.expiries.find((e) => e.expiry === exp);
+    if (!slice) return;
+    const syntheticChain: OptionChainResponse = {
+      underlying: matrix.underlying,
+      spot: matrix.spot ?? strike,
+      expiry: exp,
+      as_of: null,
+      contracts: slice.contracts,
+    };
+    const built = buildTemplate(template, syntheticChain, exp, strike);
+    if (built.length === 0) {
+      addAlert({
+        message: `Template "${template}" couldn't be built at ${strike} / ${exp}`,
+        severity: "warning",
+      });
+      return;
+    }
+    setLegs(built);
   }
 
   const submitMut = useOpenPosition(accountId);
@@ -203,6 +280,23 @@ export function Strategies() {
     return <p className="text-gray-400">Loading…</p>;
   }
 
+  function handleAfterSimpleSubmit() {
+    addAlert({ message: "Order submitted", severity: "success" });
+    // Don't navigate away — let the user place another quickly.
+  }
+
+  // Wire mutation error toasts for the simple form (options path
+  // surfaces its own via handleSubmit).
+  useEffect(() => {
+    if (submitMut.isError && submitMut.error) {
+      addAlert({
+        message: `Order failed: ${submitMut.error.message}`,
+        severity: "error",
+      });
+      submitMut.reset();
+    }
+  }, [submitMut.isError, submitMut.error, submitMut, addAlert]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -214,25 +308,54 @@ export function Strategies() {
           >
             <ChevronLeft size={20} />
           </Link>
-          <h1 className="text-xl font-bold">Strategies — {account.name}</h1>
+          <h1 className="text-xl font-bold">Open Position — {account.name}</h1>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handleReset}
-            className="flex items-center gap-1 px-3 py-1.5 rounded text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
-          >
-            <RotateCcw size={14} /> Reset
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={legs.length === 0 || submitMut.isPending || !underlying.trim()}
-            className="px-3 py-1.5 rounded text-sm text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitMut.isPending ? "Submitting…" : "Submit Order"}
-          </button>
-        </div>
+        {assetClass === "options" && (
+          <div className="flex gap-2">
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-1 px-3 py-1.5 rounded text-sm text-gray-300 bg-gray-700 hover:bg-gray-600"
+            >
+              <RotateCcw size={14} /> Reset
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={legs.length === 0 || submitMut.isPending || !underlying.trim()}
+              className="px-3 py-1.5 rounded text-sm text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submitMut.isPending ? "Submitting…" : "Submit Order"}
+            </button>
+          </div>
+        )}
       </div>
 
+      {/* Asset-class segmented control */}
+      {supportedAssetClasses.length > 0 && (
+        <div className="inline-flex rounded-lg border border-gray-700 bg-gray-900 p-0.5">
+          {supportedAssetClasses.map((c) => (
+            <button
+              key={c}
+              onClick={() => setAssetClass(c)}
+              className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                assetClass === c
+                  ? "bg-indigo-600 text-white"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              {ASSET_CLASS_LABELS[c]}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {assetClass !== "options" ? (
+        <SimpleOrderForm
+          assetType={assetClass}
+          submitMut={submitMut}
+          onAfterSubmit={handleAfterSimpleSubmit}
+        />
+      ) : (
+      <>
       <div className="flex flex-wrap items-center gap-3">
         <label className="text-xs text-gray-400">
           Underlying
@@ -257,34 +380,25 @@ export function Strategies() {
             ))}
           </select>
         </label>
-        <label className="text-xs text-gray-400">
-          Expiry
-          <select
-            value={expiry ?? ""}
-            onChange={(e) => setExpiry(e.target.value || null)}
-            disabled={!expData?.expiries?.length}
-            className="ml-2 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-100 disabled:opacity-50"
-          >
-            <option value="">
-              {expData?.expiries?.length ? "Select expiry" : "—"}
-            </option>
-            {(expData?.expiries ?? []).map((d: string) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
+
+      <StrategyChainMatrix
+        matrix={matrix}
+        isLoading={matrixLoading}
+        template={template}
+        legs={legs}
+        onPick={handlePickFromChain}
+        onAnchor={handleAnchor}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="space-y-4">
-          <LegsTable legs={legs} onChange={setLegs} chain={chain} expiry={expiry} />
-          <ChainBrowser
+          <LegsTable
+            legs={legs}
+            onChange={setLegs}
             chain={chain}
             expiry={expiry}
-            onPick={handlePickFromChain}
-            isLoading={chainLoading}
+            underlying={underlying.trim() || undefined}
           />
         </div>
         <div className="space-y-4">
@@ -293,6 +407,8 @@ export function Strategies() {
           <GreeksPanel legs={legs} spot={chain?.spot} scrubMs={scrubMs} />
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

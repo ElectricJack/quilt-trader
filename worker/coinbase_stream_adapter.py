@@ -53,6 +53,13 @@ class CoinbaseStreamAdapter(BrokerAdapter):
     def start_market_data_stream(
         self, symbols: list[str], on_trade, on_quote, asset_class: str = "crypto",
     ) -> MarketDataStreamHandle:
+        from coordinator.services.asset_services import get_default_registry
+        registry = get_default_registry()
+        for sym in symbols:
+            if not registry.supports_provider(sym, "coinbase"):
+                raise ValueError(
+                    f"Coinbase does not support {sym} (only crypto symbols supported)"
+                )
         coinbase_symbols = [_to_coinbase_symbol(s) for s in symbols]
         symbol_map = {_to_coinbase_symbol(s): s for s in symbols}
         return _CoinbaseStreamHandle(

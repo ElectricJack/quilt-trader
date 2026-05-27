@@ -73,10 +73,15 @@ export function PnlChart({ legs, spot, scrubMs, height = 320 }: PnlChartProps) {
     if (legs.length === 0) {
       return { expiryData: [], dateData: [], breakevens: [], currentPnl: 0 };
     }
-    const e = pnlCurve(legs, [rangeLo, rangeHi], "expiry", 200);
-    const d = pnlCurve(legs, [rangeLo, rangeHi], scrubMs, 200);
+    // Options contracts have a 100x multiplier — strategyPnl returns
+    // per-share P&L, so we scale both curves and the spot reading.
+    const MULT = 100;
+    const e = pnlCurve(legs, [rangeLo, rangeHi], "expiry", 200)
+      .map((p) => ({ x: p.x, y: p.y * MULT }));
+    const d = pnlCurve(legs, [rangeLo, rangeHi], scrubMs, 200)
+      .map((p) => ({ x: p.x, y: p.y * MULT }));
     const bes = findBreakevens(e);
-    const cur = spot != null ? strategyPnl(legs, spot, scrubMs) : 0;
+    const cur = spot != null ? strategyPnl(legs, spot, scrubMs) * MULT : 0;
     return { expiryData: e, dateData: d, breakevens: bes, currentPnl: cur };
   }, [legs, rangeLo, rangeHi, scrubMs, spot]);
 
@@ -104,11 +109,13 @@ export function PnlChart({ legs, spot, scrubMs, height = 320 }: PnlChartProps) {
         borderColor: "#374151",
         timeVisible: false,
         secondsVisible: false,
-        tickMarkFormatter: (t: number) => t.toFixed(2),
+        // Internal "time" is `price * 1000` so values stay integer + unique.
+        // Format back to spot dollars here.
+        tickMarkFormatter: (t: number) => (t / 1000).toFixed(0),
       },
       localization: {
         priceFormatter: (p: number) =>
-          p >= 0 ? `+${p.toFixed(2)}` : p.toFixed(2),
+          p >= 0 ? `+$${p.toFixed(0)}` : `-$${Math.abs(p).toFixed(0)}`,
       },
     });
 
@@ -191,7 +198,9 @@ export function PnlChart({ legs, spot, scrubMs, height = 320 }: PnlChartProps) {
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900">
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
-        <h3 className="text-sm font-semibold text-gray-200">P&amp;L</h3>
+        <h3 className="text-sm font-semibold text-gray-200">
+          P&amp;L <span className="text-xs font-normal text-gray-500">($, per contract × 100)</span>
+        </h3>
         <div className="flex items-center gap-3 text-xs">
           <span className="text-gray-500">
             <span className="inline-block w-3 h-px bg-gray-500 align-middle mr-1" /> At expiry
@@ -201,45 +210,54 @@ export function PnlChart({ legs, spot, scrubMs, height = 320 }: PnlChartProps) {
           </span>
         </div>
       </div>
-      {legs.length === 0 ? (
-        <div className="px-3 py-12 text-center text-sm text-gray-500">
-          Add legs to see the P&amp;L diagram.
-        </div>
-      ) : (
-        <>
-          <div ref={containerRef} className="w-full" style={{ height }} />
-          <div className="flex flex-wrap items-center gap-4 px-3 py-2 border-t border-gray-800 text-xs text-gray-400">
-            <span>
-              Now P&amp;L:{" "}
-              <span
-                className={
-                  currentPnl > 0
-                    ? "text-emerald-400 font-medium tabular-nums"
-                    : currentPnl < 0
-                      ? "text-red-400 font-medium tabular-nums"
-                      : "text-gray-300 tabular-nums"
-                }
-              >
-                {currentPnl >= 0 ? "+" : ""}
-                {currentPnl.toFixed(2)}
-              </span>
-            </span>
-            {breakevens.length > 0 && (
-              <span>
-                Breakeven{breakevens.length === 1 ? "" : "s"}:{" "}
-                <span className="text-gray-200 tabular-nums">
-                  {breakevens.map((b) => b.toFixed(2)).join(", ")}
-                </span>
-              </span>
-            )}
-            <span>
-              Range:{" "}
-              <span className="text-gray-300 tabular-nums">
-                {rangeLo.toFixed(2)} – {rangeHi.toFixed(2)}
-              </span>
-            </span>
+      {/* Container is always mounted so the chart's createChart effect can
+          attach on first render. When there are no legs, an overlay covers
+          the empty chart with the instruction message. */}
+      <div className="relative">
+        <div ref={containerRef} className="w-full" style={{ height }} />
+        {legs.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 pointer-events-none">
+            Add legs to see the P&amp;L diagram.
           </div>
-        </>
+        )}
+        {legs.length > 0 && (
+          <div className="pointer-events-none absolute bottom-1 left-0 right-0 text-center text-[10px] text-gray-500">
+            Spot price ($)
+          </div>
+        )}
+      </div>
+      {legs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-4 px-3 py-2 border-t border-gray-800 text-xs text-gray-400">
+          <span>
+            Now P&amp;L:{" "}
+            <span
+              className={
+                currentPnl > 0
+                  ? "text-emerald-400 font-medium tabular-nums"
+                  : currentPnl < 0
+                    ? "text-red-400 font-medium tabular-nums"
+                    : "text-gray-300 tabular-nums"
+              }
+            >
+              {currentPnl >= 0 ? "+" : ""}
+              {currentPnl.toFixed(2)}
+            </span>
+          </span>
+          {breakevens.length > 0 && (
+            <span>
+              Breakeven{breakevens.length === 1 ? "" : "s"}:{" "}
+              <span className="text-gray-200 tabular-nums">
+                {breakevens.map((b) => b.toFixed(2)).join(", ")}
+              </span>
+            </span>
+          )}
+          <span>
+            Range:{" "}
+            <span className="text-gray-300 tabular-nums">
+              {rangeLo.toFixed(2)} – {rangeHi.toFixed(2)}
+            </span>
+          </span>
+        </div>
       )}
     </div>
   );

@@ -41,7 +41,8 @@ router = APIRouter(tags=["algorithms"])
 # Override in tests via monkeypatch.
 PACKAGE_ROOT = Path("data/packages")
 
-_VALID_ASSET_CLASSES = {"equities", "crypto", "options"}
+from coordinator.services.asset_services import AssetType as _AssetType
+_VALID_ASSET_CLASSES = {t.value for t in _AssetType}
 
 
 def _validate_assets(raw: list) -> list[dict]:

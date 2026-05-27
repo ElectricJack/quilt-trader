@@ -1011,6 +1011,11 @@ export const api = {
       `/api/accounts/${accountId}/options-chain/${encodeURIComponent(expiry)}?underlying=${encodeURIComponent(underlying)}`
     );
   },
+  getOptionChainMatrix(accountId: string, underlying: string, maxExpiries = 20): Promise<OptionChainMatrixResponse> {
+    return request<OptionChainMatrixResponse>(
+      `/api/accounts/${accountId}/options-chain?underlying=${encodeURIComponent(underlying)}&max_expiries=${maxExpiries}`
+    );
+  },
 
   // ── Spec D U1: run backtest modal ──
   createBacktestRun(body: BacktestRunCreate): Promise<BacktestRunRecord> {
@@ -1223,4 +1228,15 @@ export interface OptionChainResponse {
   expiry: string;
   as_of: string | null;
   contracts: OptionChainContract[];
+}
+
+export interface OptionChainMatrixExpiry {
+  expiry: string;
+  contracts: OptionChainContract[];
+}
+
+export interface OptionChainMatrixResponse {
+  underlying: string;
+  spot: number | null;
+  expiries: OptionChainMatrixExpiry[];
 }

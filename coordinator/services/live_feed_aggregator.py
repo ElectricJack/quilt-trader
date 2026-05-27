@@ -156,12 +156,7 @@ class _StreamConn:
     symbols: set = field(default_factory=set)
 
 
-# Broker cap: max symbols per (broker, asset_class) stream.
-_MAX_SYMBOLS_PER_STREAM: dict[tuple[str, str], int] = {
-    ("alpaca", "equities"): 30,
-    ("alpaca", "crypto"): 30,
-    ("tradier", "equities"): 100,
-}
+# Broker caps now come from AssetServiceRegistry.stream_config(symbol, broker).cap.
 
 
 class LiveFeedAggregator:
@@ -309,11 +304,14 @@ class LiveFeedAggregator:
         else:
             stream_key = (account_id, asset_class)
 
-        # Coinbase only supports crypto market data.
+        # Provider/asset compatibility via registry.
+        from coordinator.services.asset_services import get_default_registry
+        registry = get_default_registry()
         provider_type = broker if account_id is None else None
-        if provider_type == "coinbase" and asset_class != "crypto":
+        if provider_type and not registry.supports_provider(symbol, provider_type):
             logger.warning(
-                "Coinbase only supports crypto; ignoring %s/%s", broker, symbol
+                "%s does not support %s; ignoring %s/%s",
+                provider_type, symbol, broker, symbol,
             )
             return
 
@@ -359,7 +357,7 @@ class LiveFeedAggregator:
                                      error_label, broker, symbol)
         else:
             # Reuse existing stream — multi-symbol packing.
-            cap = _MAX_SYMBOLS_PER_STREAM.get((broker, asset_class), 30)
+            cap = registry.stream_config(symbol, broker).cap or 30
             if len(conn.symbols) >= cap:
                 raise RuntimeError(
                     f"broker stream cap reached for {broker}/{asset_class}: {cap} symbols"

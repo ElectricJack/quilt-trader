@@ -792,7 +792,9 @@ async def open_position(
             media_type="application/json",
         )
 
-    # Validate asset types vs account
+    # Validate asset types and per-asset required fields via the registry
+    from coordinator.services.asset_services import get_default_registry
+    registry = get_default_registry()
     allowed = set(account.supported_asset_types or [])
     bad = [l.asset_type for l in body.legs if l.asset_type not in allowed]
     if bad:
@@ -802,15 +804,17 @@ async def open_position(
                    f"Allowed: {sorted(allowed)}.",
         )
 
-    # Options legs must have expiry/strike/right
-    missing = [
-        i for i, l in enumerate(body.legs)
-        if l.asset_type == "options" and not (l.expiry and l.strike is not None and l.right)
-    ]
+    # Per-asset required field validation
+    missing = []
+    for i, l in enumerate(body.legs):
+        svc = registry.get_service_by_type(l.asset_type)
+        required = svc.required_order_fields()
+        if any(getattr(l, f, None) in (None, "") for f in required):
+            missing.append(i)
     if missing:
         raise HTTPException(
             status_code=422,
-            detail=f"Options legs missing expiry/strike/right at indices: {missing}",
+            detail=f"Legs missing required fields at indices: {missing}",
         )
 
     adapter = await _adapter_for_account(account)

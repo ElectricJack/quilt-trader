@@ -126,19 +126,10 @@ class TestPolygonStreamAdapter:
         assert received[0]["ask"] == 450.5
 
     def test_cluster_mapping(self):
-        adapter = PolygonStreamAdapter(api_key="k")
-        stop_evt = threading.Event()
-        stop_evt.set()
-
-        with patch("worker.polygon_stream_adapter._PolygonStreamHandle.__init__",
-                   return_value=None) as mock_init:
-            # Mock out the handle init so no thread is spawned
-            mock_init.return_value = None
-            handle = object.__new__(_PolygonStreamHandle)
-            handle._stop = stop_evt
-
-        # Verify cluster URLs for different asset classes
-        from worker.polygon_stream_adapter import _CLUSTER_MAP, _WS_BASE
-        assert _CLUSTER_MAP["equities"] == "stocks"
-        assert _CLUSTER_MAP["crypto"] == "crypto"
-        assert _CLUSTER_MAP["options"] == "options"
+        """Cluster mapping now lives in the registry's stream_config."""
+        from coordinator.services.asset_services import get_default_registry
+        registry = get_default_registry()
+        assert registry.stream_config("AAPL", "polygon").cluster == "stocks"
+        assert registry.stream_config("BTCUSD", "polygon").cluster == "crypto"
+        assert registry.stream_config("SPY241029C00586000", "polygon").cluster == "options"
+        assert registry.stream_config("VIX", "polygon").cluster == "stocks"

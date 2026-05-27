@@ -45,6 +45,20 @@ class TradeFill:
         )
 
 
+# Canonical asset_type values. Mirrors coordinator AssetType enum — kept
+# inline since the SDK can't import the coordinator. Contract test in
+# tests/sdk/test_asset_type_contract.py asserts these stay in sync.
+_VALID_ASSET_TYPES = frozenset({"equities", "options", "crypto", "index"})
+
+
+def _validate_asset_type(value: str) -> str:
+    if value not in _VALID_ASSET_TYPES:
+        raise ValueError(
+            f"asset_type must be one of {sorted(_VALID_ASSET_TYPES)}, got {value!r}"
+        )
+    return value
+
+
 @dataclass
 class Position:
     symbol: str
@@ -52,6 +66,9 @@ class Position:
     avg_cost: float
     current_price: float
     asset_type: str = "equities"
+
+    def __post_init__(self) -> None:
+        _validate_asset_type(self.asset_type)
 
     @property
     def market_value(self) -> float:
