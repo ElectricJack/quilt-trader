@@ -167,6 +167,15 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+## Scrapers
+
+### Per-attempt run history
+- **Deferred from:** [2026-05-27-scraper-catchup-design.md](specs/2026-05-27-scraper-catchup-design.md)
+- **Why deferred:** v1 stores only `last_success`, `last_attempt_at`, and a daily attempts counter on the existing `scrapers` row — enough to answer "did we run today, should we retry." A full per-attempt history (timestamp, status, error, duration) isn't needed until something actually consumes it (e.g. a scraper-health dashboard or alerting on N consecutive failures).
+- **What's needed:** a `scraper_runs` history table with one row per attempt and a small read API. Probably a UI surface to make it worth the schema.
+
+---
+
 ## How to use this file
 
 When **deferring work** in a new spec:
