@@ -71,3 +71,55 @@ def block_bootstrap_sharpe(
     lower = float(np.quantile(samples, alpha / 2))
     upper = float(np.quantile(samples, 1 - alpha / 2))
     return MetricCI(point=point, lower=lower, upper=upper, confidence=confidence)
+
+
+def block_bootstrap_max_drawdown(
+    equity: pd.Series,
+    *,
+    block_size: int | None = None,
+    n_resamples: int = 1000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> MetricCI:
+    returns = _equity_to_returns(equity)
+    if block_size is None:
+        block_size = max(20, len(returns) // 20)
+    rng = np.random.default_rng(seed)
+    point = _max_drawdown(equity.to_numpy(dtype=float))
+
+    def _sample_dd() -> float:
+        r = _block_resample(returns, block_size, rng)
+        synthetic_equity = np.cumprod(1.0 + r)
+        return _max_drawdown(synthetic_equity)
+
+    samples = np.array([_sample_dd() for _ in range(n_resamples)])
+    alpha = 1.0 - confidence
+    return MetricCI(
+        point=point,
+        lower=float(np.quantile(samples, alpha / 2)),
+        upper=float(np.quantile(samples, 1 - alpha / 2)),
+        confidence=confidence,
+    )
+
+
+def bootstrap_metrics(
+    equity: pd.Series,
+    *,
+    block_size: int | None = None,
+    n_resamples: int = 1000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> dict[str, MetricCI]:
+    """Bundle: bootstrap Sharpe + MaxDD with shared block_size."""
+    if block_size is None:
+        block_size = max(20, (len(equity) - 1) // 20)
+    return {
+        "sharpe": block_bootstrap_sharpe(
+            equity, block_size=block_size, n_resamples=n_resamples,
+            confidence=confidence, seed=seed,
+        ),
+        "max_drawdown": block_bootstrap_max_drawdown(
+            equity, block_size=block_size, n_resamples=n_resamples,
+            confidence=confidence, seed=seed + 1,
+        ),
+    }
