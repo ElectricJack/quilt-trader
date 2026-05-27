@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from coordinator.services.asset_services.registry import get_default_registry
 from sdk.context import TickContext
 from sdk.models import OptionChain, Position
 
@@ -125,12 +126,21 @@ class BacktestTickContext(TickContext):
                     break
         # Use "polygon" as the last-resort default provider
         src = src or "polygon"
-        key = (src, symbol, timeframe)
+
+        # Resolve the canonical symbol to the provider-specific form so the cache
+        # and disk path lookups land on the right data file. Equities pass through
+        # unchanged; crypto BTC/USD → BTC-USD for yfinance, etc.
+        try:
+            resolved_symbol = get_default_registry().resolve_symbol(symbol, src)
+        except Exception:
+            resolved_symbol = symbol
+
+        key = (src, resolved_symbol, timeframe)
         df = self._bars.get(key)
 
         # On a cache miss, try loading from disk first (fast path, no network).
         if (df is None or df.empty) and self._data_service is not None:
-            disk_df = self._data_service.load_market_data(src, symbol, timeframe)
+            disk_df = self._data_service.load_market_data(src, resolved_symbol, timeframe)
             if disk_df is not None and not disk_df.empty:
                 if "timestamp" in disk_df.columns:
                     disk_df = disk_df.copy()
@@ -142,10 +152,10 @@ class BacktestTickContext(TickContext):
         if (df is None or df.empty) and self._on_miss is not None:
             import logging
             logging.getLogger(__name__).info(
-                "market_data miss — auto-downloading %s %s (%s)", symbol, timeframe, src
+                "market_data miss — auto-downloading %s %s (%s)", resolved_symbol, timeframe, src
             )
             try:
-                fetched = self._on_miss(symbol, timeframe, src)
+                fetched = self._on_miss(resolved_symbol, timeframe, src)
                 if fetched is not None and not fetched.empty:
                     if "timestamp" in fetched.columns:
                         fetched = fetched.copy()
