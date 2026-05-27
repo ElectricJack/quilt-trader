@@ -58,12 +58,12 @@ def compute_folds(
 class WalkForwardResult:
     session_id: int
     n_folds: int
-    oos_run_ids: list[int]
-    train_run_ids: list[list[int]] = field(default_factory=list)
+    oos_run_ids: list[str]
+    train_run_ids: list[list[str]] = field(default_factory=list)
 
 
 async def _pick_best_train_config(
-    db: Session, run_ids: list[int], objective: str
+    db: Session, run_ids: list[str], objective: str
 ) -> dict[str, Any]:
     """Pick the in-sample winner based on the objective metric."""
     from coordinator.database.models import BacktestRun
@@ -157,8 +157,8 @@ async def run_walk_forward(
         train_years=train_years, test_years=test_years, step_months=step_months,
     )
 
-    oos_run_ids: list[int] = []
-    train_run_ids: list[list[int]] = []
+    oos_run_ids: list[str] = []
+    train_run_ids: list[list[str]] = []
 
     for fold in folds:
         train_cfg = {

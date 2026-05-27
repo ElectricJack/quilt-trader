@@ -13,7 +13,7 @@ from typing import Any, Callable, Literal, Optional
 # returns an awaitable that executes the run.  The orchestrators are agnostic
 # about which services the factory uses; the CLI / API constructs it once with
 # real services and passes it through.
-RunnerFactory = Callable[[int], Awaitable[None]]
+RunnerFactory = Callable[[str], Awaitable[None]]
 
 import numpy as np
 

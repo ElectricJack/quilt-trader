@@ -76,7 +76,7 @@ class SweepRequest(BaseModel):
 class SweepResponse(BaseModel):
     session_id: int
     n_configs: int
-    run_ids: list[int]
+    run_ids: list[str]
 
 
 class WalkForwardRequest(BaseModel):
@@ -93,7 +93,7 @@ class WalkForwardRequest(BaseModel):
 class WalkForwardResponse(BaseModel):
     session_id: int
     n_folds: int
-    oos_run_ids: list[int]
+    oos_run_ids: list[str]
 
 
 class ReportResponse(BaseModel):
@@ -196,7 +196,7 @@ async def sweep_endpoint(session_id: int, payload: SweepRequest) -> SweepRespons
     if runner is None:
         raise HTTPException(503, "backtest_runner not initialized")
 
-    async def runner_factory(run_id: int) -> None:
+    async def runner_factory(run_id: str) -> None:
         await runner.run(run_id)
 
     SessionLocal = get_session_factory()
@@ -245,7 +245,7 @@ async def walk_forward_endpoint(
     if runner is None:
         raise HTTPException(503, "backtest_runner not initialized")
 
-    async def runner_factory(run_id: int) -> None:
+    async def runner_factory(run_id: str) -> None:
         await runner.run(run_id)
 
     SessionLocal = get_session_factory()
