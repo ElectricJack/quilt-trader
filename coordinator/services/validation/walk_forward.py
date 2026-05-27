@@ -232,9 +232,13 @@ def concatenate_oos_curves(parquet_paths: list[Path]) -> pd.Series:
 
     for path in parquet_paths:
         df = pd.read_parquet(path)
-        if "timestamp" not in df.columns or "equity" not in df.columns:
-            raise ValueError(f"Expected timestamp + equity columns in {path}")
-        s = df.set_index("timestamp")["equity"].astype(float)
+        if "timestamp" not in df.columns:
+            raise ValueError(f"Expected 'timestamp' column in {path}")
+        # The backtest engine writes 'portfolio_value' for equity; tests use 'equity'.
+        equity_col = "equity" if "equity" in df.columns else "portfolio_value"
+        if equity_col not in df.columns:
+            raise ValueError(f"Expected 'equity' or 'portfolio_value' column in {path}")
+        s = df.set_index("timestamp")[equity_col].astype(float)
 
         if running_anchor is None:
             segments.append(s)
