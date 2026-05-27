@@ -16,14 +16,17 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Callable, Optional
 
 import yaml
+from apscheduler.triggers.cron import CronTrigger
 
 from coordinator.services.package_manager import PackageError, PackageManager
 from coordinator.services.scheduler import SchedulerService
 from coordinator.services.scraper_engine import ScraperEngine, ScraperResult
+
+MAX_ATTEMPTS_PER_DAY = 3
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +125,28 @@ class ScraperRegistry:
                 "registered scraper %s with schedule %r jitter=%s",
                 name, schedule, jitter_seconds,
             )
+            self._schedule_catch_up(name)
 
         return list(self._scrapers.values())
+
+    def _schedule_catch_up(self, name: str) -> None:
+        """Fire `_maybe_catch_up(name)` on the running event loop, if any.
+
+        Called from synchronous discover_and_register / register_scraper.
+        Falls back silently if no loop is running (e.g., in unit tests
+        instantiating the registry without an asyncio context).
+
+        Disabled when QT_DISABLE_SCRAPER_CATCHUP is set, which the test
+        conftest sets to keep test runs from invoking real scraper
+        subprocesses against the real packages/ directory.
+        """
+        if os.environ.get("QT_DISABLE_SCRAPER_CATCHUP"):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._maybe_catch_up(name))
 
     def _load_overrides(self, name: str) -> dict:
         path = os.path.join(self._configs_dir, f"{name}.json")
@@ -189,6 +212,7 @@ class ScraperRegistry:
             jitter=jitter_seconds,
         )
         logger.info("registered scraper %s with schedule %r", name, schedule)
+        self._schedule_catch_up(name)
         return record
 
     def unregister_scraper(self, name: str) -> None:
@@ -298,10 +322,16 @@ class ScraperRegistry:
         record = self._scrapers.get(name)
         if record is None:
             return ScraperResult(success=False, error=f"scraper {name!r} not registered")
+        if record.last_status == "running":
+            logger.info("scraper %s is already running; skipping duplicate invocation", name)
+            return ScraperResult(success=False, error="already running")
 
+        now = datetime.now(timezone.utc)
         logger.info("running scraper %s", name)
         record.last_status = "running"
-        record.last_run_at = datetime.utcnow().isoformat() + "Z"
+        record.last_run_at = now.isoformat()
+
+        await self._record_attempt_start(name, now)
 
         # ScraperEngine.run_scraper does subprocess.run which is blocking.
         # Push it to a thread so the event loop stays responsive.
@@ -309,7 +339,8 @@ class ScraperRegistry:
             self._engine.run_scraper, name, "csv", record.config
         )
 
-        record.last_run_at = datetime.utcnow().isoformat() + "Z"
+        finished = datetime.now(timezone.utc)
+        record.last_run_at = finished.isoformat()
         if result.success:
             record.last_status = "ok"
             record.last_output_path = result.output_path
@@ -320,4 +351,185 @@ class ScraperRegistry:
             record.last_status = "failed"
             record.last_error = result.error
             logger.warning("scraper %s failed: %s", name, result.error)
+        await self._record_attempt_finish(name, finished, result)
         return result
+
+    async def _maybe_catch_up(self, name: str, *, now_utc: Optional[datetime] = None) -> bool:
+        """If today's scheduled window was missed without a successful run, fire now.
+
+        Returns True if a catch-up run was scheduled, False otherwise. Bounded
+        by MAX_ATTEMPTS_PER_DAY so a chronically failing scraper does not
+        burn the upstream API on every coordinator restart.
+
+        The `now_utc` parameter exists for testability; production callers
+        omit it and the current UTC time is used.
+        """
+        record = self._scrapers.get(name)
+        if record is None or self._session_factory is None:
+            return False
+
+        now_utc = now_utc or datetime.now(timezone.utc)
+        base_fire = self._base_cron_fire_today_utc(record.schedule, now_utc)
+        if base_fire is None or now_utc < base_fire:
+            return False
+
+        from sqlalchemy import select as _select
+        from coordinator.database.models import Scraper as _Scraper
+        async with self._session_factory() as session:
+            row = (await session.execute(
+                _select(_Scraper).where(_Scraper.name == name)
+            )).scalar_one_or_none()
+            attempts = 0
+            last_success = None
+            if row is not None:
+                if row.attempts_day == now_utc.date():
+                    attempts = row.attempts_today or 0
+                last_success = row.last_success
+                # SQLite's DateTime returns naive values even when the column
+                # is `DateTime(timezone=True)`; we always write UTC so coerce.
+                if last_success is not None and last_success.tzinfo is None:
+                    last_success = last_success.replace(tzinfo=timezone.utc)
+
+        if attempts >= MAX_ATTEMPTS_PER_DAY:
+            logger.info(
+                "scraper %s catch-up skipped: %d attempts already today",
+                name, attempts,
+            )
+            return False
+        if last_success is not None and last_success >= base_fire:
+            return False
+
+        logger.info(
+            "scraper %s catch-up fired (today's base %s missed, no success since)",
+            name, base_fire.isoformat(),
+        )
+        asyncio.create_task(self.run(name))
+        return True
+
+    async def get_persistent_state(self, name: str) -> dict:
+        """Return the public-facing state for a scraper, reading the DB row.
+
+        Used by the API so values survive coordinator restart. Fields:
+        `last_run_at` (ISO-8601 UTC string of most recent attempt),
+        `last_status` ("ok" / "failed" / "running" / None),
+        `last_error`, `attempts_today` (reset to 0 if attempts_day is stale).
+
+        Falls back to in-memory ScraperRecord fields when no session
+        factory is configured (test contexts).
+        """
+        record = self._scrapers.get(name)
+        if self._session_factory is None:
+            return {
+                "last_run_at": record.last_run_at if record else None,
+                "last_status": record.last_status if record else None,
+                "last_error": record.last_error if record else None,
+                "attempts_today": 0,
+            }
+
+        from sqlalchemy import select as _select
+        from coordinator.database.models import Scraper as _Scraper
+        async with self._session_factory() as session:
+            row = (await session.execute(
+                _select(_Scraper).where(_Scraper.name == name)
+            )).scalar_one_or_none()
+
+        attempts_today = 0
+        last_run_at: Optional[str] = None
+        last_error: Optional[str] = None
+        derived_status: Optional[str] = None
+        if row is not None:
+            today = datetime.now(timezone.utc).date()
+            if row.attempts_day == today:
+                attempts_today = row.attempts_today or 0
+            last_error = row.last_error
+            last_attempt = row.last_attempt_at
+            last_success = row.last_success
+            if last_attempt is not None:
+                if last_attempt.tzinfo is None:
+                    last_attempt = last_attempt.replace(tzinfo=timezone.utc)
+                last_run_at = last_attempt.isoformat()
+                if last_success is not None:
+                    if last_success.tzinfo is None:
+                        last_success = last_success.replace(tzinfo=timezone.utc)
+                    derived_status = "ok" if last_success >= last_attempt else "failed"
+                else:
+                    derived_status = "failed"
+
+        # In-flight runs take precedence over the persisted status.
+        if record is not None and record.last_status == "running":
+            derived_status = "running"
+
+        return {
+            "last_run_at": last_run_at,
+            "last_status": derived_status,
+            "last_error": last_error,
+            "attempts_today": attempts_today,
+        }
+
+    @staticmethod
+    def _base_cron_fire_today_utc(schedule: str, now_utc: datetime) -> Optional[datetime]:
+        """Compute the un-jittered cron fire for today (UTC), or None if not today.
+
+        Drops jitter so the floor of the firing window is returned. Used to
+        decide "has today's window opened yet, did we run since then."
+        """
+        parts = schedule.split()
+        if len(parts) != 5:
+            return None
+        trigger = CronTrigger(
+            minute=parts[0], hour=parts[1], day=parts[2], month=parts[3],
+            day_of_week=SchedulerService._convert_dow(parts[4]),
+            timezone=timezone.utc,
+        )
+        # get_next_fire_time(previous, now) yields the next fire at-or-after `now`.
+        # Use midnight - 1us so any fire scheduled at 00:00 today is returned.
+        midnight = datetime.combine(now_utc.date(), time.min, tzinfo=timezone.utc)
+        fire = trigger.get_next_fire_time(None, midnight - timedelta(microseconds=1))
+        if fire is None or fire.date() != now_utc.date():
+            return None
+        return fire
+
+    async def _record_attempt_start(self, name: str, now: datetime) -> None:
+        """Upsert the scrapers row and bump attempts_today (resetting on UTC day rollover)."""
+        if self._session_factory is None:
+            return
+        from sqlalchemy import select as _select
+        from coordinator.database.models import Scraper as _Scraper
+        today = now.date()
+        try:
+            async with self._session_factory() as session:
+                row = (await session.execute(
+                    _select(_Scraper).where(_Scraper.name == name)
+                )).scalar_one_or_none()
+                if row is None:
+                    row = _Scraper(repo_url="local", name=name, attempts_today=0)
+                    session.add(row)
+                if row.attempts_day != today:
+                    row.attempts_today = 0
+                    row.attempts_day = today
+                row.attempts_today = (row.attempts_today or 0) + 1
+                row.last_attempt_at = now
+                await session.commit()
+        except Exception as e:  # noqa: BLE001 — DB issues must not abort the scrape
+            logger.warning("failed to record attempt start for %s: %s", name, e)
+
+    async def _record_attempt_finish(self, name: str, finished: datetime, result: ScraperResult) -> None:
+        if self._session_factory is None:
+            return
+        from sqlalchemy import select as _select
+        from coordinator.database.models import Scraper as _Scraper
+        try:
+            async with self._session_factory() as session:
+                row = (await session.execute(
+                    _select(_Scraper).where(_Scraper.name == name)
+                )).scalar_one_or_none()
+                if row is None:
+                    return
+                if result.success:
+                    row.last_success = finished
+                    row.last_error = None
+                else:
+                    row.last_error = result.error
+                await session.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("failed to record attempt finish for %s: %s", name, e)

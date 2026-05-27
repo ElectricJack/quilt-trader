@@ -5,6 +5,9 @@ import pytest_asyncio
 
 os.environ.setdefault("QT_LIVE_FINALIZE_INTERVAL_SECONDS", "999999")
 os.environ.setdefault("QT_TICK_COALESCE_WINDOW_MS", "10")
+# Keep the scraper catch-up from firing real subprocesses against the live
+# packages/ directory when tests boot a coordinator lifespan.
+os.environ.setdefault("QT_DISABLE_SCRAPER_CATCHUP", "1")
 
 from coordinator.database.connection import create_engine
 from coordinator.database.models import Base

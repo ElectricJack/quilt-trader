@@ -38,7 +38,8 @@ def _next_run_for(reg: ScraperRegistry, name: str) -> Optional[str]:
     return None
 
 
-def _record_to_dict(record, reg: ScraperRegistry) -> dict:
+async def _record_to_dict(record, reg: ScraperRegistry) -> dict:
+    state = await reg.get_persistent_state(record.name)
     return {
         "name": record.name,
         "schedule": record.schedule,
@@ -47,17 +48,18 @@ def _record_to_dict(record, reg: ScraperRegistry) -> dict:
         "version": record.manifest.get("version"),
         "description": record.manifest.get("description"),
         "config_overrides": sorted(record.config.keys()),
-        "last_status": record.last_status,
-        "last_run_at": record.last_run_at,
+        "last_status": state["last_status"],
+        "last_run_at": state["last_run_at"],
+        "last_error": state["last_error"],
+        "attempts_today": state["attempts_today"],
         "data_url": f"/api/data/custom/{record.name}",
-        "last_error": record.last_error,
     }
 
 
 @router.get("")
 async def list_scrapers():
     reg = _require_registry()
-    return [_record_to_dict(r, reg) for r in reg.list_records()]
+    return [await _record_to_dict(r, reg) for r in reg.list_records()]
 
 
 @router.get("/{name}")
@@ -66,7 +68,7 @@ async def get_scraper(name: str):
     record = reg.get(name)
     if record is None:
         raise HTTPException(status_code=404, detail=f"scraper {name!r} not found")
-    return _record_to_dict(record, reg)
+    return await _record_to_dict(record, reg)
 
 
 @router.post("/{name}/run")
@@ -79,7 +81,7 @@ async def run_scraper_now(name: str):
     return {
         "success": result.success,
         "error": result.error,
-        "record": _record_to_dict(record, reg),
+        "record": await _record_to_dict(record, reg),
     }
 
 
@@ -98,7 +100,7 @@ async def install_scraper(body: ScraperInstall):
     except Exception as e:  # noqa: BLE001
         logger.exception("scraper install failed for %s", body.repo_url)
         raise HTTPException(status_code=500, detail=f"Install failed: {e}")
-    return _record_to_dict(record, reg)
+    return await _record_to_dict(record, reg)
 
 
 @router.delete("/{name}", status_code=204)

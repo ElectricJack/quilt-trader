@@ -161,6 +161,9 @@ class Scraper(Base):
     dependent_algorithm_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_success: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempts_day: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

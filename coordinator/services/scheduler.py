@@ -1,4 +1,5 @@
 import logging
+from datetime import timezone
 from typing import Callable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class SchedulerService:
     def __init__(self) -> None:
-        self._scheduler = AsyncIOScheduler()
+        self._scheduler = AsyncIOScheduler(timezone=timezone.utc)
 
     def start(self) -> None:
         self._scheduler.start()
@@ -52,6 +53,7 @@ class SchedulerService:
             month=parts[3],
             day_of_week=self._convert_dow(parts[4]),
             jitter=jitter,
+            timezone=timezone.utc,
         )
         self._scheduler.add_job(
             func, trigger=trigger, id=job_id, replace_existing=True,

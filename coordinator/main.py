@@ -73,6 +73,15 @@ def create_app(
                     await conn.execute(text(f"ALTER TABLE positions ADD COLUMN {col} {dtype}"))
                 except Exception:
                     pass
+            for col, dtype in [
+                ("last_attempt_at", "TIMESTAMP"),
+                ("attempts_today", "INTEGER NOT NULL DEFAULT 0"),
+                ("attempts_day", "DATE"),
+            ]:
+                try:
+                    await conn.execute(text(f"ALTER TABLE scrapers ADD COLUMN {col} {dtype}"))
+                except Exception:
+                    pass
         session_factory = create_session_factory(engine)
         event_bus = EventBus()
         encryption = EncryptionService(encryption_key)
@@ -334,12 +343,12 @@ def create_app(
         scheduler.add_cron_job(
             job_id="account_periodic_sync",
             func=account_lifecycle.periodic_sync,
-            cron_expr="*/15 * * * 1-5",  # every 15min, Mon-Fri
+            cron_expr="*/15 * * * 1-5",  # every 15min Mon-Fri UTC
         )
         scheduler.add_cron_job(
             job_id="account_daily_close",
             func=account_lifecycle.daily_close,
-            cron_expr="35 20 * * 1-5",  # 4:35 PM ET (20:35 UTC), Mon-Fri
+            cron_expr="35 20 * * 1-5",  # 20:35 UTC = 4:35 PM EDT / 3:35 PM EST
         )
 
         from coordinator.services.goal_processor import GoalProcessor
