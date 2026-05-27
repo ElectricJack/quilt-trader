@@ -485,6 +485,9 @@ def create_app(
     from coordinator.api.routes.data_goals import router as data_goals_router
     app.include_router(data_goals_router)
 
+    from coordinator.api.routes.research import router as research_router
+    app.include_router(research_router)
+
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
     if os.path.isdir(dashboard_dir):
