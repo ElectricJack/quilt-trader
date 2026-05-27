@@ -39,6 +39,21 @@ def _backoff_seconds(failure_count: int) -> int:
     return min(60 * (2 ** (failure_count - 1)), 86_400)
 
 
+def _is_terminal_failure(error_message: str | None) -> bool:
+    """A failure is *terminal* when the upstream provider has authoritatively
+    answered "no data" for the requested query. Re-asking won't help — the
+    contract didn't trade in the requested window and never will. Distinct
+    from transient errors (rate limit, network) which should retry.
+
+    Today the only signal is the download manager's "no data returned by ..."
+    error string. If we add more providers or error categorizations, extend
+    here.
+    """
+    if not error_message:
+        return False
+    return "no data returned" in error_message
+
+
 class GoalProcessor:
     def __init__(
         self,
@@ -199,15 +214,22 @@ class GoalProcessor:
         discovered = {c.get("symbol") for c in contracts if c.get("symbol")}
         completed = len(discovered & on_disk)
         in_flight = await self._count_in_flight(provider_name, discovered)
+        _, terminal = await self._classified_failures(provider_name, discovered)
+
+        # Done criterion: every discovered symbol is either on disk or has
+        # been authoritatively answered "no data" by the provider, and
+        # nothing is in flight.
+        done = (len(discovered) - len(on_disk) - len(terminal)) <= 0
 
         async with self._sf() as session:
             g = (await session.execute(
                 select(DataGoal).where(DataGoal.id == goal.id)
             )).scalar_one()
             g.completed_items = completed
+            g.failed_items = len(terminal)
             g.error_message = None
             g.last_processed_at = _utcnow()
-            if completed >= len(discovered) and in_flight == 0:
+            if done and in_flight == 0:
                 g.phase = "completed"
                 g.status = "completed"
             await session.commit()
@@ -260,8 +282,8 @@ class GoalProcessor:
         if slot <= 0:
             return
 
-        recently_failed = await self._recently_failed_symbols(provider, discovered)
-        eligible = discovered - on_disk - in_flight - recently_failed
+        backed_off, terminal = await self._classified_failures(provider, discovered)
+        eligible = discovered - on_disk - in_flight - backed_off - terminal
         if not eligible:
             return
 
@@ -337,17 +359,22 @@ class GoalProcessor:
     async def _count_in_flight(self, provider: str, candidates: set[str]) -> int:
         return len(await self._in_flight_symbols(provider, candidates))
 
-    async def _recently_failed_symbols(
+    async def _classified_failures(
         self, provider: str, candidates: set[str],
-    ) -> set[str]:
-        """Symbols whose exponential-backoff window hasn't expired.
+    ) -> tuple[set[str], set[str]]:
+        """Classify failed downloads into (backed_off, terminal).
 
-        For each candidate symbol, count `failed` rows since the most recent
-        `completed` row; compute the required delay; exclude if
-        ``now - last_failed_at < delay``.
+        - **terminal**: the latest failure for the symbol was "no data
+          returned" — polygon has answered authoritatively. Never retry;
+          count toward the goal's `failed_items` and treat as done.
+        - **backed_off**: transient failure still inside its exponential
+          backoff window. Will retry once the window expires.
+
+        A symbol that has BOTH terminal and transient failures is treated
+        as terminal — the latest finding wins.
         """
         if not candidates:
-            return set()
+            return set(), set()
         async with self._sf() as session:
             stmt = (
                 select(MarketDataDownload)
@@ -360,11 +387,12 @@ class GoalProcessor:
             )
             rows = (await session.execute(stmt)).scalars().all()
 
-        # Aggregate per symbol: count failures since the last completed row,
-        # and remember the most recent failed completed_at.
+        # Aggregate per symbol. A 'completed' row resets state; subsequent
+        # failures restart the count. The latest row's terminal-ness wins.
         from collections import defaultdict
         fail_count: dict[str, int] = defaultdict(int)
         last_failed_at: dict[str, datetime] = {}
+        latest_is_terminal: dict[str, bool] = {}
         for row in rows:
             for s in row.symbols or []:
                 if s not in candidates:
@@ -372,26 +400,31 @@ class GoalProcessor:
                 if row.status == "completed":
                     fail_count[s] = 0
                     last_failed_at.pop(s, None)
+                    latest_is_terminal[s] = False
                 elif row.status == "failed":
                     fail_count[s] += 1
                     if row.completed_at is not None:
                         last_failed_at[s] = row.completed_at
+                    latest_is_terminal[s] = _is_terminal_failure(row.error_message)
 
+        terminal: set[str] = set()
+        backed_off: set[str] = set()
         now = _utcnow()
-        out: set[str] = set()
         for sym, n in fail_count.items():
             if n <= 0:
+                continue
+            if latest_is_terminal.get(sym):
+                terminal.add(sym)
                 continue
             last = last_failed_at.get(sym)
             if last is None:
                 continue
-            delay = _backoff_seconds(n)
-            # last may be naive on some SQLite paths — normalize to UTC-aware.
             if last.tzinfo is None:
                 last = last.replace(tzinfo=timezone.utc)
+            delay = _backoff_seconds(n)
             if (now - last).total_seconds() < delay:
-                out.add(sym)
-        return out
+                backed_off.add(sym)
+        return backed_off, terminal
 
     async def _process_bars_goal(self, goal: DataGoal) -> None:
         config = goal.config

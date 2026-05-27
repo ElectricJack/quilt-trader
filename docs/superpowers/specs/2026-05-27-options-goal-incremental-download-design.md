@@ -138,7 +138,22 @@ ever missed.
 
 ### Failure handling
 
-Per-symbol exponential backoff computed from `market_data_downloads` rows:
+Failures are classified into two categories at lookup time:
+
+- **Terminal**: the latest failed row's `error_message` matches the
+  pattern `"no data returned"`. This means polygon (or the provider) has
+  authoritatively answered "this contract has no bars for the requested
+  window" — re-asking will never produce different data. The symbol is
+  excluded from `pending` permanently, counted into the goal's
+  `failed_items`, and counts toward the "done" criterion for phase
+  transition. If a later `completed` row ever lands for the same symbol
+  (e.g., after a manual retry that succeeds because the provider added
+  data), the state resets and the next failure starts the count over.
+- **Backed off (transient)**: any other failure — rate limit, network,
+  HTTP 5xx, etc. Treated with the existing per-symbol exponential
+  backoff.
+
+Per-symbol exponential backoff for the transient bucket:
 
 ```
 failure_count = number of rows for this (provider, symbol) with
@@ -150,6 +165,8 @@ eligible      = now - last_failed >= delay_seconds
 ```
 
 - 1st failure → 1 min, 2nd → 2 min, 3rd → 4 min, 4th → 8 min, ... 12th → 24 h cap.
+
+The "done" criterion is `on_disk ∪ terminal ⊇ discovered` with `in_flight = 0`.
 - After a successful download, the count resets (the next failure starts
   over at 1 min).
 - Single grouped query against `market_data_downloads`, restricted to the

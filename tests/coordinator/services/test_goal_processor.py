@@ -240,6 +240,99 @@ async def test_failed_symbol_is_backed_off(tmp_path, engine_and_factory):
     assert picked.isdisjoint(set(blocked))
 
 
+@pytest.mark.asyncio
+async def test_no_data_returned_is_terminal_not_retried(tmp_path, engine_and_factory):
+    """A 'no data returned by polygon' failure should NEVER be retried.
+    The contract is counted toward failed_items and excluded from pending."""
+    engine, sf = engine_and_factory
+    market_dir = str(tmp_path / "market")
+    Path(market_dir, "polygon").mkdir(parents=True)
+
+    contracts = CONTRACTS[:3]
+    goal_id = await _make_goal(sf, contracts=contracts)
+    dm = _FakeDownloadManager(polygon_concurrency=1)
+    ds = _FakeDataService(market_dir=market_dir)
+    gp = _make_processor(sf, dm, ds, market_dir)
+
+    # Symbol 0 has a terminal failure from a year ago — still terminal.
+    # Symbol 1 has a transient failure 10 seconds ago — backed off (will
+    # retry after 1 min).
+    # Symbol 2 is clean — should be picked.
+    async with sf() as s:
+        s.add(MarketDataDownload(
+            symbols=[contracts[0]["symbol"]], date_range_start=date(2024, 6, 1),
+            date_range_end=date(2024, 6, 3), provider="polygon", data_type="bars",
+            timeframe="1day", status="failed", progress_current=0, progress_total=1,
+            completed_at=datetime.now(timezone.utc) - timedelta(days=365),
+            error_message=f"{contracts[0]['symbol']}: no data returned by polygon for 2024-06-01 to 2024-06-03",
+        ))
+        s.add(MarketDataDownload(
+            symbols=[contracts[1]["symbol"]], date_range_start=date(2024, 6, 1),
+            date_range_end=date(2024, 6, 3), provider="polygon", data_type="bars",
+            timeframe="1day", status="failed", progress_current=0, progress_total=1,
+            completed_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+            error_message=f"{contracts[1]['symbol']}: HTTPError 500 from polygon",
+        ))
+        await s.commit()
+
+    async with sf() as s:
+        goal = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
+        s.expunge(goal)
+    await gp._download_options(goal)
+
+    # Only the clean symbol gets enqueued. Cap is 2 but only 1 is eligible.
+    picked = {c["symbols"][0] for c in dm.created}
+    assert picked == {contracts[2]["symbol"]}
+
+    # The terminal failure is counted into failed_items.
+    async with sf() as s:
+        g = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
+        assert g.failed_items == 1
+
+
+@pytest.mark.asyncio
+async def test_goal_completes_when_terminal_plus_ondisk_equals_total(tmp_path, engine_and_factory):
+    """If every discovered symbol is either on-disk OR has a terminal failure,
+    the goal transitions to completed even without retrying the terminals."""
+    engine, sf = engine_and_factory
+    market_dir = str(tmp_path / "market")
+    poly = Path(market_dir) / "polygon"
+    poly.mkdir(parents=True)
+
+    contracts = CONTRACTS[:3]
+    goal_id = await _make_goal(sf, contracts=contracts)
+    dm = _FakeDownloadManager(polygon_concurrency=1)
+    ds = _FakeDataService(market_dir=market_dir)
+    gp = _make_processor(sf, dm, ds, market_dir)
+
+    # Two on disk, one terminal failure.
+    for c in contracts[:2]:
+        d = poly / c["symbol"]; d.mkdir()
+        (d / "1day.parquet").write_bytes(b"x")
+    async with sf() as s:
+        s.add(MarketDataDownload(
+            symbols=[contracts[2]["symbol"]], date_range_start=date(2024, 6, 1),
+            date_range_end=date(2024, 6, 3), provider="polygon", data_type="bars",
+            timeframe="1day", status="failed", progress_current=0, progress_total=1,
+            completed_at=datetime.now(timezone.utc),
+            error_message=f"{contracts[2]['symbol']}: no data returned by polygon for 2024-06-01 to 2024-06-03",
+        ))
+        await s.commit()
+
+    async with sf() as s:
+        goal = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
+        s.expunge(goal)
+    await gp._download_options(goal)
+
+    async with sf() as s:
+        g = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
+        assert g.phase == "completed"
+        assert g.status == "completed"
+        assert g.completed_items == 2
+        assert g.failed_items == 1
+    assert dm.created == []
+
+
 def test_exponential_backoff_grows_with_count():
     """min(60 * 2**(count-1), 86_400) — 1m, 2m, 4m, ... 24h cap."""
     from coordinator.services.goal_processor import _backoff_seconds
