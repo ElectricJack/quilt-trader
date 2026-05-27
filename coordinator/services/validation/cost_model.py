@@ -35,3 +35,8 @@ class CostModelProfile(BaseModel):
             if key in self.bundles:
                 return self.bundles[key]
         return self.fallback
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "CostModelProfile":
+        data = yaml.safe_load(Path(path).read_text())
+        return cls.model_validate(data)
