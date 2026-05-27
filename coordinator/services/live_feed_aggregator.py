@@ -42,7 +42,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from coordinator.database.models import Account, LiveSubscription
+from coordinator.database.models import Account, LiveSubscription, SubscriptionConsumer
 from coordinator.services.data_service import DataService
 from coordinator.services.encryption import EncryptionService
 
@@ -77,9 +77,16 @@ class _BarBuilder:
         minute = ts.replace(second=0, microsecond=0)
         if self.minute_start is None:
             self.minute_start = minute
-        if minute != self.minute_start:
-            # Caller should have called flush_if_needed before us; this
-            # branch defends against out-of-order ticks.
+        if minute < self.minute_start:
+            # Late tick for an already-closed minute (Coinbase and other
+            # crypto feeds routinely deliver trades out of timestamp order).
+            # The bar for that minute has been or will be flushed — applying
+            # this tick now would corrupt the current in-progress bar and
+            # rewrite the old one to a single-price spike.
+            return
+        if minute > self.minute_start:
+            # Caller didn't flush — defensive reset (shouldn't happen on the
+            # normal _on_trade path, which calls take_closed first).
             self.minute_start = minute
             self.open_ = price
             self.high = price
@@ -238,11 +245,24 @@ class LiveFeedAggregator:
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        # Resume any rows already marked as running.
+        # Resume every subscription that has at least one consumer. Consumer
+        # presence is the source of truth — the unsubscribe path deletes the
+        # row when the last consumer leaves, so any row that still exists with
+        # consumers should be streaming. Status alone is too brittle: it can
+        # drift (manual SQL edits, stale data from older code) and leave
+        # consumer'd rows orphaned. We also resume rows still tagged
+        # status="running" so subs created without consumer rows (older tests,
+        # legacy data) keep working.
+        from sqlalchemy import or_
         async with self._sf() as session:
             rows = (
                 await session.execute(
-                    select(LiveSubscription).where(LiveSubscription.status == "running")
+                    select(LiveSubscription).where(
+                        or_(
+                            LiveSubscription.consumers.any(),
+                            LiveSubscription.status == "running",
+                        )
+                    )
                 )
             ).scalars().all()
         for r in rows:
@@ -394,6 +414,29 @@ class LiveFeedAggregator:
         # Per-symbol flush task as before.
         self._tasks[state_key] = asyncio.create_task(self._run(broker, symbol, asset_class))
 
+        # Reflect the live-stream state in the DB so a restart can resume
+        # cleanly and the dashboard sees the current status. Only mark
+        # running when a stream is actually open for this key.
+        if stream_key in self._streams and self._sf is not None:
+            await self._mark_subscription_running(account_id, symbol)
+
+    async def _mark_subscription_running(
+        self, account_id: Optional[str], symbol: str,
+    ) -> None:
+        if self._sf is None:
+            return
+        async with self._sf() as session:
+            stmt = select(LiveSubscription).where(LiveSubscription.symbol == symbol)
+            if account_id is not None:
+                stmt = stmt.where(LiveSubscription.account_id == account_id)
+            else:
+                stmt = stmt.where(LiveSubscription.account_id.is_(None))
+            sub = (await session.execute(stmt)).scalar_one_or_none()
+            if sub is not None and (sub.status != "running" or sub.last_error):
+                sub.status = "running"
+                sub.last_error = None
+                await session.commit()
+
     async def stop_subscription(self, account_id: Optional[str], symbol: str) -> None:
         """Remove this symbol from its stream subscribe set.
 
@@ -534,13 +577,20 @@ class LiveFeedAggregator:
             state = self._states.get((broker, symbol))
             if state is None:
                 return
+            # Drop synthetic size=0 events (Tradier emits these for cancels,
+            # corrections, and price echoes during quiet trading). They aren't
+            # real trades — letting them through breaks bar-finalization for
+            # low-liquidity symbols: constant price + zero volume trips the
+            # ghost-bar filter and no 1min bar is ever written.
+            price = float(tick.get("price") or 0.0)
+            size = float(tick.get("size") or 0.0)
+            if size <= 0:
+                return
             with state.lock:
                 state.trades.append(tick)
                 ts = tick.get("timestamp") or self._now()
                 state.tick_count_window.append(ts)
                 state.last_tick_at = ts
-                price = float(tick.get("price") or 0.0)
-                size = float(tick.get("size") or 0.0)
                 # If this tick belongs to a new minute, close the previous bar
                 # (defer the parquet write to the asyncio task).
                 closed = state.bar.take_closed(ts.replace(second=0, microsecond=0))

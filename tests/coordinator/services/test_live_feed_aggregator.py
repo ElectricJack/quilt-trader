@@ -25,7 +25,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from coordinator.database.connection import create_engine, create_session_factory
-from coordinator.database.models import Account, Base, LiveSubscription
+from coordinator.database.models import Account, Base, LiveSubscription, SubscriptionConsumer
 from coordinator.services.data_service import DataService
 from coordinator.services.encryption import EncryptionService
 from coordinator.services.live_feed_aggregator import LiveFeedAggregator
@@ -159,6 +159,160 @@ async def test_aggregator_writes_tick_parquets_and_bars(tmp_path, engine_and_fac
     assert float(row["low"]) == pytest.approx(500.0)
     assert float(row["close"]) == pytest.approx(500.0 + 59 * 0.01)
     assert float(row["volume"]) == pytest.approx(60 * 10.0)
+
+
+def test_bar_builder_ignores_late_ticks_for_closed_minute():
+    """Late ticks (timestamp earlier than current minute_start) must not reset
+    the in-progress bar or rewrite the closed one.
+
+    Regression: Coinbase delivers trades out of timestamp order. The old
+    behavior reset the bar's minute_start to the late tick's minute, then the
+    next in-order tick "closed" that fake older bar — corrupting both the
+    current minute's bar AND the on-disk historical bar.
+    """
+    from coordinator.services.live_feed_aggregator import _BarBuilder
+    b = _BarBuilder()
+    m = datetime(2026, 5, 27, 20, 40, 0, tzinfo=timezone.utc)
+
+    # Build up a normal in-progress bar for 20:40.
+    b.add(m + timedelta(seconds=5), 100.0, 1.0)
+    b.add(m + timedelta(seconds=20), 101.0, 2.0)
+    assert b.minute_start == m
+    assert b.open_ == 100.0
+    assert b.high == 101.0
+    assert b.volume == 3.0
+
+    # Open the 20:41 bar with an in-order tick.
+    closed = b.take_closed(m + timedelta(minutes=1))
+    assert closed is not None and closed["timestamp"] == m
+    b.add(m + timedelta(minutes=1, seconds=5), 102.0, 0.5)
+    assert b.minute_start == m + timedelta(minutes=1)
+
+    # Late tick for the already-closed 20:40 minute — must be a no-op.
+    b.add(m + timedelta(seconds=45), 99.0, 5.0)
+    assert b.minute_start == m + timedelta(minutes=1)
+    assert b.open_ == 102.0
+    assert b.high == 102.0
+    assert b.low == 102.0
+    assert b.volume == 0.5
+
+
+@pytest.mark.asyncio
+async def test_aggregator_drops_zero_size_trades(tmp_path, engine_and_factory):
+    """size=0 'trade' events (Tradier synthetic echoes) must not feed the bar
+    builder or land in the trades parquet. Mixed with real trades, only the
+    real ones should form the bar.
+    """
+    engine, sf = engine_and_factory
+    async with sf() as session:
+        session.add(Account(
+            id="acct-fake", name="fake", broker_type="fakebroker",
+            environment="paper",
+            credentials=_TEST_ENCRYPTION.encrypt_json({"api_key": "x", "secret_key": "y"}),
+            supported_asset_types=["equities"],
+        ))
+        session.add(LiveSubscription(
+            account_id="acct-fake", broker="fakebroker", symbol="SPY",
+            status="running",
+        ))
+        await session.commit()
+
+    minute = datetime(2026, 5, 14, 14, 30, 0, tzinfo=timezone.utc)
+    # 5 synthetic (size=0) events + 3 real trades, interleaved.
+    trades = [
+        {"symbol": "SPY", "timestamp": minute + timedelta(seconds=1), "price": 100.0, "size": 0.0},
+        {"symbol": "SPY", "timestamp": minute + timedelta(seconds=2), "price": 100.5, "size": 50.0},
+        {"symbol": "SPY", "timestamp": minute + timedelta(seconds=3), "price": 100.5, "size": 0.0},
+        {"symbol": "SPY", "timestamp": minute + timedelta(seconds=4), "price": 101.0, "size": 75.0},
+        {"symbol": "SPY", "timestamp": minute + timedelta(seconds=5), "price": 100.0, "size": 0.0},
+        {"symbol": "SPY", "timestamp": minute + timedelta(seconds=6), "price": 100.75, "size": 25.0},
+        {"symbol": "SPY", "timestamp": minute + timedelta(seconds=7), "price": 100.75, "size": 0.0},
+        {"symbol": "SPY", "timestamp": minute + timedelta(seconds=8), "price": 100.75, "size": 0.0},
+    ]
+    fake = _FakeAdapter(trades, [])
+
+    market_dir = str(tmp_path / "market")
+    fake_now = minute + timedelta(minutes=1, seconds=3)
+    data_service = DataService(market_data_dir=market_dir, custom_data_dir=str(tmp_path / "custom"))
+    agg = LiveFeedAggregator(
+        session_factory=sf,
+        encryption=_TEST_ENCRYPTION,
+        data_service=data_service,
+        adapter_factory=lambda b, e, c: fake,
+        market_dir=market_dir,
+        flush_interval_s=0.05,
+        now_fn=lambda: fake_now,
+    )
+    await agg.start()
+    await asyncio.sleep(0.3)
+    await agg.stop()
+
+    trades_path = (
+        Path(market_dir) / "fakebroker_live" / "SPY" / "ticks"
+        / f"trades-{minute.date().isoformat()}.parquet"
+    )
+    assert trades_path.exists()
+    tdf = pd.read_parquet(trades_path)
+    assert len(tdf) == 3  # only the size>0 events
+    assert (tdf["size"] > 0).all()
+
+    bar_path = Path(market_dir) / "fakebroker_live" / "SPY" / "1min.parquet"
+    assert bar_path.exists()
+    bars = pd.read_parquet(bar_path)
+    assert len(bars) == 1
+    row = bars.iloc[0]
+    # OHLCV derived from the three real trades (100.5, 101.0, 100.75 × 50/75/25).
+    assert float(row["open"]) == pytest.approx(100.5)
+    assert float(row["high"]) == pytest.approx(101.0)
+    assert float(row["low"]) == pytest.approx(100.5)
+    assert float(row["close"]) == pytest.approx(100.75)
+    assert float(row["volume"]) == pytest.approx(50 + 75 + 25)
+
+
+@pytest.mark.asyncio
+async def test_aggregator_resumes_stopped_sub_with_consumers(tmp_path, engine_and_factory):
+    """Consumer presence — not the status field — drives resume on startup.
+
+    Regression: rows can drift to status='stopped' (manual SQL, older code)
+    while consumers still hold them; the aggregator must still resume.
+    On successful stream open, status is normalized back to 'running'.
+    """
+    engine, sf = engine_and_factory
+    async with sf() as session:
+        session.add(Account(
+            id="acct-fake", name="fake", broker_type="fakebroker",
+            environment="paper",
+            credentials=_TEST_ENCRYPTION.encrypt_json({"api_key": "x", "secret_key": "y"}),
+            supported_asset_types=["equities"],
+        ))
+        sub = LiveSubscription(
+            account_id="acct-fake", broker="fakebroker", symbol="SPY",
+            status="stopped",
+        )
+        session.add(sub)
+        await session.flush()
+        session.add(SubscriptionConsumer(
+            subscription_id=sub.id, consumer_type="manual", consumer_id=None,
+        ))
+        await session.commit()
+
+    market_dir = str(tmp_path / "market")
+    agg = LiveFeedAggregator(
+        session_factory=sf,
+        encryption=_TEST_ENCRYPTION,
+        adapter_factory=lambda b, e, c: _FakeAdapter([], []),
+        market_dir=market_dir,
+        flush_interval_s=0.05,
+    )
+    await agg.start()
+    await asyncio.sleep(0.1)
+    await agg.stop()
+
+    async with sf() as session:
+        sub = (await session.execute(
+            select(LiveSubscription).where(LiveSubscription.broker == "fakebroker")
+        )).scalar_one()
+        assert sub.status == "running"
 
 
 @pytest.mark.asyncio
