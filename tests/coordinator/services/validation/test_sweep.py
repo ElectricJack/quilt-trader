@@ -85,9 +85,13 @@ async def test_run_sweep_persists_runs(db_session):
 
     fake_run_backtest = AsyncMock(return_value={"sharpe": 0.8, "max_dd": 0.20})
 
+    async def fake_factory(run_id: int) -> None:
+        return None
+
     with patch("coordinator.services.validation.sweep._run_one_backtest", fake_run_backtest):
         result = await run_sweep(
-            db=db_session,
+            db_session,
+            fake_factory,
             session_id=sess.id,
             manifest_path="/dummy/manifest.yaml",
             base_config={"start": "2024-01-01", "end": "2024-02-01"},

@@ -66,7 +66,7 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
     db_session.commit()
 
     # Fake sweep that picks the first config as best
-    async def fake_sweep(*, db, session_id, manifest_path, base_config, parameter_space, **kwargs):
+    async def fake_sweep(db, runner_factory, *, session_id, manifest_path, base_config, parameter_space, **kwargs):
         from coordinator.services.validation.sweep import SweepResult, expand_grid
         configs = expand_grid(parameter_space)
         return SweepResult(session_id=session_id, n_configs=len(configs), run_ids=[1, 2])
@@ -78,12 +78,16 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
     # Fake "run single OOS config" call
     fake_oos = AsyncMock(return_value=99)  # returns OOS run_id
 
+    async def fake_factory(run_id: int) -> None:
+        return None
+
     from datetime import date
     with patch("coordinator.services.validation.walk_forward.run_sweep", side_effect=fake_sweep), \
          patch("coordinator.services.validation.walk_forward._pick_best_train_config", side_effect=fake_pick_best), \
          patch("coordinator.services.validation.walk_forward._run_oos_backtest", fake_oos):
         result = await run_walk_forward(
-            db=db_session,
+            db_session,
+            fake_factory,
             session_id=sess.id,
             manifest_path="/dummy/manifest.yaml",
             base_config={"start": "2015-01-01", "end": "2026-05-01"},

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coordinator.database.models import AlgorithmInstance, DecisionLog, BacktestComparison
 from coordinator.services.backtest_engine import BacktestComparator
-from coordinator.services.backtest_config import SlippageModel
+from coordinator.services.backtest_config import BacktestConfig, SlippageModel
 from coordinator.services.parallel_backtest_feeder import ParallelBacktestFeeder
 
 try:
@@ -95,7 +95,19 @@ class BacktestSchedulerJob:
             session_factory=self._session_factory,
         )
 
-        engine = BacktestEngine()
+        # Mirror BacktestRunner: BacktestEngine consumes BacktestConfig (with
+        # optional cost_profile). The scheduler currently doesn't wire a
+        # cost_profile through — comparison runs use the legacy flat fee/slippage
+        # config. When the scheduler grows a per-algorithm or per-instance
+        # cost_profile setting, populate it here.
+        cost_profile = getattr(instance, "cost_profile", None) or getattr(algorithm, "cost_profile", None)
+        engine_config = BacktestConfig.model_validate({
+            "start": "1970-01-01",
+            "end": "9999-12-31",
+            "initial_cash": 100_000.0,
+            "cost_profile": cost_profile,
+        })
+        engine = BacktestEngine(config=engine_config)
         cancel = CancelToken()
 
         # Run synchronously in a thread to avoid blocking the event loop.
