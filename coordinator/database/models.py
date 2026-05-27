@@ -452,10 +452,30 @@ class SubscriptionConsumer(Base):
     subscription: Mapped["LiveSubscription"] = relationship(back_populates="consumers")
 
 
+class OptimizationSession(Base):
+    __tablename__ = "optimization_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
+    parameter_space: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
+    pre_registered_criteria: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
+    status: Mapped[str] = mapped_column(String, nullable=False, default="open")  # open | running | completed | failed
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    runs: Mapped[list["BacktestRun"]] = relationship(back_populates="optimization_session")
+
+
 class BacktestRun(Base):
     __tablename__ = "backtest_runs"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     algorithm_id: Mapped[str] = mapped_column(String, ForeignKey("algorithms.id"), nullable=False)
+    optimization_session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("optimization_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    optimization_session: Mapped["OptimizationSession | None"] = relationship(back_populates="runs")
     status: Mapped[str] = mapped_column(String, nullable=False, default="queued")
     # queued | downloading_data | running | completed | failed | cancelled
 
