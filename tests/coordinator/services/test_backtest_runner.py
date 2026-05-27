@@ -67,6 +67,80 @@ async def test_runner_creates_row_and_advances_status(test_app, db_session):
     assert refreshed.status == "completed"
 
 
+@pytest.mark.asyncio
+async def test_runner_passes_cost_profile_to_engine(test_app, db_session):
+    """When BacktestRun.cost_profile is set, the engine is instantiated with a
+    BacktestConfig carrying that cost_profile name."""
+    from coordinator.database.models import Algorithm, BacktestRun
+    import coordinator.services.backtest_engine_v2 as engine_module
+
+    algo = Algorithm(name="cp-algo", repo_url="https://github.com/example/cp-algo",
+                     install_status="installed")
+    db_session.add(algo)
+    await db_session.flush()
+
+    run = BacktestRun(
+        algorithm_id=algo.id,
+        date_range_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        date_range_end=datetime(2024, 2, 1, tzinfo=timezone.utc),
+        initial_cash=10_000.0,
+        cost_profile="default",
+    )
+    db_session.add(run)
+    await db_session.commit()
+
+    captured_configs: list = []
+    original_init = engine_module.BacktestEngine.__init__
+
+    def spy_init(self, config=None):
+        captured_configs.append(config)
+        original_init(self, config)
+
+    with patch("coordinator.services.backtest_runner._load_manifest") as load_manifest, \
+         patch("coordinator.services.coverage_utils.ensure_coverage", new_callable=AsyncMock, return_value=[]), \
+         patch("coordinator.services.backtest_runner._load_bar_series") as load_bars, \
+         patch("coordinator.services.backtest_runner._load_algorithm_class") as load_class, \
+         patch.object(engine_module.BacktestEngine, "__init__", spy_init):
+
+        load_manifest.return_value = MagicMock(
+            requirements=MagicMock(data_dependencies=[
+                {"symbol": "SPY", "timeframe": "1day", "source": "polygon"},
+            ]),
+        )
+
+        def fake_engine_run(**kwargs):
+            obs = kwargs["observer"]
+            from coordinator.services.backtest_engine_v2 import EngineSummary
+            obs.on_equity_point(datetime(2024, 1, 1, tzinfo=timezone.utc), 10_000.0, 10_000.0, [])
+            obs.on_complete(EngineSummary(total_bars=1, total_signals=0, total_fills=0,
+                                          final_cash=10_000.0, final_portfolio_value=10_000.0))
+
+        # The spy __init__ returns None (as __init__ should), but run() needs to work.
+        # We achieve this by letting the real __init__ run (spy calls original_init),
+        # then patching the instance's run method post-construction via the class patch.
+        # Actually, since we only spy on __init__ and don't block .run, we need to also
+        # redirect .run. Do that by patching BacktestEngine.run on the class.
+        with patch.object(engine_module.BacktestEngine, "run", fake_engine_run):
+            load_bars.return_value = MagicMock(empty=False)
+            load_class.return_value = MagicMock
+
+            container = get_container()
+            runner = BacktestRunner(
+                session_factory=container.session_factory,
+                download_manager=MagicMock(),
+                data_service=MagicMock(),
+                coverage_index=MagicMock(),
+            )
+            await runner.run(run.id)
+
+    assert len(captured_configs) == 1, "BacktestEngine.__init__ should have been called once"
+    cfg = captured_configs[0]
+    assert cfg is not None, "BacktestEngine should receive a non-None config"
+    assert cfg.cost_profile == "default", (
+        f"Expected cost_profile='default', got {cfg.cost_profile!r}"
+    )
+
+
 # ---- on_miss / auto-download helpers ----
 
 def _make_runner_stubs():
