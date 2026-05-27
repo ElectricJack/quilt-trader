@@ -737,3 +737,109 @@ class TestDownloadManager:
         assert dl["current_symbol_pct"] is None
         # Status must reflect completion
         assert dl["status"] in ("completed", "failed", "completed_with_errors")
+
+
+class TestPerProviderSemaphores:
+    """Per-provider semaphores let fast providers (yfinance) run while a slow
+    provider (polygon) is busy."""
+
+    @pytest.mark.asyncio
+    async def test_default_concurrency_per_provider(self, session_factory, mock_data_service):
+        """The DownloadManager exposes a per-provider semaphore. Default values
+        give polygon=1 (rate-limited) and yfinance=4 (no rate limit)."""
+        provider_a = AsyncMock()
+        provider_b = AsyncMock()
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": provider_a, "yfinance": provider_b},
+        )
+        assert mgr._semaphore_for("polygon")._value == 1
+        assert mgr._semaphore_for("yfinance")._value == 4
+
+    @pytest.mark.asyncio
+    async def test_provider_concurrency_override(self, session_factory, mock_data_service):
+        """Callers can override the per-provider concurrency."""
+        provider = AsyncMock()
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": provider},
+            provider_concurrency={"polygon": 3},
+        )
+        assert mgr._semaphore_for("polygon")._value == 3
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_returns_fallback_semaphore(
+        self, session_factory, mock_data_service,
+    ):
+        """For providers not in the providers dict, the fallback semaphore (value=1)
+        is returned. This keeps any future provider safely serialized."""
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": AsyncMock()},
+        )
+        fallback = mgr._semaphore_for("does-not-exist")
+        assert fallback._value == 1
+        assert fallback is mgr._fallback_semaphore
+
+    @pytest.mark.asyncio
+    async def test_polygon_and_yfinance_run_concurrently(
+        self, session_factory, mock_data_service,
+    ):
+        """Polygon and yfinance downloads use independent semaphores, so a slow
+        polygon download must NOT block a yfinance download."""
+        import asyncio
+
+        polygon_release = asyncio.Event()
+        polygon_started = asyncio.Event()
+
+        async def slow_polygon_fetch(symbol, timeframe, start, end, **_kw):
+            polygon_started.set()
+            await polygon_release.wait()  # block until we say so
+            return []
+
+        polygon = AsyncMock()
+        polygon.fetch_bars = slow_polygon_fetch
+
+        yfinance = AsyncMock()
+        yfinance.fetch_bars = AsyncMock(return_value=[
+            {"timestamp": "2024-01-01T00:00:00+00:00", "open": 100, "high": 105,
+             "low": 99, "close": 103, "volume": 1000},
+        ])
+
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": polygon, "yfinance": yfinance},
+        )
+
+        # Queue polygon first; it will block
+        await mgr.create_download(
+            symbols=["AAPL"],
+            date_range_start=date(2024, 1, 1),
+            date_range_end=date(2024, 6, 30),
+            provider="polygon",
+        )
+        # Wait for polygon to actually start (it now holds its provider semaphore)
+        await asyncio.wait_for(polygon_started.wait(), timeout=2.0)
+
+        # Now queue yfinance — should run immediately, NOT blocked by polygon
+        yf_result = await mgr.create_download(
+            symbols=["BTC-USD"],
+            date_range_start=date(2024, 1, 1),
+            date_range_end=date(2024, 6, 30),
+            provider="yfinance",
+        )
+
+        # Give yfinance time to complete
+        await asyncio.sleep(0.5)
+        yf_dl = await mgr.get_download(yf_result["id"])
+        assert yf_dl["status"] in ("completed", "failed", "completed_with_errors"), (
+            f"yfinance was blocked by polygon — status={yf_dl['status']}"
+        )
+
+        # Cleanup: release polygon so its task finishes
+        polygon_release.set()
+        await asyncio.sleep(0.3)
