@@ -53,13 +53,13 @@ class GoalProcessor:
                         await self._download_options(goal)
                 elif goal.goal_type == "bars":
                     await self._process_bars_goal(goal)
-            except Exception:
+            except Exception as exc:
                 logger.exception("GoalProcessor failed for goal %s", goal.id)
                 async with self._sf() as session:
                     g = (await session.execute(
                         select(DataGoal).where(DataGoal.id == goal.id)
                     )).scalar_one()
-                    g.error_message = "Processing error — will retry next tick"
+                    g.error_message = f"{type(exc).__name__}: {exc} — will retry next tick"
                     await session.commit()
 
     async def _discover_options(self, goal: DataGoal) -> None:
@@ -121,7 +121,10 @@ class GoalProcessor:
                     max_contracts=max_contracts, underlying_price=underlying_price,
                 )
                 for c in contracts:
-                    sym = c["ticker"].removeprefix("O:")
+                    ticker = c.get("ticker")
+                    if not isinstance(ticker, str) or not ticker:
+                        continue
+                    sym = ticker.removeprefix("O:")
                     new_contracts.append({"symbol": sym, "expiration": exp.isoformat()})
 
             discovered_exps.add(exp.isoformat())
@@ -165,7 +168,9 @@ class GoalProcessor:
         queued = 0
 
         for c in contracts:
-            sym = c["symbol"]
+            sym = c.get("symbol")
+            if not isinstance(sym, str) or not sym:
+                continue
             df = self._ds.load_market_data(provider_name, sym, "1day")
             if df is not None and len(df) > 1:
                 completed += 1
