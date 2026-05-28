@@ -43,24 +43,51 @@ PACKAGE_ROOT = Path("data/packages")
 
 from coordinator.services.asset_services import AssetType as _AssetType
 _VALID_ASSET_CLASSES = {t.value for t in _AssetType}
+# Brokers that can receive live subscriptions or place orders. 'yfinance' is
+# data-only (no live stream), so it's accepted in backtest data_dependencies
+# (handled separately by manifest.requirements.data_dependencies) but should
+# NOT appear in the runtime `assets` list.
+_VALID_LIVE_BROKERS = {"alpaca", "tradier", "coinbase", "polygon"}
 
 
 def _validate_assets(raw: list) -> list[dict]:
-    """Validate and normalize a list of asset entries.
+    """Validate and normalize a list of runtime asset entries.
 
-    - Rejects entries without 'symbol'.
-    - Rejects entries with an unrecognised 'asset_class'.
-    - Defaults missing 'asset_class' to 'equities'.
-    - Returns the normalised list (copies of the input dicts, never mutates).
+    Each entry must have:
+    - `symbol`: non-empty string
+    - `asset_class`: one of the known AssetType values (defaults to 'equities')
+    - `broker`: non-empty string identifying a live data/order venue
+
+    Rejects entries with an unrecognised `asset_class` or `broker` so we fail
+    fast at install time rather than silently dropping subscription wiring.
+    Returns the normalised list (new dicts, never mutates input).
     """
+    if not isinstance(raw, list):
+        raise ValueError(f"expected list of asset entries, got {type(raw).__name__}")
     result = []
-    for entry in raw:
-        if not isinstance(entry, dict) or not entry.get("symbol"):
-            raise ValueError("missing 'symbol'")
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"asset entry {i}: expected dict, got {type(entry).__name__}")
+        sym = entry.get("symbol")
+        if not sym or not isinstance(sym, str):
+            raise ValueError(f"asset entry {i}: missing or empty 'symbol'")
         ac = entry.get("asset_class", "equities")
         if ac not in _VALID_ASSET_CLASSES:
-            raise ValueError(f"invalid asset_class: {ac!r}")
-        result.append({**entry, "asset_class": ac})
+            raise ValueError(
+                f"asset entry {i} ({sym}): invalid asset_class {ac!r}; "
+                f"expected one of {sorted(_VALID_ASSET_CLASSES)}"
+            )
+        broker = entry.get("broker")
+        if not broker or not isinstance(broker, str):
+            raise ValueError(
+                f"asset entry {i} ({sym}): missing or empty 'broker'"
+            )
+        if broker not in _VALID_LIVE_BROKERS:
+            raise ValueError(
+                f"asset entry {i} ({sym}): unknown broker {broker!r}; "
+                f"expected one of {sorted(_VALID_LIVE_BROKERS)}"
+            )
+        result.append({**entry, "symbol": sym, "asset_class": ac, "broker": broker})
     return result
 
 
