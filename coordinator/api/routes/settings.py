@@ -50,6 +50,10 @@ async def _settings_status(db: AsyncSession) -> dict:
     result["theta_data_set"] = result.pop("theta_data_username_set")
     # Visible (non-secret) settings: return the actual value.
     result["coordinator_ip"] = await _get_setting(db, "coordinator_ip")
+    # Polygon tier/concurrency overrides — visible plaintext. Defaults match
+    # the free-tier rate limits applied in coordinator/main.py.
+    result["polygon_min_request_interval_s"] = await _get_setting(db, "polygon_min_request_interval_s")
+    result["polygon_concurrency"] = await _get_setting(db, "polygon_concurrency")
     return result
 
 
@@ -104,6 +108,43 @@ async def delete_discord_token(db: AsyncSession = Depends(get_db)):
 @router.delete("/polygon-key")
 async def delete_polygon_key(db: AsyncSession = Depends(get_db)):
     await _delete_setting(db, "polygon_api_key")
+    return await _settings_status(db)
+
+
+class PolygonTierBody(BaseModel):
+    """Polygon paid-tier overrides. Free tier is 5 calls/min so the default
+    in coordinator/main.py is 13s interval + 1 concurrency. Stocks Starter
+    is unlimited per-min with a per-second cap (10–100 depending on plan).
+    """
+    min_request_interval_s: Optional[float] = None
+    concurrency: Optional[int] = None
+
+
+@router.put("/polygon-tier")
+async def set_polygon_tier(body: PolygonTierBody, db: AsyncSession = Depends(get_db)):
+    """Set polygon rate-limit overrides. Either field can be omitted to clear
+    it; both stored plaintext (non-secret). Restart the coordinator to apply."""
+    if body.min_request_interval_s is not None:
+        if body.min_request_interval_s < 0:
+            from fastapi import HTTPException
+            raise HTTPException(400, "min_request_interval_s must be >= 0")
+        await _set_setting(db, "polygon_min_request_interval_s", str(body.min_request_interval_s))
+    else:
+        await _delete_setting(db, "polygon_min_request_interval_s")
+    if body.concurrency is not None:
+        if body.concurrency < 1:
+            from fastapi import HTTPException
+            raise HTTPException(400, "concurrency must be >= 1")
+        await _set_setting(db, "polygon_concurrency", str(body.concurrency))
+    else:
+        await _delete_setting(db, "polygon_concurrency")
+    return await _settings_status(db)
+
+
+@router.delete("/polygon-tier")
+async def delete_polygon_tier(db: AsyncSession = Depends(get_db)):
+    await _delete_setting(db, "polygon_min_request_interval_s")
+    await _delete_setting(db, "polygon_concurrency")
     return await _settings_status(db)
 
 @router.delete("/theta-data")

@@ -153,10 +153,50 @@ def create_app(
                 except Exception as e:  # noqa: BLE001
                     logger.warning("Failed to decrypt theta credentials: %s", e)
 
+            # Polygon paid-tier override. Free tier = 5 calls/min = 13s interval.
+            # Stocks Starter = unlimited but with per-second caps. The user can
+            # set these settings to override the conservative defaults.
+            polygon_interval_row = (
+                await session.execute(
+                    select(Setting).where(Setting.key == "polygon_min_request_interval_s")
+                )
+            ).scalar_one_or_none()
+            polygon_concurrency_row = (
+                await session.execute(
+                    select(Setting).where(Setting.key == "polygon_concurrency")
+                )
+            ).scalar_one_or_none()
+
+        polygon_interval_s = 13.0  # free-tier default
+        polygon_concurrency = 1     # free-tier default
+        try:
+            if polygon_interval_row is not None:
+                polygon_interval_s = max(0.0, float(polygon_interval_row.value))
+        except (TypeError, ValueError):
+            logger.warning(
+                "polygon_min_request_interval_s setting %r is not a number; using default %.1f",
+                getattr(polygon_interval_row, "value", None), polygon_interval_s,
+            )
+        try:
+            if polygon_concurrency_row is not None:
+                polygon_concurrency = max(1, int(polygon_concurrency_row.value))
+        except (TypeError, ValueError):
+            logger.warning(
+                "polygon_concurrency setting %r is not an int; using default %d",
+                getattr(polygon_concurrency_row, "value", None), polygon_concurrency,
+            )
+
         if polygon_key:
             from coordinator.services.data_providers.polygon import PolygonProvider
-            providers["polygon"] = PolygonProvider(api_key=polygon_key, http_client=http_client, min_request_interval_s=13.0)
-            logger.info("PolygonProvider wired into DownloadManager")
+            providers["polygon"] = PolygonProvider(
+                api_key=polygon_key,
+                http_client=http_client,
+                min_request_interval_s=polygon_interval_s,
+            )
+            logger.info(
+                "PolygonProvider wired into DownloadManager (interval=%.1fs, concurrency=%d)",
+                polygon_interval_s, polygon_concurrency,
+            )
         else:
             logger.warning(
                 "polygon_api_key not configured; PolygonProvider will be unavailable. "
@@ -228,6 +268,10 @@ def create_app(
             session_factory=session_factory,
             data_service=data_svc,
             providers=providers,
+            # Allow polygon concurrency to be overridden by Setting if the
+            # user upgraded to a paid tier. Other providers keep their
+            # built-in defaults from DownloadManager._DEFAULT_PROVIDER_CONCURRENCY.
+            provider_concurrency={"polygon": polygon_concurrency},
         )
         from coordinator.api.routes.data import set_download_manager
         set_download_manager(download_manager)
