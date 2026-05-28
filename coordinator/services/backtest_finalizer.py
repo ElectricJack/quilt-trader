@@ -316,6 +316,26 @@ async def finalize_run(
         r.romad = km.get("romad")
         r.longest_drawdown_days = km.get("longest_drawdown_days")
         r.trade_count = km.get("trade_count")
+        # Trade-aggregate metrics — previously these were computed into
+        # key_metrics but NOT persisted to the flat columns, so the API
+        # returned None for win_rate/profit_factor/etc. Mirror them now so
+        # the dashboard backtest list view shows them.
+        r.win_rate = km.get("win_rate")
+        r.profit_factor = km.get("profit_factor")
+        r.avg_win = km.get("avg_win")
+        r.avg_loss = km.get("avg_loss")
+        r.expectancy = km.get("expectancy")
+        r.longest_winning_streak = km.get("longest_winning_streak")
+        r.longest_losing_streak = km.get("longest_losing_streak")
+        # Cost totals — sum from trades parquet (cheap pandas op).
+        if trades_list:
+            try:
+                fees_total = float(sum(float(t.get("fees", 0) or 0) for t in trades_list))
+                slippage_total = float(sum(float(t.get("slippage_dollars", 0) or 0) for t in trades_list))
+                r.total_fees_paid = fees_total
+                r.total_slippage_dollars = slippage_total
+            except (TypeError, ValueError):
+                pass
 
         await session.commit()
 
