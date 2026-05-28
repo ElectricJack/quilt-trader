@@ -105,3 +105,102 @@ async def test_run_sweep_persists_runs(db_session):
     assert isinstance(result, SweepResult)
     assert result.n_configs == 2
     assert fake_run_backtest.await_count == 2
+
+
+# ---- Optuna / TPE search ----
+
+@pytest.mark.asyncio
+async def test_tpe_search_dispatches_max_trials(db_session):
+    """TPE search runs ``max_trials`` sequentially. Each trial reads the
+    objective metric off the BacktestRun row Optuna just produced."""
+    from unittest.mock import AsyncMock, patch
+    from coordinator.services.validation.optimization_session import create_session
+    from coordinator.database.models import BacktestRun
+
+    sess = create_session(
+        db_session,
+        name="tpe-test-001",
+        hypothesis="H",
+        parameter_space={},
+        pre_registered_criteria={},
+    )
+    db_session.commit()
+
+    # _run_one_backtest is mocked. We need it to return a run_id AND set the
+    # sharpe_ratio column on the just-created BacktestRun so optuna gets a
+    # signal. The simplest path: instead of mocking _run_one_backtest, mock
+    # the runner_factory and let the real _run_one_backtest do its thing.
+    sharpe_per_trial = []
+
+    async def runner_factory(run_id):
+        # After _run_one_backtest creates the BacktestRun row with the trial
+        # config, set sharpe_ratio so optuna gets a signal. Use vol_target
+        # as a proxy (higher vol_target → higher fake sharpe to learn a trend).
+        row = db_session.query(BacktestRun).filter(BacktestRun.id == run_id).one()
+        cfg = row.config_overrides or {}
+        fake_sharpe = float(cfg.get("vol_target", 0.0)) + 0.5  # 0.5 base + vol_target lift
+        row.sharpe_ratio = fake_sharpe
+        row.status = "completed"
+        db_session.commit()
+        sharpe_per_trial.append(fake_sharpe)
+
+    from coordinator.services.validation.sweep import run_sweep
+    result = await run_sweep(
+        db=db_session,
+        runner_factory=runner_factory,
+        session_id=sess.id,
+        manifest_path="/dummy/manifest.yaml",
+        base_config={"start": "2024-01-01", "end": "2024-02-01"},
+        parameter_space={"vol_target": [0.05, 0.30]},
+        search="tpe",
+        max_trials=8,
+        seed=42,
+        distributions={"vol_target": "uniform"},
+        objective="sharpe_ratio",
+        objective_direction="maximize",
+    )
+    assert result.n_configs == 8
+    assert len(result.run_ids) == 8
+    # 8 trials is below Optuna's TPE warmup (10 random trials by default), so
+    # convergence isn't guaranteed yet. Verify the basics: every trial ran
+    # and produced a recorded objective, and the range of explored sharpes
+    # spans a meaningful chunk of the [0.55, 0.80] possible range.
+    assert max(sharpe_per_trial) - min(sharpe_per_trial) > 0.05
+
+
+@pytest.mark.asyncio
+async def test_tpe_skips_runs_with_missing_objective(db_session):
+    """When a backtest fails to populate the objective metric, TPE should
+    skip it (study.tell with FAIL state) rather than crashing."""
+    from coordinator.services.validation.optimization_session import create_session
+
+    sess = create_session(
+        db_session,
+        name="tpe-test-002",
+        hypothesis="H",
+        parameter_space={},
+        pre_registered_criteria={},
+    )
+    db_session.commit()
+
+    async def runner_factory(run_id):
+        # Do nothing — sharpe_ratio stays None
+        pass
+
+    from coordinator.services.validation.sweep import run_sweep
+    # Should not crash even though every trial fails
+    result = await run_sweep(
+        db=db_session,
+        runner_factory=runner_factory,
+        session_id=sess.id,
+        manifest_path="/dummy/manifest.yaml",
+        base_config={"start": "2024-01-01", "end": "2024-02-01"},
+        parameter_space={"vol_target": [0.05, 0.30]},
+        search="tpe",
+        max_trials=3,
+        seed=1,
+        distributions={"vol_target": "uniform"},
+        objective="sharpe_ratio",
+    )
+    # All 3 trials ran (we still get run_ids) but optuna's record shows them as failed
+    assert result.n_configs == 3

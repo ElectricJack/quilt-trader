@@ -37,6 +37,7 @@ coordinator = [
     "alpaca-py>=0.30.0",
     "matplotlib>=3.8",
     "markdown>=3.5",
+    "optuna>=4.0",
 ]
 dev = [
     "pytest>=8.0.0",

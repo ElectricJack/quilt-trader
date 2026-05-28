@@ -169,11 +169,13 @@ async def run_sweep(
     manifest_path: str | Path,
     base_config: dict[str, Any],
     parameter_space: dict[str, Any],
-    search: Literal["grid", "random", "latin"] = "grid",
+    search: Literal["grid", "random", "latin", "tpe"] = "grid",
     max_trials: int = 50,
     parallelism: int = 1,
     seed: int = 0,
     distributions: Optional[dict[str, str]] = None,
+    objective: str = "sharpe_ratio",
+    objective_direction: Literal["maximize", "minimize"] = "maximize",
 ) -> SweepResult:
     """Run a parameter sweep under an existing OptimizationSession.
 
@@ -181,7 +183,28 @@ async def run_sweep(
     dispatches up to ``parallelism`` concurrent backtests via
     ``_run_one_backtest``.  Returns a :class:`SweepResult` summarising
     the session once all trials have completed.
+
+    Search strategies:
+    - ``grid``: cross-product of all parameter values (up to max_trials).
+    - ``random``: independent uniform samples from bounded ranges.
+    - ``latin``: Latin-hypercube samples — better space coverage than random.
+    - ``tpe``: Tree-Parzen Estimator (Bayesian) via Optuna. Each trial's
+      result steers the next trial's parameters. Inherently sequential,
+      so ``parallelism`` is ignored for this strategy.
+
+    For ``tpe``, ``objective`` is the BacktestRun column to optimize
+    (default 'sharpe_ratio'). ``objective_direction`` is 'maximize' or
+    'minimize'.
     """
+    if search == "tpe":
+        return await _run_sweep_tpe(
+            db, runner_factory,
+            session_id=session_id, base_config=base_config,
+            parameter_space=parameter_space, max_trials=max_trials,
+            seed=seed, distributions=distributions or {},
+            objective=objective, objective_direction=objective_direction,
+        )
+
     if search == "grid":
         configs = expand_grid(parameter_space)[:max_trials]
     elif search == "random":
@@ -216,4 +239,94 @@ async def run_sweep(
         session_id=session_id,
         n_configs=len(configs),
         run_ids=[r["run_id"] for r in results if "run_id" in r],
+    )
+
+
+async def _run_sweep_tpe(
+    db: Any,
+    runner_factory: RunnerFactory,
+    *,
+    session_id: int,
+    base_config: dict[str, Any],
+    parameter_space: dict[str, Any],
+    max_trials: int,
+    seed: int,
+    distributions: dict[str, str],
+    objective: str,
+    objective_direction: str,
+) -> SweepResult:
+    """Bayesian / Tree-Parzen-Estimator sweep via Optuna.
+
+    Sequential by nature — Optuna's TPE conditions each trial on prior
+    trials' results. The orchestrator runs one backtest, reads its
+    `objective` metric off the DB row, reports it back to Optuna, then
+    asks for the next trial's params.
+
+    parameter_space here supports both discrete-grid form (key -> [v1, v2,
+    ...]) AND continuous-bounds form (key -> [low, high]) via the
+    ``distributions`` dict ({"vol_target": "uniform", "lookback": "int"}).
+    Discrete keys (no distribution declared) fall back to `suggest_categorical`.
+    """
+    try:
+        import optuna
+    except ImportError as e:
+        raise RuntimeError(
+            "TPE search requires the optuna package. Install with: pip install optuna"
+        ) from e
+
+    # Quiet optuna's default per-trial INFO output — we have our own logging.
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    study = optuna.create_study(direction=objective_direction, sampler=sampler)
+    run_ids: list[str] = []
+
+    from coordinator.database.models import BacktestRun
+
+    def _suggest(trial: "optuna.Trial") -> dict[str, Any]:
+        cfg: dict[str, Any] = {}
+        for key, candidates in parameter_space.items():
+            dist = distributions.get(key)
+            if dist == "uniform":
+                lo, hi = float(candidates[0]), float(candidates[1])
+                cfg[key] = trial.suggest_float(key, lo, hi)
+            elif dist == "log_uniform":
+                lo, hi = float(candidates[0]), float(candidates[1])
+                cfg[key] = trial.suggest_float(key, lo, hi, log=True)
+            elif dist == "int_uniform":
+                lo, hi = int(candidates[0]), int(candidates[1])
+                cfg[key] = trial.suggest_int(key, lo, hi)
+            else:
+                # Discrete grid value
+                cfg[key] = trial.suggest_categorical(key, list(candidates))
+        return cfg
+
+    for trial_idx in range(max_trials):
+        trial = study.ask()
+        cfg = _suggest(trial)
+        result = await _run_one_backtest(
+            db,
+            runner_factory,
+            session_id=session_id,
+            base_config=base_config,
+            config=cfg,
+            config_hash_str=config_hash(cfg),
+        )
+        run_id = result.get("run_id")
+        if run_id is None:
+            # Test mocks return without run_id; tell optuna we failed and skip
+            study.tell(trial, state=optuna.trial.TrialState.FAIL)
+            continue
+        run_ids.append(run_id)
+        # Read the objective from the just-completed BacktestRun
+        row = db.query(BacktestRun).filter(BacktestRun.id == run_id).one_or_none()
+        if row is None or getattr(row, objective, None) is None:
+            study.tell(trial, state=optuna.trial.TrialState.FAIL)
+            continue
+        study.tell(trial, float(getattr(row, objective)))
+
+    return SweepResult(
+        session_id=session_id,
+        n_configs=len(run_ids),
+        run_ids=run_ids,
     )
