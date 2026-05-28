@@ -69,7 +69,10 @@ def test_load_named_profile_default():
     profile = load_named_profile("default")
     bundle_crypto = profile.resolve(venue="alpaca", asset_type="crypto", symbol="BTC/USD")
     assert bundle_crypto.fees[0].percent_fee == 0.0025  # taker default
-    assert bundle_crypto.slippage.market_bps == 15.0
+    # Tightened from 15bps + use_bar_range=True to 10bps + use_bar_range=False
+    # on 2026-05-27 — observed empirical slippage was unrealistically high.
+    assert bundle_crypto.slippage.market_bps == 10.0
+    assert bundle_crypto.slippage.use_bar_range is False
 
     bundle_equity = profile.resolve(venue="alpaca", asset_type="equity", symbol="SPY")
     assert bundle_equity.fees[0].flat_fee == 0.0

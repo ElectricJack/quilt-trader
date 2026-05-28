@@ -8,12 +8,28 @@ fallback:
     use_bar_range: false
 bundles:
   alpaca:crypto:
+    # Alpaca spot crypto: 0.25% taker fee (~25 bps). Spread for liquid pairs
+    # (BTC/ETH) is typically 5-15 bps on retail-size orders. use_bar_range was
+    # previously true but produced unrealistic slippage on liquid crypto:
+    # median 70 bps, max 400 bps observed in the crypto-tsmom 2025-2026
+    # backtest. For retail BTC/ETH, a flat 10 bps market-impact estimate is
+    # closer to reality. Long-tail alts may still warrant use_bar_range: true
+    # via a per-symbol override (not implemented yet).
     fees:
       - flat_fee: 0.0
         percent_fee: 0.0025
     slippage:
-      market_bps: 15.0
-      use_bar_range: true
+      market_bps: 10.0
+      use_bar_range: false
+  coinbase:crypto:
+    # Coinbase Advanced taker fee at 0.6% retail. Similar spread profile to
+    # Alpaca for BTC/ETH.
+    fees:
+      - flat_fee: 0.0
+        percent_fee: 0.006
+    slippage:
+      market_bps: 10.0
+      use_bar_range: false
   alpaca:equity:
     fees:
       - flat_fee: 0.0
