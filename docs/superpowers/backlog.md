@@ -102,7 +102,7 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 ### `add_symbols` / `remove_symbols` on stream handles
 - **Surfaced by:** [2026-05-18-unified-live-subscriptions-design.md](specs/2026-05-18-unified-live-subscriptions-design.md)
 - **Why deferred:** today, adding or removing a symbol from a running subscription tears down and restarts the whole stream. Both `_AlpacaStreamHandle` and `_TradierStreamHandle` need `add_symbols` / `remove_symbols` methods so multi-symbol updates are surgical rather than restart-from-scratch.
-- **What's needed:** implement `add_symbols(syms)` / `remove_symbols(syms)` on each handle class; update `LiveFeedAggregator.start_subscription` / `stop_subscription` to call them when a handle already exists for that broker.
+- **RESOLVED** (2026-05-27, commit `dbe7917`): `MarketDataStreamHandle.add_symbols/remove_symbols` declared on base class (raise NotImplementedError by default). `_AlpacaStreamHandle` overrides with native `subscribe_trades/quotes` + `unsubscribe_*`. `_TradierStreamHandle` overrides with a force-reconnect flow (closes current chunked-HTTP response so `_run` re-opens with new symbol list). LiveFeedAggregator wiring is the follow-up consumer — `start_subscription`/`stop_subscription` can now call `add_symbols`/`remove_symbols` on existing handles instead of tear-down + recreate.
 
 ### Validate `Algorithm.assets` shape at install time
 - **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
@@ -159,17 +159,17 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 ### SPA / White's Reality Check significance test
 - **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
 - **Why deferred:** v1 ships Bonferroni and Benjamini-Hochberg corrections. SPA is more powerful for dependent hypothesis sets (which is what parameter sweeps produce) but the implementation requires bootstrap-of-bootstraps and is meaningfully more involved.
-- **What's needed:** implement Hansen's SPA test or White's bootstrap reality check in `coordinator/services/validation/multi_test.py`. Should accept a list of strategy return series and return a corrected p-value for the best performer.
+- **RESOLVED** (2026-05-27, commit `bb616dd`): `spa_test(returns_matrix, n_resamples, block_size, seed)` ships in `multi_test.py`. Uses stationary block-bootstrap of centered returns; returns the best strategy's index, sample mean, and data-mining-corrected p-value. White (2000) version — conservative compared to Hansen but easier to reason about. Hansen's studentized refinement deferred.
 
 ### Pluggable regime taggers
 - **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
 - **Why deferred:** v1 ships only a BTC-trailing-return tagger, which is circular for crypto strategies (the regime measures what the strategy trades). Acknowledged limitation noted in spec.
-- **What's needed:** make `regime.py` accept a `RegimeTagger` protocol; ship a VIX-based equity tagger and a user-supplied function tagger. Each strategy's manifest declares which tagger it consumes.
+- **RESOLVED** (2026-05-27, commit `cbce415`): `regime.py` refactored to expose a `RegimeTagger` Protocol. Three taggers ship: `tag_regimes_by_trailing_return` (existing BTC-style), `tag_regimes_by_vix` (low/mid/high vol from VIX percentiles for equity strategies), `FunctionTagger` (wraps arbitrary callables for research-notebook one-offs). `tag_regimes()` preserved as backward-compat alias.
 
 ### Bayesian / TPE search in sweep
 - **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
 - **Why deferred:** grid + random + latin-hypercube cover the v1 needs. TPE / Bayesian search would be more sample-efficient for large parameter spaces.
-- **What's needed:** add Optuna integration to `sweep.py` as a fourth search type. The DB schema for `OptimizationSession` already stores the search type as a string, so this is additive.
+- **RESOLVED** (2026-05-27, commit `385a446`): `run_sweep(search="tpe", ...)` added via Optuna. Sequential (parallelism ignored — each trial conditioned on prior results). Reads `objective` column from each BacktestRun after dispatch, reports back to Optuna via `study.tell`. Failed-objective trials are FAIL-stated to optuna and skipped. Mixes discrete-grid + continuous-bounds parameters via per-key `distributions` dict.
 
 ### Dashboard UI for OptimizationSession browsing
 - **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
@@ -212,12 +212,12 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 ### Multi-consumer `on_download_complete` listener registry
 - **Deferred from:** [2026-05-27-options-goal-incremental-download-design.md](specs/2026-05-27-options-goal-incremental-download-design.md)
 - **Why deferred:** `DownloadManager.on_download_complete` is currently a single `Callable`. The new options-goal design adds a second consumer (the goal processor) alongside the existing portfolio tracker. v1 wraps both in a fan-out function in `coordinator/main.py`; converting the slot to a proper `list[Callable]` with `add_listener` / `remove_listener` methods is a small structural cleanup that's only worth doing if a third consumer appears.
-- **What's needed:** change `DownloadManager.__init__` to accept `on_download_complete: list[Callable]` (or expose `add_completion_listener`); rewire `coordinator/main.py` to register each consumer separately instead of through a fan-out function.
+- **RESOLVED** (2026-05-27, commit `450efcb`): `DownloadManager` now exposes `add_completion_listener(cb)` / `remove_completion_listener(cb)`. Legacy `_on_download_complete` attribute kept as a property (for backward compat with main.py's direct assignment). Exceptions in one listener are caught and logged, never block others.
 
 ### Paid-tier polygon concurrency setting
 - **Surfaced by:** [2026-05-27-options-goal-incremental-download-design.md](specs/2026-05-27-options-goal-incremental-download-design.md)
 - **Why deferred:** the user is on polygon's free tier (1 concurrent / ~13s latency). A paid-tier upgrade will allow higher concurrency. The new download design uses `concurrency + 1` as the goal's in-flight cap, so raising the setting automatically scales the queue.
-- **What's needed:** a settings UI / env var that overrides `DownloadManager._DEFAULT_PROVIDER_CONCURRENCY["polygon"]`. Plumb through `coordinator/main.py` startup. No goal-side changes required.
+- **RESOLVED** (2026-05-27, commit `f8865f7`): Two new Settings keys `polygon_min_request_interval_s` and `polygon_concurrency` loaded at coordinator startup and passed to `PolygonProvider` + `DownloadManager.provider_concurrency`. `PUT /api/settings/polygon-tier` to set, `DELETE` to clear. Requires coordinator restart to apply (provider construction happens at startup).
 
 ---
 
