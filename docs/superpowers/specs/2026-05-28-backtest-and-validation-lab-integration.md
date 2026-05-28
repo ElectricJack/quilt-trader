@@ -306,19 +306,68 @@ For `tpe`, the orchestrator reads `objective` (default `sharpe_ratio`) off the j
 | Reality check / SPA significance | `multi_test.py` | N×T returns matrix | `SPAResult(best_idx, best_mean, p_value)` |
 | Regime taggers (trailing-return, VIX, custom) | `regime.py` | reference price series | regime-string Series |
 
-## Known follow-ups (deferred)
+## Backlog coverage
 
-Listed in priority order. Each is tracked in `docs/superpowers/backlog.md`.
+This section maps backlog items to their disposition under this spec. Use it as the canonical source of truth — the `backlog.md` entries cross-reference back here.
 
-### Tier 3 (each needs its own short spec)
+### Backlog items **shipped and codified as invariants**
 
-- **Async-job model for `quilt research walk-forward`** — long sweeps still time out the CLI; need 202-Accepted + job-id polling.
-- **Strategy-side stop-loss / portfolio circuit breaker** — A/B test needed before adopting as default.
-- **Manifest `data:` block for custom data dependencies** — scrapers, CSVs.
-- **Replace synthetic backtest clock with union-of-symbol-timelines** — eliminates the per-symbol-lookup patches in `_try_fill`/`_lookup_symbol_close` once the clock IS real.
-- **Timezone-aware backtest engine** — manifest `timezone:` field for time-of-day algorithms.
+Each of these was an open Backtesting-section backlog item that was resolved during the work the spec captures. The invariant column tells you where the contract now lives.
 
-### Tier 4 (needs full roadmap design)
+| Backlog item | Invariant | Shipping commit(s) |
+|---|---|---|
+| Orphan backtest cleanup on coordinator startup | (no invariant; behavior documented under "What the engine guarantees the lab") | `5ab29d3` |
+| Realistic Alpaca crypto slippage profile | I11 (default profile content) | `a9089a0` |
+| Default cost profile not auto-applied | I11 | `16f3a1b` |
+| Trade-aggregate metrics not persisted on BacktestRun | I12 | `18aaaab` |
+| Sweep/walk-forward DI smell — magic config keys | (not an invariant; addressed by `RunnerFactory` callable parameter) | (validation lab phase work) |
+| Sync vs async DB session split | I5 (separate sync orchestrator session + async runner session, commit boundary) | (validation lab phase work) |
+| BacktestScheduler not wired to cost_profile | I11 (scheduler also auto-applies default) | (validation lab phase work) |
+| `quilt research *` should be a thin client | (not an invariant; HTTP endpoint pattern) | (validation lab phase work) |
+| SPA / White's Reality Check significance test | (documented under "Validation-lab metrics surface") | `bb616dd` |
+| Pluggable regime taggers | (documented under "Validation-lab metrics surface") | `cbce415` |
+| Bayesian / TPE search in sweep | (documented under "Search strategies in `run_sweep`") | `385a446` |
+| Per-provider download semaphores | I14 | `5ecf9cd` |
+| Multi-consumer `on_download_complete` listener registry | (not an invariant; download manager API) | `450efcb` |
+| Paid-tier polygon concurrency setting | I14 (extended to allow override) | `f8865f7` |
+| Validate `Algorithm.assets` shape at install time | (install-time validator) | `2556fd1` |
+| Algorithm install: handle existing package dir | (install-time recovery) | `2422a54` |
+| `on_disconnect` callback on broker stream handles | (broker-side, separate from lab/engine) | `7ed6268` |
+| `add_symbols` / `remove_symbols` on stream handles | (broker-side, separate from lab/engine) | `dbe7917` |
+
+### Backlog items **deferred from this spec** — kept as Tier 3 follow-ups
+
+These were considered in scope to address but explicitly deferred. Each gets its own dated spec when picked up. Backlog entries should cross-reference this spec as the deferral source.
+
+| Tier 3 item | Why deferred | Relationship to this spec |
+|---|---|---|
+| **Replace synthetic backtest clock with union-of-symbol-timelines** | Bigger structural change than fits in this spec's contract documentation. The current per-symbol-lookup patches (codified as I3 — symbol normalization on every cache read) are workarounds. Replacing the synthetic clock with a real union clock would eliminate them entirely. | This spec's I3 is a *workaround invariant*. The proper fix retires the workaround — when shipped, update I3 to reference the cleaner contract. |
+| **Timezone-aware backtest engine** | Manifest schema change; affects `BacktestTickContext.timestamp` semantics. Independent of lab/engine integration but affects any algorithm with time-of-day logic. | Not currently an invariant. When shipped, this spec should add `I16: ctx.timestamp respects manifest timezone declaration`. |
+| **Strategy-side stop-loss / portfolio circuit breaker** | Strategy-side feature, not lab/engine contract. The lab provides the A/B test infrastructure (sweep with/without stop). | Not part of this spec — the lab's sweep + walk-forward IS the methodology for evaluating it. Belongs in a strategy-specific spec. |
+| **Async-job model for `quilt research walk-forward`** | Long sweeps time out the CLI's 600s synchronous HTTP. Need 202-Accepted + job-id polling. | Validation-lab orchestration concern; doesn't affect the integration contract here. Update this spec's "API contract" section when shipped to document the new polling endpoint. |
+| **Manifest `data:` block for custom data dependencies** | Scrapers, CSVs. Affects the contract in I2 (bars cache key shape). | If shipped, add an `I17: ctx.data(custom_source)` invariant alongside the existing I2/I3 bars-cache contracts. |
+
+### Backlog items **out of scope for this spec**
+
+These belong to other subsystems and aren't bridged by the lab/engine contract:
+
+- Bulk "close all" positions action (Positions domain)
+- Daily/weekly option expiration data (Backtesting data layer, but specifically about Polygon data tier and contract discovery — orthogonal to the lab)
+- Per-attempt scraper run history (Scrapers domain)
+- Push test-algo `quilt.yaml` upstream (one-shot housekeeping)
+
+### Backlog domain re-categorizations recommended
+
+Reading the backlog through the lens of this spec surfaced two miscategorized items:
+
+1. **"`quilt research walk-forward` CLI needs async-job model"** is currently under the Backtesting section but is purely a validation-lab orchestration concern. Move it to the Validation Lab section.
+2. **"Replace synthetic backtest clock with union-of-symbol-timelines"** is currently under the Live data feeds section but is squarely a Backtesting engine concern (it surfaced through backtest engine edge cases and would be implemented in `backtest_engine_v2.py`). Move it to the Backtesting section.
+
+After those moves, the open Backtesting section reads as a focused list of engine-correctness work (timezone, options data, synthetic clock) and the Validation Lab section captures all lab-orchestration debt.
+
+## Known follow-ups (Tier 4 features that warrant full roadmap-level design)
+
+Each is a multi-week feature that ships under its own brainstorm → spec → plan cycle.
 
 - **Validation Lab dashboard UI** — sessions browser, sweep heatmaps, walk-forward fold viewer, report renderer. **This is the highest-leverage Tier 4 — without it, the lab is invisible to humans and future agents.**
 - **Live deployment automation when a session passes kill criteria** — paper-trade cutover, deploy button.

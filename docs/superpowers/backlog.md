@@ -50,15 +50,27 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ## Backtesting
 
+> **Integration contract** for the engine ↔ validation lab boundary is documented in [specs/2026-05-28-backtest-and-validation-lab-integration.md](specs/2026-05-28-backtest-and-validation-lab-integration.md). Open Backtesting items that affect that contract are marked **[covered by spec]** below, with a pointer to which invariant or deferred section captures them.
+
 ### Timezone-aware backtest engine
 - **Surfaced by:** options-spreads-martingale backtests producing 0 trades (2026-05-25). The algo checks `now.time() < time(15, 45)` meaning 3:45 PM ET, but sim_time is UTC. The 5-minute entry window (15:45–15:50 config) silently misaligns.
 - **Why deferred:** workaround exists (adjust config times to UTC), but every new algo with time-of-day logic will hit the same trap.
 - **What's needed:** add `timezone` field to manifest (e.g., `timezone: America/New_York`). Engine converts sim_time to algo's declared timezone before calling on_tick. `ctx.timestamp` returns tz-aware datetime. Default to UTC if not specified. Validate at install: reject manifests with time-based configs that don't declare a timezone.
+- **[covered by spec]:** Listed as Tier 3 deferred work in `2026-05-28-backtest-and-validation-lab-integration.md` § Backlog coverage. Spec notes that when shipped this becomes a new invariant `I16: ctx.timestamp respects manifest timezone declaration`.
+
+### Replace synthetic backtest clock with union-of-symbol-timelines clock
+> **Recategorized 2026-05-28** from Live data feeds → Backtesting. Surfaced as a backtest engine concern (synthetic clock in `backtest_engine_v2`), only filed under Live feeds because of where the original discovery happened. Implementation lives in the engine.
+
+- **Surfaced by:** backtest engine edge cases on alpha-picks-rebalancer (2026-05-19). The synthetic clock (all-zeros business-day series) broke fills ($0 prices), position valuation ($0 market value), and position snapshots. Each was patched individually with per-symbol lookups, but the root cause remains.
+- **Why deferred:** the per-symbol lookup patches work for v1. The structural fix requires rethinking the engine's clock construction: instead of pre-building the clock before the first tick, discover which symbols the algo actually uses after the first tick, merge their timestamps into a real clock, then replay.
+- **What's needed:** after the first `on_tick` call, inspect `ctx._bars` for all symbols the algo loaded via `market_data()`. Build the clock from the UNION of all those timelines (deduped + sorted). Re-run from bar 0 with the real clock. This eliminates the synthetic clock entirely — every bar in the clock corresponds to a real price in at least one symbol, so fills, valuation, and snapshots all use real data without special-case lookups. The per-symbol lookup code can then be simplified back to using the clock bar directly.
+- **[covered by spec]:** Integration spec invariant **I3** (`AssetService.resolve_symbol` on every cache read) is explicitly called out as a *workaround invariant*. Replacing the synthetic clock retires those workarounds. When shipped, spec's I3 should be reduced to "cache key matches lookup key directly" — the resolution layer goes away.
 
 ### Daily/weekly option expiration data
 - **Surfaced by:** options-spreads-martingale and options-condor-martingale backtests (2026-05-25). These are 0DTE/1DTE strategies that need contracts expiring every trading day. Current contract discovery only finds monthly expirations (3rd Friday), so the algo's `_next_expiration()` returns tomorrow's date but no chain exists for it → 0 trades.
 - **Why deferred:** downloading daily expirations increases data volume ~20x. Polygon free tier rate limits make this impractical without a paid plan.
 - **What's needed:** extend contract discovery to find daily/weekly expirations. Consider making expiration frequency configurable in the manifest (`expiration_frequency: daily | weekly | monthly`). May require Polygon paid tier for reasonable download times.
+- **[out of scope of integration spec]:** Data-layer / Polygon-tier concern; doesn't affect the engine ↔ lab contract. Independent feature.
 
 ### Orphan backtest cleanup on startup
 - **Surfaced by:** coordinator restarts leaving backtests stuck in "running" status (2026-05-25).
@@ -84,11 +96,7 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Surfaced by:** user question on 2026-05-27 ("what mechanism is preventing a complete stop loss?"). The crypto-tsmom strategy has no explicit stop-loss — positions exit only when the signal flips negative or realized vol explodes. In a fast crash where the signal hasn't yet rolled, drawdowns are unbounded (capped only at -100%).
 - **Why deferred:** debatable whether a stop-loss helps or hurts a momentum strategy. Adding one whipsaws out of legitimate drawdowns; not adding one accepts tail risk. Worth A/B testing before shipping.
 - **What's needed:** EITHER (a) add a `max_drawdown_stop` config to the crypto-tsmom algorithm (and any future strategy) that closes all positions if running drawdown exceeds a threshold (e.g., 20%), keeps the account in cash until signal turns positive AND drawdown recovers. OR (b) add a portfolio-level circuit breaker as a framework feature consumed by all algorithms. Either way, A/B test the resulting Sharpe/CAGR vs no-stop baseline before adopting as the default.
-
-### `quilt research walk-forward` CLI needs async-job model, not synchronous HTTP
-- **Surfaced by:** validation-lab walk-forward runs on 2026-05-27 timing out the CLI's HTTP client even though server-side work continued (bumped CLI default timeout to 600s as band-aid; commit `8fccfcc`).
-- **Why deferred:** band-aid works for sessions up to ~30 backtests; larger sweeps still time out.
-- **What's needed:** convert `POST /api/research/sessions/{id}/sweep` and `.../walk-forward` to fire-and-forget — return `202 Accepted` with a `job_id`. Add `GET /api/research/sessions/{id}/jobs/{job_id}` for polling. CLI displays a progress bar and polls until done. Server-side work runs in an `asyncio.create_task` registered with the coordinator's task tracker (mirrors how `DownloadManager.create_download` already works).
+- **[covered by spec]:** Listed as Tier 3 deferred in `2026-05-28-backtest-and-validation-lab-integration.md` § Backlog coverage. Spec notes this is strategy-side, not engine/lab contract — the validation lab's sweep + walk-forward IS the methodology for evaluating it (run with/without stop, compare bootstrap Sharpe CIs). Belongs in a strategy-specific spec when picked up.
 
 ---
 
@@ -118,11 +126,6 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Surfaced by:** backtest failure on alpha-picks-rebalancer (2026-05-19). The algo called `ctx.data("alpha-picks-scraper")` but the backtest runner couldn't find the file.
 - **Why deferred:** the immediate fix (smarter path resolution in `StandaloneDataProvider`) unblocks the user. The structural fix — declaring custom data deps in the manifest — requires design work on how scrapers + custom CSVs fit into the manifest schema alongside `assets:`.
 - **What's needed:** add a `data:` block to the manifest: `[{source: "alpha-picks-scraper", type: "scraper"}]`. The backtest runner pre-checks that all declared data sources exist before starting. The deploy flow ensures the scraper is registered and has run at least once. The system surfaces "missing data dependency" errors clearly instead of failing mid-backtest.
-
-### Replace synthetic backtest clock with union-of-symbol-timelines clock
-- **Surfaced by:** backtest engine edge cases on alpha-picks-rebalancer (2026-05-19). The synthetic clock (all-zeros business-day series) broke fills ($0 prices), position valuation ($0 market value), and position snapshots. Each was patched individually with per-symbol lookups, but the root cause remains.
-- **Why deferred:** the per-symbol lookup patches work for v1. The structural fix requires rethinking the engine's clock construction: instead of pre-building the clock before the first tick, discover which symbols the algo actually uses after the first tick, merge their timestamps into a real clock, then replay.
-- **What's needed:** after the first `on_tick` call, inspect `ctx._bars` for all symbols the algo loaded via `market_data()`. Build the clock from the UNION of all those timelines (deduped + sorted). Re-run from bar 0 with the real clock. This eliminates the synthetic clock entirely — every bar in the clock corresponds to a real price in at least one symbol, so fills, valuation, and snapshots all use real data without special-case lookups. The per-symbol lookup code can then be simplified back to using the clock bar directly.
 
 ### Push updated `quilt.yaml` for `simple-ma-crossover` to upstream GitHub repo
 - **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
@@ -155,6 +158,14 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** initial validation lab shipped with the CLI bootstrapping services locally via `runner_bootstrap.py`. Functional but architecturally inconsistent with the rest of the CLI, which goes through coordinator HTTP endpoints (`/api/data/...`, `/api/backtest-runs/...`, etc.). The local-bootstrap path also doesn't get the coordinator's wired providers (yfinance, polygon, tradier, alpaca), forcing users into pre-download workflows.
 - **RESOLVED** (2026-05-27, commits `c6eea90` + `28cf283`, merged in `d3bfa70`): Added `coordinator/api/routes/research.py` with 6 endpoints (POST/GET sessions, POST sweep, POST walk-forward, POST report). Rewrote `sdk/cli/commands/research.py` as a thin client mirroring `sdk/cli/commands/data.py`. Coordinator restart required to load the new routes. `runner_bootstrap.py` stays as a library for programmatic users — docstring now says "LIBRARY USE ONLY".
 - **Design principle (preserved going forward):** Any framework capability an agent (or human) needs should be exposed through the CLI as a thin client to the coordinator HTTP API. Bespoke scripts and local bootstrapping should be the exception, not the rule.
+
+### `quilt research walk-forward` CLI needs async-job model, not synchronous HTTP
+> **Recategorized 2026-05-28** from Backtesting → Validation Lab. This is purely a lab-orchestration concern: long sweeps inside `POST /api/research/sessions/{id}/sweep` block the request thread. Doesn't affect the engine.
+
+- **Surfaced by:** validation-lab walk-forward runs on 2026-05-27 timing out the CLI's HTTP client even though server-side work continued (bumped CLI default timeout to 600s as band-aid; commit `8fccfcc`).
+- **Why deferred:** band-aid works for sessions up to ~30 backtests; larger sweeps still time out.
+- **What's needed:** convert `POST /api/research/sessions/{id}/sweep` and `.../walk-forward` to fire-and-forget — return `202 Accepted` with a `job_id`. Add `GET /api/research/sessions/{id}/jobs/{job_id}` for polling. CLI displays a progress bar and polls until done. Server-side work runs in an `asyncio.create_task` registered with the coordinator's task tracker (mirrors how `DownloadManager.create_download` already works).
+- **[covered by spec]:** Listed as Tier 3 deferred in `2026-05-28-backtest-and-validation-lab-integration.md` § Backlog coverage. When shipped, that spec's "API contract" section should be updated to document the polling endpoint and the `BacktestRun.status` transitions the polling consumer reads.
 
 ### SPA / White's Reality Check significance test
 - **Deferred from:** [2026-05-27-crypto-tsmom-research-program-design.md](specs/2026-05-27-crypto-tsmom-research-program-design.md)
