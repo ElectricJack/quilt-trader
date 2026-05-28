@@ -65,6 +65,31 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** manual SQL cleanup works. Similar to download manager's existing `recover_orphaned_downloads()`.
 - **What's needed:** on startup, mark any "running"/"downloading_data" backtest rows as "failed" with message "Orphaned by coordinator restart".
 
+### Realistic Alpaca crypto slippage profile
+- **Surfaced by:** crypto-tsmom backtest analysis on 2026-05-27 (run `f56339ca`). Observed slippage median 70 bps, max 400 bps over 78 trades — for retail-size BTC/ETH on Alpaca, realistic is 5–30 bps. The strategy paid ~16% of starting capital in slippage over one year.
+- **Why deferred:** default backtest slippage uses `use_bar_range=True` which samples uniformly between bar's low/high — fine for thinly-traded equities, much too pessimistic for liquid crypto. The fix is data + config: ship a more realistic per-symbol slippage profile.
+- **What's needed:** extend `coordinator/services/validation/cost_profiles/default.yaml` (or add an `alpaca_crypto_v2.yaml`) with `use_bar_range: false` and `market_bps: 10` for BTC/USD and ETH/USD specifically. Verify by re-running the f56339ca config and checking slippage_bps_applied stays in the 5–30 range. Bonus: a `--cost-profile` flag on `quilt backtest run` to opt in.
+
+### Default cost profile not auto-applied to ad-hoc backtests
+- **Surfaced by:** crypto-tsmom backtests via dashboard / API show `total_fees_paid: 0` and `cost_profile: null` (2026-05-27). The `default` cost profile (alpaca crypto 25 bps taker, etc.) only applies if the run's `cost_profile` field is explicitly set.
+- **Why deferred:** existing backtests still work; cost modeling is purely additive.
+- **What's needed:** when `BacktestRun.cost_profile` is `None`, default to `"default"` instead of using the legacy empty `buy_fees`/`sell_fees` lists. OR: expose a `cost_profile` dropdown in the dashboard's backtest-create form so the user always picks one. Document the default behavior in the API spec.
+
+### Trade-aggregate metrics not persisted to BacktestRun
+- **Surfaced by:** crypto-tsmom backtest API responses on 2026-05-27. `win_rate`, `profit_factor`, `avg_win`, `avg_loss`, `expectancy`, `longest_winning_streak`, `longest_losing_streak`, `total_fees_paid`, `total_slippage_dollars` all return `None` even though they're trivially computable from `trades.parquet` (verified: win rate 55.7%, profit factor 1.50, total slippage $324.79 for run `5c249922`).
+- **Why deferred:** the UI works around it by computing from the trades endpoint on demand; the data isn't lost, just not persisted.
+- **What's needed:** in `coordinator/services/backtest_finalizer.py`, when finalizing a run, read `trades.parquet` and populate the trade-aggregate columns on the BacktestRun row. Make sure NaN-realized-pnl rows (buys) are excluded from the round-trip aggregation.
+
+### Strategy-side stop-loss / portfolio circuit breaker
+- **Surfaced by:** user question on 2026-05-27 ("what mechanism is preventing a complete stop loss?"). The crypto-tsmom strategy has no explicit stop-loss — positions exit only when the signal flips negative or realized vol explodes. In a fast crash where the signal hasn't yet rolled, drawdowns are unbounded (capped only at -100%).
+- **Why deferred:** debatable whether a stop-loss helps or hurts a momentum strategy. Adding one whipsaws out of legitimate drawdowns; not adding one accepts tail risk. Worth A/B testing before shipping.
+- **What's needed:** EITHER (a) add a `max_drawdown_stop` config to the crypto-tsmom algorithm (and any future strategy) that closes all positions if running drawdown exceeds a threshold (e.g., 20%), keeps the account in cash until signal turns positive AND drawdown recovers. OR (b) add a portfolio-level circuit breaker as a framework feature consumed by all algorithms. Either way, A/B test the resulting Sharpe/CAGR vs no-stop baseline before adopting as the default.
+
+### `quilt research walk-forward` CLI needs async-job model, not synchronous HTTP
+- **Surfaced by:** validation-lab walk-forward runs on 2026-05-27 timing out the CLI's HTTP client even though server-side work continued (bumped CLI default timeout to 600s as band-aid; commit `8fccfcc`).
+- **Why deferred:** band-aid works for sessions up to ~30 backtests; larger sweeps still time out.
+- **What's needed:** convert `POST /api/research/sessions/{id}/sweep` and `.../walk-forward` to fire-and-forget — return `202 Accepted` with a `job_id`. Add `GET /api/research/sessions/{id}/jobs/{job_id}` for polling. CLI displays a progress bar and polls until done. Server-side work runs in an `asyncio.create_task` registered with the coordinator's task tracker (mirrors how `DownloadManager.create_download` already works).
+
 ---
 
 ## Live data feeds
