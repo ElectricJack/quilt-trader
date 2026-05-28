@@ -63,22 +63,22 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 ### Orphan backtest cleanup on startup
 - **Surfaced by:** coordinator restarts leaving backtests stuck in "running" status (2026-05-25).
 - **Why deferred:** manual SQL cleanup works. Similar to download manager's existing `recover_orphaned_downloads()`.
-- **What's needed:** on startup, mark any "running"/"downloading_data" backtest rows as "failed" with message "Orphaned by coordinator restart".
+- **RESOLVED** (2026-05-27, commit `5ab29d3`): `BacktestRunner.recover_orphaned_runs()` added; called at coordinator startup from `main.py`. Marks any 'queued'/'downloading_data'/'running' rows as 'failed' with `error_message="Orphaned by coordinator restart"`.
 
 ### Realistic Alpaca crypto slippage profile
 - **Surfaced by:** crypto-tsmom backtest analysis on 2026-05-27 (run `f56339ca`). Observed slippage median 70 bps, max 400 bps over 78 trades — for retail-size BTC/ETH on Alpaca, realistic is 5–30 bps. The strategy paid ~16% of starting capital in slippage over one year.
 - **Why deferred:** default backtest slippage uses `use_bar_range=True` which samples uniformly between bar's low/high — fine for thinly-traded equities, much too pessimistic for liquid crypto. The fix is data + config: ship a more realistic per-symbol slippage profile.
-- **What's needed:** extend `coordinator/services/validation/cost_profiles/default.yaml` (or add an `alpaca_crypto_v2.yaml`) with `use_bar_range: false` and `market_bps: 10` for BTC/USD and ETH/USD specifically. Verify by re-running the f56339ca config and checking slippage_bps_applied stays in the 5–30 range. Bonus: a `--cost-profile` flag on `quilt backtest run` to opt in.
+- **RESOLVED** (2026-05-27, commit `a9089a0`): `cost_profiles/default.yaml` `alpaca:crypto` bundle switched from `use_bar_range=True`+`market_bps=15` to `use_bar_range=False`+`market_bps=10`. Combined with the existing 25 bps taker fee, round-trip cost is now ~70 bps total — matches real Alpaca crypto trading. Added `coinbase:crypto` bundle too. Per-symbol overrides for long-tail alts still pending (low priority).
 
 ### Default cost profile not auto-applied to ad-hoc backtests
 - **Surfaced by:** crypto-tsmom backtests via dashboard / API show `total_fees_paid: 0` and `cost_profile: null` (2026-05-27). The `default` cost profile (alpaca crypto 25 bps taker, etc.) only applies if the run's `cost_profile` field is explicitly set.
 - **Why deferred:** existing backtests still work; cost modeling is purely additive.
-- **What's needed:** when `BacktestRun.cost_profile` is `None`, default to `"default"` instead of using the legacy empty `buy_fees`/`sell_fees` lists. OR: expose a `cost_profile` dropdown in the dashboard's backtest-create form so the user always picks one. Document the default behavior in the API spec.
+- **RESOLVED** (2026-05-27, commit `16f3a1b`): `BacktestRunner.run()` now defaults `cost_profile` to `"default"` when the column is `NULL`, rather than falling through to legacy empty fee lists. Users who want zero-fee modeling can ship a custom YAML profile and reference it explicitly.
 
 ### Trade-aggregate metrics not persisted to BacktestRun
 - **Surfaced by:** crypto-tsmom backtest API responses on 2026-05-27. `win_rate`, `profit_factor`, `avg_win`, `avg_loss`, `expectancy`, `longest_winning_streak`, `longest_losing_streak`, `total_fees_paid`, `total_slippage_dollars` all return `None` even though they're trivially computable from `trades.parquet` (verified: win rate 55.7%, profit factor 1.50, total slippage $324.79 for run `5c249922`).
 - **Why deferred:** the UI works around it by computing from the trades endpoint on demand; the data isn't lost, just not persisted.
-- **What's needed:** in `coordinator/services/backtest_finalizer.py`, when finalizing a run, read `trades.parquet` and populate the trade-aggregate columns on the BacktestRun row. Make sure NaN-realized-pnl rows (buys) are excluded from the round-trip aggregation.
+- **RESOLVED** (2026-05-27, commit `18aaaab`): `backtest_finalizer.finalize_run` now mirrors `win_rate`, `profit_factor`, `avg_win`, `avg_loss`, `expectancy`, `longest_winning_streak`, `longest_losing_streak` from key_metrics to the flat BacktestRun columns. Also sums `total_fees_paid` and `total_slippage_dollars` from `trades.parquet`.
 
 ### Strategy-side stop-loss / portfolio circuit breaker
 - **Surfaced by:** user question on 2026-05-27 ("what mechanism is preventing a complete stop loss?"). The crypto-tsmom strategy has no explicit stop-loss — positions exit only when the signal flips negative or realized vol explodes. In a fast crash where the signal hasn't yet rolled, drawdowns are unbounded (capped only at -100%).
@@ -97,7 +97,7 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 ### Per-stream `on_disconnect` callback wired into broker handles
 - **Surfaced by:** [2026-05-18-unified-live-subscriptions-design.md](specs/2026-05-18-unified-live-subscriptions-design.md)
 - **Why deferred:** `_stale_stream_sweep` detects disconnects via a heuristic (no tick for N seconds). A first-class `on_disconnect` callback wired directly into `_AlpacaStreamHandle` and `_TradierStreamHandle` would detect drops instantly and with less false-positive risk.
-- **What's needed:** add an optional `on_disconnect` param to `MarketDataStreamHandle.close` (or as a callback on the handle itself); wire it in each broker adapter so the aggregator is notified immediately when the underlying WS connection closes.
+- **RESOLVED** (2026-05-27, commit `7ed6268`): `MarketDataStreamHandle` now exposes `set_on_disconnect(callback)` and `_fire_on_disconnect()`. `_AlpacaStreamHandle` fires it on thread exit (if not intentionally closed); `_TradierStreamHandle` fires it on server-clean end-of-stream AND on exception before backoff reconnect. `LiveFeedAggregator` wiring to consume the callback (replacing the no-tick heuristic) is the follow-up — the heuristic still catches drops within N seconds, so this is a refinement, not a blocker.
 
 ### `add_symbols` / `remove_symbols` on stream handles
 - **Surfaced by:** [2026-05-18-unified-live-subscriptions-design.md](specs/2026-05-18-unified-live-subscriptions-design.md)
@@ -107,12 +107,12 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 ### Validate `Algorithm.assets` shape at install time
 - **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
 - **Why deferred:** the `assets` field on `Algorithm` is freeform JSON. An algorithm installed with a malformed assets list silently skips subscription wiring.
-- **What's needed:** add a Pydantic validator (or JSON Schema) that checks each entry has `broker`, `symbol`, and `asset_class`; reject installs that fail validation with a clear 422.
+- **RESOLVED** (2026-05-27, commit `2556fd1`): `_validate_assets` in `coordinator/api/routes/algorithms.py` now requires `broker`, `symbol`, and `asset_class`; rejects unknown `broker` values (only `alpaca`/`tradier`/`coinbase`/`polygon` accepted) and unknown `asset_class` values. yfinance is intentionally rejected (data-source-only). 4 new tests cover the rejection cases.
 
 ### Algorithm install fails opaquely when package dir is orphaned
 - **Surfaced by:** post-migration install attempt on 2026-05-18.
 - **Why deferred:** `install_from_url` calls `pm.clone_repo` which fails with `fatal: destination path '...' already exists and is not an empty directory` whenever a previous install's on-disk package wasn't cleaned up. Common after DB migrations that drop algorithm rows without touching `data/packages/`, or after a partially-failed prior install.
-- **What's needed:** when the destination dir exists, detect that it's a valid git clone of the same repo and `git fetch origin && git reset --hard origin/<default-branch>` to bring it to the latest commit instead of cloning. If the dir exists but is NOT a clone of the expected repo, return a clear 409 with a message telling the user to remove it. Update `PackageManager.clone_repo` (or wrap it at the route layer).
+- **RESOLVED** (2026-05-27, commit `2422a54`): `PackageManager.clone_repo` now detects existing dirs and either (a) `git fetch origin && git reset --hard origin/<default-branch>` if it's a clone of the same repo, or (b) raises `PackageError` with a clear "remove it manually" message if it's not a clone or is a clone of a different repo. 3 new tests cover the rejection / recovery paths.
 
 ### Manifest `data:` block for custom data dependencies (scrapers, CSVs)
 - **Surfaced by:** backtest failure on alpha-picks-rebalancer (2026-05-19). The algo called `ctx.data("alpha-picks-scraper")` but the backtest runner couldn't find the file.
