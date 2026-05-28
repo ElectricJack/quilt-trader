@@ -124,8 +124,8 @@ async def get_custom_data(source_name: str, fmt: str = Query("csv")):
     return {"data": df.to_dict(orient="records")}
 
 
-@router.get("/providers")
-async def list_providers():
+@router.get("/providers/timeframes")
+async def list_providers_timeframes():
     """Return configured providers with their supported timeframes."""
     try:
         mgr = get_download_manager()
@@ -150,6 +150,55 @@ async def list_providers():
             timeframes = ["1day"]
         result.append({"name": name, "timeframes": timeframes})
     return {"providers": result}
+
+
+async def _provider_availability(db: AsyncSession) -> list[dict]:
+    """Return the per-provider availability matrix derived from Settings + Accounts.
+
+    Order: alphabetical, stable. Each entry: {name, available, reason}.
+    `reason` is None when available, otherwise an explanatory string.
+    """
+    from coordinator.database.models import Account, Setting
+
+    async def _setting(key: str) -> str | None:
+        row = (await db.execute(
+            select(Setting).where(Setting.key == key)
+        )).scalar_one_or_none()
+        return row.value if row else None
+
+    polygon_key = await _setting("polygon_api_key")
+    theta_user = await _setting("theta_data_username")
+    theta_pw = await _setting("theta_data_password")
+
+    accounts_by_broker: dict[str, int] = {}
+    rows = (await db.execute(select(Account))).scalars().all()
+    for a in rows:
+        accounts_by_broker[a.broker_type] = accounts_by_broker.get(a.broker_type, 0) + 1
+
+    def _entry(name: str, available: bool, reason: str | None) -> dict:
+        return {"name": name, "available": available, "reason": None if available else reason}
+
+    matrix = [
+        _entry("alpaca",   accounts_by_broker.get("alpaca", 0) > 0,
+               "no alpaca account configured"),
+        _entry("coinbase", accounts_by_broker.get("coinbase", 0) > 0,
+               "no coinbase account configured"),
+        _entry("polygon",  polygon_key is not None, "polygon_api_key not configured"),
+        _entry("theta",    bool(theta_user and theta_pw),
+               "theta credentials not configured"),
+        _entry("tradier",  accounts_by_broker.get("tradier", 0) > 0,
+               "no tradier account configured"),
+        _entry("yfinance", True, None),
+    ]
+    return sorted(matrix, key=lambda e: e["name"])
+
+
+@router.get("/providers")
+async def list_providers(db: AsyncSession = Depends(get_db)) -> list[dict]:
+    """Provider availability matrix for the dashboard's benchmark dropdown
+    (and the create-run validator). See _provider_availability for the rules.
+    """
+    return await _provider_availability(db)
 
 
 @router.get("/search-symbols")
