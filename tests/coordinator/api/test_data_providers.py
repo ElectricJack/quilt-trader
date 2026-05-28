@@ -1,8 +1,6 @@
 """Tests for GET /api/data/providers — availability matrix endpoint."""
 import pytest
-import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
 
 from coordinator.database.models import Account, Setting
 

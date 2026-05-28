@@ -8,8 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_container, get_db
+from coordinator.api.routes.settings import _get_setting
 from coordinator.api.serialization import to_iso_utc
-from coordinator.database.models import DataSource
+from coordinator.database.models import Account, DataSource, Setting
 from coordinator.services.data_service import DataService
 from coordinator.services.download_manager import DownloadManager
 
@@ -158,17 +159,9 @@ async def _provider_availability(db: AsyncSession) -> list[dict]:
     Order: alphabetical, stable. Each entry: {name, available, reason}.
     `reason` is None when available, otherwise an explanatory string.
     """
-    from coordinator.database.models import Account, Setting
-
-    async def _setting(key: str) -> str | None:
-        row = (await db.execute(
-            select(Setting).where(Setting.key == key)
-        )).scalar_one_or_none()
-        return row.value if row else None
-
-    polygon_key = await _setting("polygon_api_key")
-    theta_user = await _setting("theta_data_username")
-    theta_pw = await _setting("theta_data_password")
+    polygon_key = await _get_setting(db, "polygon_api_key")
+    theta_user = await _get_setting(db, "theta_data_username")
+    theta_pw = await _get_setting(db, "theta_data_password")
 
     accounts_by_broker: dict[str, int] = {}
     rows = (await db.execute(select(Account))).scalars().all()

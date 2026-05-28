@@ -563,6 +563,7 @@ export const api = {
     return request("/api/data/providers/timeframes");
   },
 
+  // TODO(A4): add useProviderAvailability hook
   listProviderAvailability(): Promise<{ name: string; available: boolean; reason: string | null }[]> {
     return request("/api/data/providers");
   },
