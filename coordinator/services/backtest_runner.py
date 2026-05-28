@@ -16,7 +16,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import pandas as pd
 from sqlalchemy import select
@@ -131,9 +131,13 @@ def _validate_custom_data_deps(data_deps: list[dict], custom_dir: Path) -> None:
         )
 
 
+_BENCHMARK_TIMEFRAME = "1day"
+
+
 async def _load_benchmark_with_download(
     *, ds, source: str, symbol: str,
     date_range_start, date_range_end, downloader,
+    on_download_start: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Optional[pd.DataFrame]:
     """Load benchmark daily bars, downloading on demand if the parquet is missing.
 
@@ -142,12 +146,18 @@ async def _load_benchmark_with_download(
     source, start, end). The benchmark is best-effort: returns None when
     nothing is on disk after one download attempt. Caller logs and proceeds
     without a benchmark in that case (I16).
+
+    `on_download_start` is an optional async callback fired only when the
+    first load returns empty (i.e. a download is actually about to happen),
+    so callers can write a progress message only on a real cache miss.
     """
-    bdf = ds.load_market_data(source, symbol, "1day")
+    bdf = ds.load_market_data(source, symbol, _BENCHMARK_TIMEFRAME)
     if bdf is None or bdf.empty:
-        await downloader(symbol=symbol, timeframe="1day", source=source,
+        if on_download_start is not None:
+            await on_download_start()
+        await downloader(symbol=symbol, timeframe=_BENCHMARK_TIMEFRAME, source=source,
                          start=date_range_start, end=date_range_end)
-        bdf = ds.load_market_data(source, symbol, "1day")
+        bdf = ds.load_market_data(source, symbol, _BENCHMARK_TIMEFRAME)
     if bdf is None or bdf.empty:
         return None
     return bdf
@@ -501,16 +511,19 @@ class BacktestRunner:
                 bench_symbol = r.benchmark_symbol
                 bench_source = r.benchmark_source
             if bench_symbol and bench_source:
-                async with self._sf() as session:
-                    r = (await session.execute(
-                        select(BacktestRun).where(BacktestRun.id == run_id)
-                    )).scalar_one()
-                    r.progress_message = f"Downloading benchmark {bench_symbol} from {bench_source}"
-                    await session.commit()
+                async def _notify_benchmark_download() -> None:
+                    async with self._sf() as session:
+                        r = (await session.execute(
+                            select(BacktestRun).where(BacktestRun.id == run_id)
+                        )).scalar_one()
+                        r.progress_message = f"Downloading benchmark {bench_symbol} from {bench_source}"
+                        await session.commit()
+
                 benchmark_bar_df = await _load_benchmark_with_download(
                     ds=self._ds, source=bench_source, symbol=bench_symbol,
                     date_range_start=date_range_start, date_range_end=date_range_end,
                     downloader=self._download_and_wait,
+                    on_download_start=_notify_benchmark_download,
                 )
                 if benchmark_bar_df is None:
                     logger.warning(
