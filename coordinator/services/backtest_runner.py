@@ -145,6 +145,34 @@ class BacktestRunner:
         self._ds = data_service
         self._coverage_index = coverage_index
 
+    async def recover_orphaned_runs(self) -> int:
+        """Mark any BacktestRun stuck in active states as 'failed'.
+
+        Called at coordinator startup. Any row in 'queued', 'downloading_data',
+        or 'running' must be an orphan because we just constructed this runner —
+        no tasks have been registered yet. Returns the count marked.
+
+        Mirrors `DownloadManager.recover_orphaned_downloads()`.
+        """
+        from coordinator.database.models import BacktestRun
+
+        async with self._sf() as session:
+            result = await session.execute(
+                select(BacktestRun).where(
+                    BacktestRun.status.in_(["queued", "downloading_data", "running"])
+                )
+            )
+            orphans = result.scalars().all()
+            count = 0
+            for row in orphans:
+                row.status = "failed"
+                row.completed_at = datetime.now(timezone.utc)
+                row.error_message = "Orphaned by coordinator restart"
+                row.progress_message = None
+                count += 1
+            await session.commit()
+            return count
+
     async def run(self, run_id: str) -> None:
         from coordinator.database.models import Algorithm, BacktestRun
 

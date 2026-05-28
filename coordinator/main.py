@@ -331,6 +331,9 @@ def create_app(
                 data_service=data_svc,
                 coverage_index=coverage_index,
             )
+            n_recovered = await container.backtest_runner.recover_orphaned_runs()
+            if n_recovered > 0:
+                logger.info("Recovered %d orphaned backtest run(s) from previous run", n_recovered)
         except ImportError:
             logger.warning(
                 "coordinator.services.backtest_runner not available yet (C1 pending); "
