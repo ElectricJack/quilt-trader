@@ -757,28 +757,42 @@ class BacktestEngine:
 
     def _lookup_symbol_close(self, sym: str, sim_time, ctx, fallback_bar) -> float:
         """Get the most recent close price for a symbol from its own data series.
-        Falls back to the clock bar's close (which may be 0 for synthetic clocks)."""
+
+        The bars cache may be keyed by the provider-specific symbol form
+        ('BTC-USD' for yfinance) while `sym` is the algorithm-canonical form
+        ('BTC/USD'). Resolve through the asset registry so positions are
+        marked-to-market against THEIR symbol's price, not the clock bar.
+
+        Falls back to the clock bar's close only as last resort (may be 0 for
+        synthetic clocks, or wrong if it's a different symbol).
+        """
         if ctx is not None:
             import numpy as np
+            svc_for_sym = self._asset_registry.get_service(sym)
             for (src, s, tf), df in ctx._bars.items():
-                if s == sym and not df.empty:
-                    cache_key = id(df)
-                    if cache_key not in self._ts_cache:
-                        ts_col = pd.to_datetime(df["timestamp"])
-                        if ts_col.dt.tz is not None:
-                            ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                        ns = ts_col.values.view("int64")
-                        closes = df["close"].values.astype(float)
-                        self._ts_cache[cache_key] = (ns, closes)
-                    ns, closes = self._ts_cache[cache_key]
-                    cutoff = pd.Timestamp(sim_time)
-                    if cutoff.tz is not None:
-                        cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-                    cutoff_ns = np.datetime64(cutoff).view("int64")
-                    idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
-                    if idx >= 0:
-                        return float(closes[idx])
-                    break
+                if df.empty:
+                    continue
+                resolved = svc_for_sym.resolve_symbol(sym, src)
+                if s != sym and s != resolved:
+                    continue
+                cache_key = id(df)
+                if cache_key not in self._ts_cache:
+                    ts_col = pd.to_datetime(df["timestamp"])
+                    if ts_col.dt.tz is not None:
+                        ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                    # pandas 3.0 datetime64[us] default — force ns
+                    ns = ts_col.values.astype("datetime64[ns]").view("int64")
+                    closes = df["close"].values.astype(float)
+                    self._ts_cache[cache_key] = (ns, closes)
+                ns, closes = self._ts_cache[cache_key]
+                cutoff = pd.Timestamp(sim_time)
+                if cutoff.tz is not None:
+                    cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                cutoff_ns = cutoff.value  # always ns
+                idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
+                if idx >= 0:
+                    return float(closes[idx])
+                break
         return float(fallback_bar["close"]) if fallback_bar is not None else 0.0
 
     def _lookup_option_mtm_price(self, sym: str, ctx) -> float | None:
