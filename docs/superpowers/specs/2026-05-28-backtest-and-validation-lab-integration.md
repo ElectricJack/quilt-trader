@@ -335,17 +335,25 @@ Each of these was an open Backtesting-section backlog item that was resolved dur
 | `on_disconnect` callback on broker stream handles | (broker-side, separate from lab/engine) | `7ed6268` |
 | `add_symbols` / `remove_symbols` on stream handles | (broker-side, separate from lab/engine) | `dbe7917` |
 
+### Backlog items **in scope for this spec — planned implementation**
+
+These items have been promoted from the deferred list into the spec's active scope. When the spec's implementation plan is written, it covers all three. Each adds or modifies invariants as noted; the changes are documented in the "Planned additions" section below.
+
+| Planned item | What it does | Invariants affected |
+|---|---|---|
+| **P1 — Benchmark source expansion** | Expose all 5 wired providers in the benchmark dropdown; validate against availability matrix at request time; reuse runner's download-and-wait for missing benchmark data | Adds I16, I17 |
+| **P2 — Async-job model for `quilt research sweep` / `walk-forward`** | Endpoints return `202 + job_id`; new polling endpoint; CLI shows progress bar; job state machine | Adds I18 |
+| **P3 — Union-of-symbol-timelines backtest clock** | Two-pass execution: discover symbols on first pass, replay on real union clock on second pass | Simplifies I3 (resolution layer becomes unnecessary) |
+
 ### Backlog items **deferred from this spec** — kept as Tier 3 follow-ups
 
 These were considered in scope to address but explicitly deferred. Each gets its own dated spec when picked up. Backlog entries should cross-reference this spec as the deferral source.
 
 | Tier 3 item | Why deferred | Relationship to this spec |
 |---|---|---|
-| **Replace synthetic backtest clock with union-of-symbol-timelines** | Bigger structural change than fits in this spec's contract documentation. The current per-symbol-lookup patches (codified as I3 — symbol normalization on every cache read) are workarounds. Replacing the synthetic clock with a real union clock would eliminate them entirely. | This spec's I3 is a *workaround invariant*. The proper fix retires the workaround — when shipped, update I3 to reference the cleaner contract. |
-| **Timezone-aware backtest engine** | Manifest schema change; affects `BacktestTickContext.timestamp` semantics. Independent of lab/engine integration but affects any algorithm with time-of-day logic. | Not currently an invariant. When shipped, this spec should add `I16: ctx.timestamp respects manifest timezone declaration`. |
+| **Timezone-aware backtest engine** | Manifest schema change; affects `BacktestTickContext.timestamp` semantics. Independent of lab/engine integration but affects any algorithm with time-of-day logic. | Not currently an invariant. When shipped, this spec should add `I19: ctx.timestamp respects manifest timezone declaration`. |
 | **Strategy-side stop-loss / portfolio circuit breaker** | Strategy-side feature, not lab/engine contract. The lab provides the A/B test infrastructure (sweep with/without stop). | Not part of this spec — the lab's sweep + walk-forward IS the methodology for evaluating it. Belongs in a strategy-specific spec. |
-| **Async-job model for `quilt research walk-forward`** | Long sweeps time out the CLI's 600s synchronous HTTP. Need 202-Accepted + job-id polling. | Validation-lab orchestration concern; doesn't affect the integration contract here. Update this spec's "API contract" section when shipped to document the new polling endpoint. |
-| **Manifest `data:` block for custom data dependencies** | Scrapers, CSVs. Affects the contract in I2 (bars cache key shape). | If shipped, add an `I17: ctx.data(custom_source)` invariant alongside the existing I2/I3 bars-cache contracts. |
+| **Manifest `data:` block for custom data dependencies** | Scrapers, CSVs. Affects the contract in I2 (bars cache key shape). | If shipped, add an `I20: ctx.data(custom_source)` invariant alongside the existing I2/I3 bars-cache contracts. |
 
 ### Backlog items **out of scope for this spec**
 
@@ -364,6 +372,245 @@ Reading the backlog through the lens of this spec surfaced two miscategorized it
 2. **"Replace synthetic backtest clock with union-of-symbol-timelines"** is currently under the Live data feeds section but is squarely a Backtesting engine concern (it surfaced through backtest engine edge cases and would be implemented in `backtest_engine_v2.py`). Move it to the Backtesting section.
 
 After those moves, the open Backtesting section reads as a focused list of engine-correctness work (timezone, options data, synthetic clock) and the Validation Lab section captures all lab-orchestration debt.
+
+## Planned additions to this spec
+
+Three pieces of in-scope work to ship under this spec's implementation plan. Each is fully designed below; collectively they extend the existing as-shipped contract with three new invariants (I16, I17, I18) and simplify one (I3).
+
+### P1 — Benchmark source expansion
+
+#### Motivation
+
+The dashboard's `RunBacktestModal` hardcodes `polygon` and `theta` as the only two benchmark sources, but the coordinator wires five providers into `DownloadManager` (polygon, theta, yfinance, alpaca, tradier — coinbase is stream-only). The backend's benchmark loader is provider-agnostic: it just calls `data_service.load_market_data(source, symbol, "1day")`, which reads `data/market/<source>/<symbol>/1day.parquet`. The dropdown is the lie. Three failure modes today:
+
+1. **Cost trap.** A crypto strategy benchmarked against SPY can't be benchmarked using free yfinance — user is forced into a paid polygon plan.
+2. **Silent benchmark drop.** If the user picks a (symbol, source) pair where no parquet exists on disk, `bdf` is empty and the run silently produces no benchmark line in the report. No download attempted, no warning.
+3. **Confusing failure.** A user with no theta credentials picks "theta" in the dropdown and gets a confusing mid-run error.
+
+#### Design
+
+Three touch points:
+
+```
+Dashboard (RunBacktestModal)
+  • On mount: GET /api/data/providers → list of {name, available, reason}
+  • Filter to available=true; render dropdown
+  • Default to first available
+
+Coordinator API (coordinator/api/routes/data.py)
+  • NEW: GET /api/data/providers
+    Returns availability matrix derived from Settings + Accounts
+  • MODIFIED: POST /api/backtest-runs validates benchmark_source
+    against the same availability matrix
+
+Backtest runner (backtest_runner.py)
+  • When benchmark_symbol+source set and data missing on disk:
+    reuse existing _download_and_wait(source, symbol, "1day")
+  • Run flips through downloading_data → running just like
+    strategy data downloads already do
+```
+
+#### API surface
+
+**New endpoint** `GET /api/data/providers`:
+
+```json
+[
+  {"name": "alpaca",   "available": true,  "reason": null},
+  {"name": "polygon",  "available": true,  "reason": null},
+  {"name": "theta",    "available": false, "reason": "theta credentials not configured"},
+  {"name": "tradier",  "available": false, "reason": "no tradier account configured"},
+  {"name": "yfinance", "available": true,  "reason": null}
+]
+```
+
+Order: alphabetical, stable. `reason` is `null` when `available` is `true`; explanatory string otherwise.
+
+**Modified endpoint** `POST /api/backtest-runs`:
+- If `benchmark_source` is set, validate it appears with `available: true` in the availability matrix.
+- On failure: `422 {"detail": "benchmark_source 'theta' is not available: theta credentials not configured"}`.
+- Existing rows with unavailable sources stay viewable on detail pages — only the **create** form gates.
+
+#### Provider availability rules
+
+| Provider | Available when |
+|---|---|
+| `yfinance` | always (no creds required) |
+| `polygon` | `polygon_api_key` Setting is set |
+| `theta` | both `theta_data_username` and `theta_data_password` Settings are set |
+| `alpaca` | at least one `Account` row with `broker_type='alpaca'` exists |
+| `tradier` | at least one `Account` row with `broker_type='tradier'` exists |
+
+Logic lives in `coordinator/api/routes/data.py:_provider_availability(db)` — a single async helper that the new GET endpoint and the modified POST validator both consume.
+
+#### Runner behavior on missing benchmark data
+
+In `BacktestRunner.run()`, after reading `r.benchmark_source` + `r.benchmark_symbol`:
+
+```python
+if bench_symbol and bench_source:
+    bdf = self._ds.load_market_data(bench_source, bench_symbol, "1day")
+    if bdf is None or bdf.empty:
+        await self._download_and_wait(
+            symbols=[bench_symbol],
+            date_start=date_range_start,
+            date_end=date_range_end,
+            provider=bench_source,
+            timeframe="1day",
+            data_type="bars",
+            phase_label=f"benchmark {bench_symbol}",
+        )
+        bdf = self._ds.load_market_data(bench_source, bench_symbol, "1day")
+    if bdf is not None and not bdf.empty:
+        benchmark_bar_df = bdf
+```
+
+Failure path: log warning, finalize without a benchmark — strategy metrics still produced. Progress message during the wait: `"Downloading benchmark SPY from yfinance"`.
+
+#### New invariants
+
+- **I16: Benchmark loading reuses the same download-and-wait path as strategy data; no separate sync-only loader.**
+- **I17: Provider availability is derived at request time from Settings + Accounts; never hardcoded in API or UI.**
+
+#### Out of scope
+
+- Smart-defaults / asset-class-aware source picker (deferred — can be added later as a UI-only refinement).
+- Coverage badges on dropdown options (deferred — adds UI complexity without changing the contract).
+
+### P2 — Async-job model for `quilt research sweep` / `walk-forward`
+
+#### Motivation
+
+`POST /api/research/sessions/{id}/sweep` and `.../walk-forward` are synchronous: the request handler awaits the full sweep / walk-forward before responding. Default CLI HTTP timeout is 600s (bumped from 30s as a band-aid; commit `8fccfcc`). Larger sweeps still time out the request even though server-side work continues. The CLI returns an obscure `ReadTimeout` and no run_ids.
+
+The download manager already solved this pattern: `create_download` returns `{"id": ..., "status": "queued"}` immediately and the work runs as an `asyncio.create_task`. The validation lab should mirror.
+
+#### Design
+
+```
+POST /api/research/sessions/{id}/sweep
+  → returns 202 Accepted with {"job_id": "...", "session_id": N, "status": "queued"}
+  → spawns asyncio.create_task that runs run_sweep
+  → task registered in a new ResearchJobManager (similar to download_manager
+    _active_tasks dict + DB-backed row for persistence across restarts)
+
+POST /api/research/sessions/{id}/walk-forward
+  → same pattern
+
+GET /api/research/sessions/{id}/jobs/{job_id}
+  → returns {"job_id", "session_id", "kind": "sweep|walk-forward",
+             "status": "queued|running|completed|failed",
+             "progress_pct": 0.0..1.0,
+             "progress_message": "Trial 12 of 24",
+             "run_ids": [...],     # populated as runs complete
+             "error_message": null,
+             "started_at", "completed_at"}
+
+GET /api/research/sessions/{id}/jobs
+  → list all jobs for a session
+
+DELETE /api/research/sessions/{id}/jobs/{job_id}
+  → cancel a running job (sets stop flag; task observes between trials)
+```
+
+#### CLI surface
+
+`quilt research sweep ...` and `quilt research walk-forward ...`:
+1. POST to the endpoint, receive `job_id`
+2. Print "queued: <job_id>"
+3. Poll `GET /api/research/sessions/{id}/jobs/{job_id}` every 2 seconds
+4. Render progress bar (using existing `click` progress patterns; if installed, `rich` is preferred but not required)
+5. On terminal state, print final summary (n_configs, run_ids)
+
+Optional `--no-wait` flag to fire and exit immediately, returning the job_id for later polling.
+
+#### DB schema
+
+New table `research_jobs`:
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String (uuid) | PK |
+| `session_id` | int FK | → optimization_sessions.id |
+| `kind` | String | "sweep" or "walk-forward" |
+| `status` | String | queued / running / completed / failed / cancelled |
+| `progress_pct` | Float | 0.0–1.0 |
+| `progress_message` | Text | "Trial N of M" or "Fold N of M" |
+| `request_payload` | JSON | Original request body |
+| `run_ids` | JSON | List of completed BacktestRun ids |
+| `error_message` | Text | null unless status=failed |
+| `started_at`, `completed_at`, `created_at` | DateTime | |
+
+Alembic migration adds the table.
+
+#### Orphan recovery
+
+At coordinator startup, `ResearchJobManager.recover_orphaned_jobs()` marks any `queued` / `running` row as `failed` with `error_message="Orphaned by coordinator restart"` — mirrors the pattern already in `DownloadManager` and `BacktestRunner.recover_orphaned_runs`.
+
+#### New invariant
+
+- **I18: Research orchestration endpoints (`sweep`, `walk-forward`) are fire-and-poll. The request thread never holds a backtest sweep open; large sweeps live in a job tracked by `ResearchJobManager` with its own DB row.**
+
+#### Out of scope
+
+- Parallel jobs per session (one at a time per session is fine for v1; the existing `OptimizationSession` model isn't designed for concurrent overlapping sweeps yet).
+- Job priority / queue depth limits (a deployed sweep is rate-limited by the underlying backtest runner already).
+
+### P3 — Union-of-symbol-timelines backtest clock
+
+#### Motivation
+
+`BacktestEngine.run` is constructed with a `clock_series` — a single DataFrame of timestamps that the engine ticks through. For multi-asset algorithms (e.g. crypto-tsmom on BTC/ETH), the clock is whichever single symbol the runner chose first. For scraper-only algorithms (no `assets:`), the clock is `_build_synthetic_clock` — a business-day-business-time series with all-zero OHLCV.
+
+Three workarounds emerged from this:
+
+1. **`BacktestTickContext.market_data`** — symbol-normalization fallback when bars cache misses (the lookup loop in I3).
+2. **`BacktestEngine._try_fill`** — fill-bar resolution loop that falls back to the clock bar when the symbol's own bar isn't found (also I3).
+3. **`BacktestEngine._lookup_symbol_close`** — MtM lookup that falls back to clock bar's close (the I3 path that caused the wild-equity bug on 2026-05-27).
+
+Each was patched individually. The structural fix replaces the synthetic / single-symbol clock with a real union clock.
+
+#### Design
+
+Two-pass execution:
+
+**Pass 1 (discovery):**
+- Run `algorithm.on_start(config, restored_state)` to initialize.
+- Run `algorithm.on_tick(ctx)` ONCE with a synthetic warmup bar.
+- Inspect `ctx._bars` after the tick — every symbol the algo loaded via `market_data()` appears there.
+- Discard pass-1 fills, equity snapshots, observer calls (it was a warmup, no real engine state).
+
+**Pass 2 (replay):**
+- Build the real clock: `union(timestamps from each (src, symbol, tf) the algo touched)`, deduped + sorted.
+- Re-create a fresh `BacktestTickContext` with the same bars cache (carried over from pass 1 — the data is already loaded).
+- Re-run from bar 0 with the real clock. Every bar in the clock has a real timestamp; every symbol the algo cares about has a real bar at most of those timestamps.
+
+#### Implications
+
+1. **`_lookup_symbol_close` simplifies dramatically.** When the clock bar is the symbol bar (or a sibling with the same timestamp), no fallback resolution is needed. The function becomes a direct dict lookup.
+
+2. **`_try_fill` fill-bar resolution simplifies.** Same reason — the symbol's bar is found by direct lookup at the current timestamp.
+
+3. **I3 simplifies.** Currently: "Every cache read must accept canonical OR provider-specific form via `resolve_symbol`." After P3: "Cache key matches lookup key directly; the resolution layer is only needed at the boundary (manifest preload → cache key)."
+
+4. **Pass-1 cost.** One extra `on_tick` call per backtest. For a 6-year crypto-tsmom backtest with daily bars (~2200 ticks), this is 1/2200 = 0.05% overhead — negligible.
+
+5. **Pass-1 observability.** Observers are NOT called during pass 1. Avoids double-counting fills and equity points.
+
+#### Edge cases
+
+- **Algorithm uses no `market_data()` calls** (pure scraper-driven algo): pass-1 leaves `ctx._bars` unchanged from preload. Fall back to the synthetic clock as today.
+- **Algorithm requests a NEW symbol on a later tick** that wasn't requested on pass 1: that symbol's data is loaded into the bars cache lazily (existing behavior); its timestamps merge into the clock at next tick boundary — slightly subtle. Document this as a known limitation: discovery-pass symbols are the canonical clock contributors; later symbols don't extend the clock.
+- **Algorithm has different lookback windows per pass.** Pass 1 should pass a "warmup" bar (e.g. one at `date_range_start`) so the algo's `if len(md) < min_history: return` short-circuit fires without producing trade signals.
+
+#### Modified invariant
+
+- **I3 (simplified): Bars cache is preloaded under provider-specific symbols (I2). At lookup time inside the tick loop, the clock bar's symbol matches the cache key — no `resolve_symbol` indirection needed. Resolution layer survives only at the manifest-preload boundary and in `ctx.market_data` for algorithm convenience.**
+
+#### Out of scope
+
+- Lazy-discovery: extending the clock when an algorithm requests a new symbol on a later tick. Documented as a known limitation; if it becomes painful, ship a third-pass invalidation in a follow-up.
+- Multi-frequency clocks (an algo using 1day + 1hour data simultaneously). Engine still ticks at a single frequency.
 
 ## Known follow-ups (Tier 4 features that warrant full roadmap-level design)
 
