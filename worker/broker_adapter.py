@@ -170,12 +170,45 @@ class BrokerAdapter(ABC):
 class MarketDataStreamHandle:
     """Returned by ``BrokerAdapter.start_market_data_stream``.
 
-    Adapters subclass or duck-type this — the only contract is a no-arg
-    ``close()`` method that releases the underlying connection.
+    Adapters subclass or duck-type this. The contract is:
+    - ``close()``: no-arg method that releases the underlying connection
+    - ``set_on_disconnect(callback)``: register a callback fired when the
+      underlying connection drops (network error, server close, etc.).
+      The callback receives the handle itself as its only argument.
+      Default impl stores the callback; subclasses are expected to
+      invoke ``self._on_disconnect(self)`` in their connection-close
+      handlers. Stale-stream sweepers (``LiveFeedAggregator``) prefer
+      this over the no-tick heuristic — instant + zero false positives.
     """
+
+    def __init__(self) -> None:
+        self._on_disconnect = None  # type: ignore[assignment]
 
     def close(self) -> None:  # pragma: no cover - interface
         raise NotImplementedError
+
+    def set_on_disconnect(self, callback) -> None:
+        """Register a callback fired when the underlying stream disconnects.
+
+        ``callback`` is a callable taking one positional arg (the handle).
+        Adapters should call ``self._on_disconnect(self)`` when their WS /
+        SSE connection closes unexpectedly. The default implementation
+        just stores the callback for subclasses to invoke.
+        """
+        self._on_disconnect = callback
+
+    def _fire_on_disconnect(self) -> None:
+        """Subclasses call this from their close-detected hook. No-op if no
+        callback is registered, swallows exceptions so the disconnect path
+        never crashes."""
+        cb = getattr(self, "_on_disconnect", None)
+        if cb is None:
+            return
+        try:
+            cb(self)
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception("on_disconnect callback raised")
 
 
 class MockBrokerAdapter(BrokerAdapter):

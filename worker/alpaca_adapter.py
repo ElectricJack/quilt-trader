@@ -460,7 +460,9 @@ class _AlpacaStreamHandle(MarketDataStreamHandle):
     """Runs an alpaca-py ``StockDataStream`` in a daemon thread."""
 
     def __init__(self, stream) -> None:
+        super().__init__()
         self._stream = stream
+        self._closed_intentionally = False
         self._thread = threading.Thread(
             target=self._run, name="alpaca-stream", daemon=True
         )
@@ -471,8 +473,13 @@ class _AlpacaStreamHandle(MarketDataStreamHandle):
             self._stream.run()
         except Exception:  # noqa: BLE001
             logger.exception("alpaca stream thread crashed")
+        finally:
+            # Thread exit on a stream that wasn't intentionally closed = disconnect.
+            if not self._closed_intentionally:
+                self._fire_on_disconnect()
 
     def close(self) -> None:
+        self._closed_intentionally = True
         try:
             self._stream.stop()
         except Exception:  # noqa: BLE001

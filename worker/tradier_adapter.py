@@ -419,6 +419,7 @@ class _TradierStreamHandle(MarketDataStreamHandle):
         on_trade,
         on_quote,
     ) -> None:
+        super().__init__()
         self._stream_base = stream_base
         self._access_token = access_token
         self._symbols = symbols
@@ -490,15 +491,18 @@ class _TradierStreamHandle(MarketDataStreamHandle):
                             continue
                         self._dispatch(msg)
                 # Reached end of iter_lines — server closed the stream cleanly.
-                # Fall through to reconnect.
+                # Fire disconnect callback (the connection IS down even though
+                # we'll reconnect). Then fall through to reconnect.
                 if not self._stop.is_set():
                     logger.warning("tradier stream ended; reconnecting")
+                    self._fire_on_disconnect()
             except Exception:  # noqa: BLE001
                 if self._stop.is_set():
                     break
                 logger.exception(
                     "tradier stream error; reconnecting in %.1fs", backoff
                 )
+                self._fire_on_disconnect()
                 if self._stop.wait(backoff):
                     break
                 backoff = min(backoff * 2, self._BACKOFF_MAX_S)
