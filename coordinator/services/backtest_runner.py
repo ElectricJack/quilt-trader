@@ -195,7 +195,13 @@ class BacktestRunner:
             buy_fees_cfg = run.buy_trading_fees
             sell_fees_cfg = run.sell_trading_fees
             config_overrides = run.config_overrides or {}
-            cost_profile = run.cost_profile
+            # Auto-apply the 'default' cost profile when none is explicitly set.
+            # The default profile includes realistic per-venue fees (alpaca crypto
+            # 25 bps, tradier options $0.67/contract, etc). Backtests that
+            # explicitly want the legacy "no fees" behavior can pass an empty
+            # custom profile name once that exists; otherwise the realistic
+            # default is what the user almost always wants.
+            cost_profile = run.cost_profile or "default"
             await session.commit()
 
         try:
