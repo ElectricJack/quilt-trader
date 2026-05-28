@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from coordinator.api.dependencies import get_container, get_db
 from coordinator.api.routes.settings import _get_setting
 from coordinator.api.serialization import to_iso_utc
-from coordinator.database.models import Account, DataSource, Setting
+from coordinator.database.models import Account, DataSource
 from coordinator.services.data_service import DataService
 from coordinator.services.download_manager import DownloadManager
 
