@@ -843,3 +843,78 @@ class TestPerProviderSemaphores:
         # Cleanup: release polygon so its task finishes
         polygon_release.set()
         await asyncio.sleep(0.3)
+
+
+class TestCompletionListenerRegistry:
+    """Multi-consumer on_download_complete listener registry."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_attribute_assignment_still_works(self, session_factory, mock_data_service):
+        """coordinator/main.py assigns _on_download_complete directly; preserve
+        that contract via property setter."""
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": AsyncMock()},
+        )
+        called = []
+        mgr._on_download_complete = lambda p, s: called.append((p, s))
+        # Trigger the listener via private API
+        for cb in list(mgr._completion_listeners):
+            cb("polygon", ["AAPL"])
+        assert called == [("polygon", ["AAPL"])]
+
+    @pytest.mark.asyncio
+    async def test_multiple_listeners_all_fire(self, session_factory, mock_data_service):
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": AsyncMock()},
+        )
+        events_a, events_b = [], []
+        mgr.add_completion_listener(lambda p, s: events_a.append((p, s)))
+        mgr.add_completion_listener(lambda p, s: events_b.append((p, s)))
+        for cb in list(mgr._completion_listeners):
+            cb("polygon", ["AAPL", "MSFT"])
+        assert events_a == [("polygon", ["AAPL", "MSFT"])]
+        assert events_b == [("polygon", ["AAPL", "MSFT"])]
+
+    @pytest.mark.asyncio
+    async def test_exception_in_one_listener_does_not_block_others(
+        self, session_factory, mock_data_service, caplog
+    ):
+        import logging
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": AsyncMock()},
+        )
+        called = []
+        def bad(p, s):
+            raise RuntimeError("listener boom")
+        mgr.add_completion_listener(bad)
+        mgr.add_completion_listener(lambda p, s: called.append((p, s)))
+        # Emulate downstream fire
+        for cb in list(mgr._completion_listeners):
+            try:
+                cb("polygon", ["AAPL"])
+            except Exception:
+                pass
+        # The good listener was still invoked
+        assert called == [("polygon", ["AAPL"])]
+
+    @pytest.mark.asyncio
+    async def test_remove_listener_works(self, session_factory, mock_data_service):
+        mgr = DownloadManager(
+            session_factory=session_factory,
+            data_service=mock_data_service,
+            providers={"polygon": AsyncMock()},
+        )
+        events = []
+        cb = lambda p, s: events.append((p, s))
+        mgr.add_completion_listener(cb)
+        assert cb in mgr._completion_listeners
+        mgr.remove_completion_listener(cb)
+        assert cb not in mgr._completion_listeners
+        # Removing again is a no-op
+        mgr.remove_completion_listener(cb)

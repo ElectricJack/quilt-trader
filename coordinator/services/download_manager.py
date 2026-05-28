@@ -39,7 +39,13 @@ class DownloadManager:
         self._session_factory = session_factory
         self._data_service = data_service
         self._providers = providers
-        self._on_download_complete = on_download_complete
+        # Listener registry. Multiple consumers (goal_processor, coverage_index,
+        # future strategy-deployment watchers) need to react when a download
+        # finishes. The legacy `_on_download_complete` single-slot attribute
+        # is kept as a property for backward compatibility.
+        self._completion_listeners: list[Callable[[str, list[str]], None]] = []
+        if on_download_complete is not None:
+            self._completion_listeners.append(on_download_complete)
         self._active_tasks: dict[str, asyncio.Task] = {}
         # Per-provider semaphores so one slow provider (polygon) doesn't block
         # fast providers (yfinance). Concurrency reflects each provider's
@@ -58,6 +64,40 @@ class DownloadManager:
 
     def _semaphore_for(self, provider: str) -> asyncio.Semaphore:
         return self._provider_semaphores.get(provider, self._fallback_semaphore)
+
+    def add_completion_listener(
+        self, callback: Callable[[str, list[str]], None]
+    ) -> None:
+        """Register a callback fired after each download completes (success
+        OR failure). Callback signature: ``(provider_name, symbols)``.
+        Exceptions raised by listeners are logged and swallowed so one bad
+        listener doesn't block others."""
+        self._completion_listeners.append(callback)
+
+    def remove_completion_listener(
+        self, callback: Callable[[str, list[str]], None]
+    ) -> None:
+        """Unregister a previously-added completion listener. No-op if not
+        registered."""
+        try:
+            self._completion_listeners.remove(callback)
+        except ValueError:
+            pass
+
+    @property
+    def _on_download_complete(self) -> Callable[[str, list[str]], None] | None:
+        """Backward-compatible single-callback accessor.
+
+        Returns the FIRST registered listener (or None if none). The setter
+        replaces the entire listener list with just the assigned callback —
+        matches the legacy semantics where main.py used direct attribute
+        assignment.
+        """
+        return self._completion_listeners[0] if self._completion_listeners else None
+
+    @_on_download_complete.setter
+    def _on_download_complete(self, callback: Callable[[str, list[str]], None] | None) -> None:
+        self._completion_listeners = [callback] if callback is not None else []
 
     def concurrency_for(self, provider: str) -> int:
         """Return the configured concurrency cap for a provider.
@@ -408,16 +448,19 @@ class DownloadManager:
 
         logger.info("Download %s finished: %s", download_id, final_status)
 
-        # Fire the completion callback on every terminal state — including
+        # Fire ALL completion listeners on every terminal state — including
         # 'failed'. Consumers (goal_processor, coverage_index) need to know
         # the lane is free so they can enqueue the next contract; gating on
         # success-only kept the polygon lane idle whenever a download
-        # returned "no data."
-        if self._on_download_complete:
+        # returned "no data." Exceptions in one listener don't block others.
+        for cb in list(self._completion_listeners):
             try:
-                self._on_download_complete(provider_name, symbols)
+                cb(provider_name, symbols)
             except Exception:
-                logger.exception("on_download_complete callback failed")
+                logger.exception(
+                    "completion listener %s failed (continuing with remaining listeners)",
+                    getattr(cb, "__name__", repr(cb)),
+                )
 
     async def _download_option_chain_symbol(
         self,
