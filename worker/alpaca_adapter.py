@@ -453,20 +453,77 @@ class AlpacaAdapter(BrokerAdapter):
         stream.subscribe_trades(_trade_handler, *symbols)
         stream.subscribe_quotes(_quote_handler, *symbols)
 
-        return _AlpacaStreamHandle(stream)
+        return _AlpacaStreamHandle(
+            stream,
+            trade_handler=_trade_handler,
+            quote_handler=_quote_handler,
+            registry=registry if cfg and cfg.symbol_transform == "crypto_slash" else None,
+            original_by_streamed=original_by_streamed,
+        )
 
 
 class _AlpacaStreamHandle(MarketDataStreamHandle):
-    """Runs an alpaca-py ``StockDataStream`` in a daemon thread."""
+    """Runs an alpaca-py ``StockDataStream`` (or ``CryptoDataStream``) in a daemon thread."""
 
-    def __init__(self, stream) -> None:
+    def __init__(
+        self,
+        stream,
+        *,
+        trade_handler=None,
+        quote_handler=None,
+        registry=None,
+        original_by_streamed: dict[str, str] | None = None,
+    ) -> None:
         super().__init__()
         self._stream = stream
         self._closed_intentionally = False
+        # Handlers + symbol map stashed so add_symbols/remove_symbols can
+        # subscribe/unsubscribe surgically without recreating the stream.
+        self._trade_handler = trade_handler
+        self._quote_handler = quote_handler
+        self._registry = registry
+        self._original_by_streamed = dict(original_by_streamed or {})
         self._thread = threading.Thread(
             target=self._run, name="alpaca-stream", daemon=True
         )
         self._thread.start()
+
+    def _to_streamed(self, symbols: list[str]) -> list[str]:
+        """Convert algorithm-canonical symbols to Alpaca-stream form. For
+        crypto: BTC/USD stays BTC/USD via the registry. For equities: identity."""
+        if self._registry is None:
+            return list(symbols)
+        return [self._registry.resolve_symbol(s, "alpaca_stream") for s in symbols]
+
+    def add_symbols(self, symbols: list[str]) -> None:
+        if not symbols:
+            return
+        if self._trade_handler is None or self._quote_handler is None:
+            raise NotImplementedError(
+                "_AlpacaStreamHandle was constructed without handlers; cannot add_symbols"
+            )
+        streamed = self._to_streamed(symbols)
+        for orig, s in zip(symbols, streamed):
+            self._original_by_streamed[s] = orig
+        try:
+            self._stream.subscribe_trades(self._trade_handler, *streamed)
+            self._stream.subscribe_quotes(self._quote_handler, *streamed)
+        except Exception:  # noqa: BLE001
+            logger.exception("alpaca add_symbols failed for %s", symbols)
+            raise
+
+    def remove_symbols(self, symbols: list[str]) -> None:
+        if not symbols:
+            return
+        streamed = self._to_streamed(symbols)
+        for s in streamed:
+            self._original_by_streamed.pop(s, None)
+        try:
+            self._stream.unsubscribe_trades(*streamed)
+            self._stream.unsubscribe_quotes(*streamed)
+        except Exception:  # noqa: BLE001
+            logger.exception("alpaca remove_symbols failed for %s", symbols)
+            raise
 
     def _run(self) -> None:
         try:

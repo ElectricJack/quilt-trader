@@ -453,6 +453,46 @@ class _TradierStreamHandle(MarketDataStreamHandle):
         url = sess.get("url") or f"{self._stream_base}/markets/events"
         return session_id, url
 
+    def add_symbols(self, symbols: list[str]) -> None:
+        """Add symbols to the running stream. Tradier's chunked-HTTP stream
+        encodes the symbol list in the initial GET params, so we can't add
+        surgically — we update the symbol list and force a reconnect by
+        closing the current response. The _run loop will pick up the new
+        list on its next iteration.
+        """
+        if not symbols:
+            return
+        # De-dupe preserving order
+        new_syms = [s for s in symbols if s not in self._symbols]
+        if not new_syms:
+            return
+        self._symbols.extend(new_syms)
+        self._force_reconnect()
+
+    def remove_symbols(self, symbols: list[str]) -> None:
+        """Remove symbols from the running stream. Same reconnect-on-change
+        contract as add_symbols."""
+        if not symbols:
+            return
+        to_drop = set(symbols)
+        kept = [s for s in self._symbols if s not in to_drop]
+        if len(kept) == len(self._symbols):
+            return  # nothing actually removed
+        self._symbols = kept
+        self._force_reconnect()
+
+    def _force_reconnect(self) -> None:
+        """Close the current chunked-HTTP response so iter_lines returns and
+        _run can pick up the new symbol list. The thread itself keeps running.
+        """
+        resp = getattr(self, "_response", None)
+        if resp is None:
+            return
+        try:
+            resp.close()
+        except Exception:  # noqa: BLE001
+            logger.exception("tradier force_reconnect: response.close() failed")
+
     def _run(self) -> None:
         import requests
 

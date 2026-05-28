@@ -210,6 +210,32 @@ class MarketDataStreamHandle:
             import logging
             logging.getLogger(__name__).exception("on_disconnect callback raised")
 
+    def add_symbols(self, symbols: list[str]) -> None:
+        """Subscribe additional symbols on an already-running stream.
+
+        Default raises NotImplementedError. Adapters that support surgical
+        subscription changes (subscribe/unsubscribe without tearing down
+        the underlying WS / SSE connection) override this.
+
+        Callers that need to add a symbol to a handle that doesn't support
+        it must tear down the handle and re-create it with the full symbol
+        list — see ``LiveFeedAggregator.start_subscription``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support add_symbols; "
+            "tear down and recreate the handle with the full symbol list"
+        )
+
+    def remove_symbols(self, symbols: list[str]) -> None:
+        """Unsubscribe symbols from an already-running stream.
+
+        Default raises NotImplementedError. Same caveat as ``add_symbols``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support remove_symbols; "
+            "tear down and recreate the handle with the reduced symbol list"
+        )
+
 
 class MockBrokerAdapter(BrokerAdapter):
     def __init__(self) -> None:
