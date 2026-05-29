@@ -203,6 +203,20 @@ export interface SettingsStatus {
   theta_data_set: boolean;
   tailscale_authkey_set: boolean;
   coordinator_ip: string | null;
+  // Polygon tier overrides (plaintext, nullable when defaulted)
+  polygon_min_request_interval_s: string | null;
+  polygon_concurrency: string | null;
+  // FMP (Financial Modeling Prep) — datasets framework
+  fmp_api_key_set: boolean;
+  fmp_daily_quota_limit: string | null;
+  fmp_min_request_interval_s: string | null;
+  dataset_quota_reset_tz: string | null;
+}
+
+export interface FmpTierBody {
+  daily_quota_limit?: number | null;
+  min_request_interval_s?: number | null;
+  quota_reset_tz?: string | null;
 }
 
 export interface HealthResponse {

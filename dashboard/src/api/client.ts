@@ -774,6 +774,32 @@ export const api = {
       method: "DELETE",
     });
   },
+  setFmpKey(value: string): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/fmp-key", {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
+  },
+  deleteFmpKey(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/fmp-key", {
+      method: "DELETE",
+    });
+  },
+  setFmpTier(body: {
+    daily_quota_limit?: number | null;
+    min_request_interval_s?: number | null;
+    quota_reset_tz?: string | null;
+  }): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/fmp-tier", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+  deleteFmpTier(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/fmp-tier", {
+      method: "DELETE",
+    });
+  },
   setCoordinatorIp(value: string): Promise<SettingsStatus> {
     return request<SettingsStatus>("/api/settings/coordinator-ip", {
       method: "PUT",

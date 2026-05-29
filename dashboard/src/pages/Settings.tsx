@@ -7,12 +7,16 @@ import {
   useSetThetaData,
   useSetCoordinatorIp,
   useSetTailscaleAuthkey,
+  useSetFmpKey,
+  useSetFmpTier,
   useDeleteGithubPat,
   useDeleteDiscordToken,
   useDeletePolygonKey,
   useDeleteThetaData,
   useDeleteCoordinatorIp,
   useDeleteTailscaleAuthkey,
+  useDeleteFmpKey,
+  useDeleteFmpTier,
 } from "../api/hooks";
 import { FormField } from "../components/FormField";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -357,6 +361,168 @@ function ThetaDataCard({
   );
 }
 
+// ─── FMP Tier Card (non-secret, plaintext quota / pacing overrides) ──────────
+
+interface FmpTierCardProps {
+  dailyLimit: string | null;
+  minInterval: string | null;
+  resetTz: string | null;
+  onSave: (body: {
+    daily_quota_limit?: number | null;
+    min_request_interval_s?: number | null;
+    quota_reset_tz?: string | null;
+  }) => Promise<void>;
+  onDelete: () => Promise<void>;
+  isSaving: boolean;
+  isDeleting: boolean;
+}
+
+function FmpTierCard({
+  dailyLimit,
+  minInterval,
+  resetTz,
+  onSave,
+  onDelete,
+  isSaving,
+  isDeleting,
+}: FmpTierCardProps) {
+  const [editing, setEditing] = useState(false);
+  const [limit, setLimit] = useState(dailyLimit ?? "");
+  const [interval, setInterval] = useState(minInterval ?? "");
+  const [tz, setTz] = useState(resetTz ?? "");
+
+  const isOverridden =
+    dailyLimit !== null || minInterval !== null || resetTz !== null;
+
+  const handleSave = async () => {
+    const body: {
+      daily_quota_limit?: number | null;
+      min_request_interval_s?: number | null;
+      quota_reset_tz?: string | null;
+    } = {};
+    body.daily_quota_limit = limit.trim() ? Number(limit.trim()) : null;
+    body.min_request_interval_s = interval.trim()
+      ? Number(interval.trim())
+      : null;
+    body.quota_reset_tz = tz.trim() || null;
+    await onSave(body);
+    setEditing(false);
+  };
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-medium text-gray-200">
+          FMP Tier / Pacing
+        </span>
+        <StatusBadge isSet={isOverridden} />
+      </div>
+
+      <p className="text-xs text-gray-500 mb-3">
+        Override the FMP daily quota, inter-request pacing floor, and the
+        quota-reset timezone. Free-tier defaults: 250 calls/day, no pacing
+        floor, UTC reset. Coordinator restart required to apply.
+      </p>
+
+      {!editing ? (
+        <div className="grid grid-cols-3 gap-3 mb-3">
+          <div>
+            <div className="text-xs text-gray-500 mb-1">Daily quota</div>
+            <code className="block bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 font-mono">
+              {dailyLimit ?? "250 (default)"}
+            </code>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500 mb-1">
+              Min request interval (s)
+            </div>
+            <code className="block bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 font-mono">
+              {minInterval ?? "0.0 (default)"}
+            </code>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500 mb-1">Reset timezone</div>
+            <code className="block bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 font-mono">
+              {resetTz ?? "UTC (default)"}
+            </code>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-3 mb-3">
+          <FormField label="Daily quota">
+            <input
+              type="number"
+              min={1}
+              className={INPUT_CLS}
+              value={limit}
+              onChange={(e) => setLimit(e.target.value)}
+              placeholder="250"
+            />
+          </FormField>
+          <FormField label="Min request interval (s)">
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              className={INPUT_CLS}
+              value={interval}
+              onChange={(e) => setInterval(e.target.value)}
+              placeholder="0.0"
+            />
+          </FormField>
+          <FormField label="Reset timezone (IANA)">
+            <input
+              type="text"
+              className={INPUT_CLS}
+              value={tz}
+              onChange={(e) => setTz(e.target.value)}
+              placeholder="UTC, America/New_York, …"
+            />
+          </FormField>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        {editing ? (
+          <>
+            <button
+              className={SAVE_BTN_CLS}
+              onClick={() => void handleSave()}
+              disabled={isSaving}
+            >
+              {isSaving ? "Saving…" : "Save"}
+            </button>
+            <button
+              className="text-sm text-gray-400 hover:text-gray-200 px-2"
+              onClick={() => {
+                setEditing(false);
+                setLimit(dailyLimit ?? "");
+                setInterval(minInterval ?? "");
+                setTz(resetTz ?? "");
+              }}
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button className={SAVE_BTN_CLS} onClick={() => setEditing(true)}>
+            Edit
+          </button>
+        )}
+        {isOverridden && !editing && (
+          <button
+            className={CLEAR_BTN_CLS}
+            onClick={() => void onDelete()}
+            disabled={isDeleting}
+          >
+            {isDeleting ? "Clearing…" : "Clear all overrides"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Settings Page ────────────────────────────────────────────────────────────
 
 export function Settings() {
@@ -369,6 +535,8 @@ export function Settings() {
   const setThetaData = useSetThetaData();
   const setCoordinatorIp = useSetCoordinatorIp();
   const setTailscaleAuthkey = useSetTailscaleAuthkey();
+  const setFmpKey = useSetFmpKey();
+  const setFmpTier = useSetFmpTier();
 
   const deleteGithubPat = useDeleteGithubPat();
   const deleteDiscordToken = useDeleteDiscordToken();
@@ -376,6 +544,8 @@ export function Settings() {
   const deleteThetaData = useDeleteThetaData();
   const deleteCoordinatorIp = useDeleteCoordinatorIp();
   const deleteTailscaleAuthkey = useDeleteTailscaleAuthkey();
+  const deleteFmpKey = useDeleteFmpKey();
+  const deleteFmpTier = useDeleteFmpTier();
 
   return (
     <div className="space-y-4">
@@ -463,6 +633,56 @@ export function Settings() {
             }}
             isSaving={setThetaData.isPending}
             isDeleting={deleteThetaData.isPending}
+          />
+
+          <SingleCredentialCard
+            label="FMP (Financial Modeling Prep) API Key"
+            isSet={settings?.fmp_api_key_set ?? false}
+            inputLabel="API Key"
+            helpLink={{
+              href: "https://site.financialmodelingprep.com/developer/docs",
+              label: "Get a key (free tier 250/day)",
+            }}
+            onSave={async (value) => {
+              await setFmpKey.mutateAsync(value);
+              addAlert({
+                message: "FMP API Key saved. Restart the coordinator to apply.",
+                severity: "success",
+              });
+            }}
+            onDelete={async () => {
+              await deleteFmpKey.mutateAsync();
+              addAlert({
+                message: "FMP API Key cleared. Restart the coordinator to apply.",
+                severity: "success",
+              });
+            }}
+            isSaving={setFmpKey.isPending}
+            isDeleting={deleteFmpKey.isPending}
+          />
+
+          <FmpTierCard
+            dailyLimit={settings?.fmp_daily_quota_limit ?? null}
+            minInterval={settings?.fmp_min_request_interval_s ?? null}
+            resetTz={settings?.dataset_quota_reset_tz ?? null}
+            onSave={async (body) => {
+              await setFmpTier.mutateAsync(body);
+              addAlert({
+                message:
+                  "FMP tier overrides saved. Restart the coordinator to apply.",
+                severity: "success",
+              });
+            }}
+            onDelete={async () => {
+              await deleteFmpTier.mutateAsync();
+              addAlert({
+                message:
+                  "FMP tier overrides cleared. Restart the coordinator to apply.",
+                severity: "success",
+              });
+            }}
+            isSaving={setFmpTier.isPending}
+            isDeleting={deleteFmpTier.isPending}
           />
 
           <h2 className="text-lg font-semibold text-gray-200 pt-4">Worker Install</h2>
