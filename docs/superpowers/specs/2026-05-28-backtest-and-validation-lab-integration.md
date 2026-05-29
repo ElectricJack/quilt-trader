@@ -242,6 +242,32 @@ When the validation lab requests yfinance data via `quilt data download --symbol
 
 **Provenance:** the initial debugging round produced zero ETH trades because the algorithm requested `BTC/USD` data but the cache only had `BTC-USD` — the literal-match lookup failed.
 
+### I16: Benchmark loading reuses the same download-and-wait path as strategy data
+
+`BacktestRunner.run` loads the benchmark via the module-level helper `_load_benchmark_with_download(*, ds, source, symbol, date_range_start, date_range_end, downloader, on_download_start=None)`. Missing benchmark parquet triggers `_download_and_wait` and one retry; if still empty, the run finalizes without a benchmark (`logger.warning`) — strategy metrics still produced.
+
+The `on_download_start` callback fires once after the first empty-load check and before invoking `downloader`, allowing the runner to set the progress message `f"Downloading benchmark {symbol} from {source}"` only on real cache misses (no spurious "Downloading…" flash when the parquet is already cached).
+
+**Provenance:** P1 implementation (commits `00053bc` and earlier). Removes the silent benchmark drop and cost trap described in the spec's P1 motivation. Validates I17 by extension: if the benchmark source is gated on provider availability, the download path uses the same provider's `DownloadManager` semaphore the strategy uses.
+
+### I17: Provider availability is derived at request time from Settings + Accounts; never hardcoded in API or UI
+
+The single helper `coordinator/api/routes/data.py:_provider_availability(db)` is the canonical source. It is consumed by:
+- `GET /api/data/providers` — the dashboard's `RunBacktestModal` reads this via `useProviderAvailability()` on mount and renders the dropdown from `available=true` entries (it defaults to the first available provider when none is selected).
+- `POST /api/backtest-runs` — the create handler validates `body.benchmark_source` against the matrix and returns `422 {"detail": "benchmark_source 'X' is not available: <reason>"}` when the picked source has `available=false` or is missing entirely.
+
+Availability rules (alphabetical order, fixed):
+- `alpaca` available iff at least one Account with `broker_type='alpaca'` exists.
+- `coinbase` available iff at least one Account with `broker_type='coinbase'` exists.
+- `polygon` available iff the `polygon_api_key` Setting is set.
+- `theta` available iff both `theta_data_username` AND `theta_data_password` Settings are set.
+- `tradier` available iff at least one Account with `broker_type='tradier'` exists.
+- `yfinance` always available.
+
+The pre-existing `GET /api/data/providers/timeframes` (provider→supported-timeframes mapping, formerly at `/providers`) was renamed to free the `/providers` path. Existing `BacktestRun` rows referencing an unavailable source remain viewable on detail pages — only the create form gates.
+
+**Provenance:** P1 implementation (commits `2f1af4d`, `fab516b`, `36057a8`, `6c1cb13`, `d813309`, `3de8c27`).
+
 ## Backtest Engine ↔ Validation Lab API contract
 
 ### What the lab guarantees the engine
