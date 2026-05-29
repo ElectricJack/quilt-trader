@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Protocol
 
+import numpy as np
 import pandas as pd
 
 from coordinator.services.asset_services import AssetServiceRegistry, AssetType
@@ -296,7 +297,6 @@ class BacktestEngine:
                         resolved = svc_for_sym.resolve_symbol(sym, src)
                         if s != sym and s != resolved:
                             continue
-                        import numpy as np
                         cache_key = id(df)
                         if cache_key not in self._ts_cache:
                             ts_col = pd.to_datetime(df["timestamp"])
@@ -310,8 +310,7 @@ class BacktestEngine:
                         cutoff = pd.Timestamp(sim_time)
                         if cutoff.tz is not None:
                             cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-                        cutoff_ns = cutoff.value  # always ns
-                        idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
+                        idx = np.searchsorted(ns, cutoff.value, side="right") - 1
                         if idx >= 0:
                             fill_bar = df.iloc[idx]
                         break
@@ -522,7 +521,6 @@ class BacktestEngine:
                 ctx._default_source or "polygon", sym, "1day",
             )
             if df is not None and not df.empty:
-                import numpy as np
                 ts = pd.to_datetime(df["timestamp"])
                 if ts.dt.tz is not None:
                     ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
@@ -834,7 +832,6 @@ class BacktestEngine:
         """
         if ctx is None:
             return 0.0
-        import numpy as np
         svc_for_sym = self._asset_registry.get_service(sym)
         for (src, s, tf), df in ctx._bars.items():
             if df.empty:

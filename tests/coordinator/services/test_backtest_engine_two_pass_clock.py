@@ -251,3 +251,75 @@ def test_lookup_symbol_close_returns_zero_for_unknown_symbol():
         fallback_bar=btc_bar,
     )
     assert price == 0.0, f"expected 0.0 sentinel, got {price}"
+
+
+def test_fill_bar_resolution_uses_symbol_bar_not_clock_bar():
+    """Regression test: a buy-ETH signal must fill at ETH's bar (~2500), not
+    the clock-symbol BTC's bar (~42000), even with clock_symbol=BTC-USD."""
+    from coordinator.services.backtest_engine_v2 import BacktestEngine
+    from coordinator.services.backtest_tick_context import BacktestTickContext
+    from coordinator.services.backtest_config import BacktestConfig, SlippageModel
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType
+
+    class _BuyEthAlgo:
+        def on_start(self, config, restored_state):
+            self._fired = False
+
+        def on_tick(self, ctx):
+            # Reference both symbols in pass-1 so the union clock has both
+            # symbols' timestamps.
+            try:
+                ctx.market_data("BTC/USD", n=1)
+                ctx.market_data("ETH/USD", n=1)
+            except Exception:
+                pass
+            if self._fired:
+                return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="ETH/USD",
+                signal_type=SignalType.BUY,
+                quantity=1.0,
+                asset_type="crypto",
+                order_type=OrderType.MARKET,
+            )])]
+
+        def on_stop(self): pass
+
+    bars = {
+        ("yfinance", "BTC-USD", "1day"): _make_bar_df(
+            ["2024-01-01", "2024-01-02", "2024-01-03"], base=42_000.0,
+        ),
+        ("yfinance", "ETH-USD", "1day"): _make_bar_df(
+            ["2024-01-01", "2024-01-02", "2024-01-03"], base=2_500.0,
+        ),
+    }
+    ctx = BacktestTickContext(
+        bars=dict(bars), positions={}, cash=100_000.0,
+        default_source="yfinance",
+    )
+    obs = _RecordingObserver()
+    eng = BacktestEngine(config=BacktestConfig(
+        start="2024-01-01", end="2024-01-03",
+        initial_cash=100_000.0, cost_profile=None,
+    ))
+    eng.run(
+        algorithm=_BuyEthAlgo(), ctx=ctx,
+        clock_series=bars[("yfinance", "BTC-USD", "1day")],
+        clock_timeframe="1day", clock_source="yfinance",
+        clock_symbol="BTC-USD",  # BTC is the clock — ETH must NOT inherit its price
+        slippage=SlippageModel(),
+        buy_fees=[], sell_fees=[],
+        initial_cash=100_000.0,
+        observer=obs,
+        cancel_token=type("X", (), {"is_set": lambda self: False})(),
+    )
+    fills = [e for e in obs.events if e[0] == "fill"]
+    assert len(fills) >= 1, "expected at least one fill"
+    fill_record = fills[0][1][0]  # FillRecord positional arg
+    # ETH bars are base=2500 → high=2525 (with default 5bps slippage on a market
+    # buy, fill ≈ 2525 * 1.0005 ≈ 2526). Allow wide bounds; the assertion is
+    # that we're nowhere near BTC's 42000.
+    assert 2_400 < fill_record.fill_price < 2_700, (
+        f"ETH should fill at ETH's bar (~2500), got {fill_record.fill_price}"
+    )
