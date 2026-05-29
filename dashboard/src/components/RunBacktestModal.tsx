@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCreateBacktestRun, useProviderAvailability } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
@@ -66,14 +66,16 @@ export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = 
   }, [preloadSetId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data: providersData } = useProviderAvailability();
-  const availableProviders = (providersData ?? []).filter((p) => p.available);
+  const availableProviders = useMemo(
+    () => (providersData ?? []).filter((p) => p.available),
+    [providersData],
+  );
 
   useEffect(() => {
     if (!benchmarkSource && availableProviders.length > 0) {
       setBenchmarkSource(availableProviders[0].name);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableProviders]);
+  }, [availableProviders, benchmarkSource]);
 
   function handleLoadSet(setId: string) {
     setSelectedSetId(setId);
