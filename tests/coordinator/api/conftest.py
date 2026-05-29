@@ -16,6 +16,7 @@ must hit the same database, so this conftest:
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 
 import pytest
@@ -26,6 +27,16 @@ from sqlalchemy.orm import sessionmaker
 import coordinator.database.session as _sync_session_module
 from coordinator.database.models import Base
 from coordinator.main import create_app
+from coordinator.services.datasets.registry import clear_registry, list_all
+from coordinator.services.datasets.providers import fmp_datasets as _fmp_datasets
+
+
+@pytest.fixture(autouse=True)
+def _ensure_fmp_registry():
+    """Re-register FMP specs if a prior test cleared the registry."""
+    if not list_all():
+        importlib.reload(_fmp_datasets)
+    yield
 
 
 @pytest_asyncio.fixture
