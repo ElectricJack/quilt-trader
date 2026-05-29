@@ -471,6 +471,28 @@ class OptimizationSession(Base):
     runs: Mapped[list["BacktestRun"]] = relationship(back_populates="optimization_session")
 
 
+class ResearchJob(Base):
+    __tablename__ = "research_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("optimization_sessions.id"), nullable=False, index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # sweep | walk-forward
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    # queued | running | completed | failed | cancelled
+
+    progress_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    progress_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    request_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    run_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class BacktestRun(Base):
     __tablename__ = "backtest_runs"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)

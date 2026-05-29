@@ -58,6 +58,7 @@ class BacktestTickContext(TickContext):
         self._bars = bars
         self._positions = positions
         self._cash = cash
+        self._initial_cash = cash
         self._account_value = account_value if account_value is not None else cash
         self._buying_power = buying_power if buying_power is not None else cash
         self._default_source = default_source
@@ -73,6 +74,24 @@ class BacktestTickContext(TickContext):
 
     def set_sim_time(self, t: datetime) -> None:
         self._sim_time_now = t
+
+    def reset_for_replay(self) -> None:
+        """Clear tick-time state set during pass-1 discovery so pass-2 can
+        replay from a clean slate.
+
+        Preserves the bars cache (so pass 2 doesn't re-download), data_service,
+        default_source, and on_miss callback. Clears sim_time and resets the
+        account snapshot (cash, account_value, buying_power, positions) to
+        their constructor-time defaults.
+
+        Used by the two-pass BacktestEngine to retain symbols discovered in
+        pass 1 while resetting per-tick state before the canonical replay.
+        """
+        self._sim_time_now = None
+        self._cash = self._initial_cash
+        self._account_value = self._initial_cash
+        self._buying_power = self._initial_cash
+        self._positions = {}
 
     def update_account(
         self, *, cash: float, account_value: float, buying_power: float,

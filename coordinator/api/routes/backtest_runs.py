@@ -14,6 +14,7 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_db, get_container
+from coordinator.api.routes.data import _provider_availability
 from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import BacktestRun, Algorithm, ParameterSet
 
@@ -104,6 +105,17 @@ async def create_run(body: BacktestRunCreate, db: AsyncSession = Depends(get_db)
         if ps is None:
             raise HTTPException(404, detail="Parameter set not found")
         config_overrides = ps.config_values
+
+    # Validate benchmark_source against current provider availability (I17).
+    if body.benchmark_source:
+        matrix = await _provider_availability(db)
+        entry = next((p for p in matrix if p["name"] == body.benchmark_source), None)
+        if entry is None or not entry["available"]:
+            reason = (entry or {}).get("reason") or "provider not registered"
+            raise HTTPException(
+                422,
+                detail=f"benchmark_source {body.benchmark_source!r} is not available: {reason}",
+            )
 
     run = BacktestRun(
         algorithm_id=body.algorithm_id,

@@ -8,8 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_container, get_db
+from coordinator.api.routes.settings import _get_setting
 from coordinator.api.serialization import to_iso_utc
-from coordinator.database.models import DataSource
+from coordinator.database.models import Account, DataSource
 from coordinator.services.data_service import DataService
 from coordinator.services.download_manager import DownloadManager
 
@@ -124,8 +125,8 @@ async def get_custom_data(source_name: str, fmt: str = Query("csv")):
     return {"data": df.to_dict(orient="records")}
 
 
-@router.get("/providers")
-async def list_providers():
+@router.get("/providers/timeframes")
+async def list_providers_timeframes():
     """Return configured providers with their supported timeframes."""
     try:
         mgr = get_download_manager()
@@ -150,6 +151,47 @@ async def list_providers():
             timeframes = ["1day"]
         result.append({"name": name, "timeframes": timeframes})
     return {"providers": result}
+
+
+async def _provider_availability(db: AsyncSession) -> list[dict]:
+    """Return the per-provider availability matrix derived from Settings + Accounts.
+
+    Order: alphabetical, stable. Each entry: {name, available, reason}.
+    `reason` is None when available, otherwise an explanatory string.
+    """
+    polygon_key = await _get_setting(db, "polygon_api_key")
+    theta_user = await _get_setting(db, "theta_data_username")
+    theta_pw = await _get_setting(db, "theta_data_password")
+
+    accounts_by_broker: dict[str, int] = {}
+    rows = (await db.execute(select(Account))).scalars().all()
+    for a in rows:
+        accounts_by_broker[a.broker_type] = accounts_by_broker.get(a.broker_type, 0) + 1
+
+    def _entry(name: str, available: bool, reason: str | None) -> dict:
+        return {"name": name, "available": available, "reason": None if available else reason}
+
+    matrix = [
+        _entry("alpaca",   accounts_by_broker.get("alpaca", 0) > 0,
+               "no alpaca account configured"),
+        _entry("coinbase", accounts_by_broker.get("coinbase", 0) > 0,
+               "no coinbase account configured"),
+        _entry("polygon",  polygon_key is not None, "polygon_api_key not configured"),
+        _entry("theta",    bool(theta_user and theta_pw),
+               "theta credentials not configured"),
+        _entry("tradier",  accounts_by_broker.get("tradier", 0) > 0,
+               "no tradier account configured"),
+        _entry("yfinance", True, None),
+    ]
+    return sorted(matrix, key=lambda e: e["name"])
+
+
+@router.get("/providers")
+async def list_providers(db: AsyncSession = Depends(get_db)) -> list[dict]:
+    """Provider availability matrix for the dashboard's benchmark dropdown
+    (and the create-run validator). See _provider_availability for the rules.
+    """
+    return await _provider_availability(db)
 
 
 @router.get("/search-symbols")

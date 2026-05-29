@@ -559,7 +559,11 @@ export const api = {
     const params = new URLSearchParams({ q: query, provider, limit: String(limit) });
     return request(`/api/data/search-symbols?${params}`);
   },
-  listProviders(): Promise<{ providers: { name: string; timeframes: string[] }[] }> {
+  listProviderTimeframes(): Promise<{ providers: { name: string; timeframes: string[] }[] }> {
+    return request("/api/data/providers/timeframes");
+  },
+
+  listProviderAvailability(): Promise<{ name: string; available: boolean; reason: string | null }[]> {
     return request("/api/data/providers");
   },
   getStorageSummary(): Promise<{

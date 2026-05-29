@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from sqlalchemy.orm import Session
 
-from coordinator.services.validation.sweep import RunnerFactory, run_sweep
+from coordinator.services.validation.sweep import ProgressCallback, RunnerFactory, run_sweep
 
 
 @dataclass
@@ -151,6 +151,7 @@ async def run_walk_forward(
     step_months: float,
     objective: Literal["sharpe", "calmar", "sortino"],
     parallelism: int = 1,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> WalkForwardResult:
     """Rolling train/test walk-forward.
 
@@ -206,6 +207,10 @@ async def run_walk_forward(
             fold_index=fold.index,
         )
         oos_run_ids.append(oos_id)
+        if progress_callback is not None:
+            pct = (fold.index + 1) / len(folds)
+            message = f"Fold {fold.index + 1} of {len(folds)}"
+            await progress_callback(pct, message, list(oos_run_ids))
 
     return WalkForwardResult(
         session_id=session_id,

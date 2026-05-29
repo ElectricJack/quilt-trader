@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Protocol
 
+import numpy as np
 import pandas as pd
 
 from coordinator.services.asset_services import AssetServiceRegistry, AssetType
@@ -121,10 +122,47 @@ class BacktestEngine:
         rng_seed: int = 12345,
         config: Optional[dict] = None,
     ) -> None:
+        """Two-pass execution.
+
+        Pass 1: discovery — call `on_start` and one `on_tick` with the warmup bar
+        so the algorithm populates `ctx._bars` with every symbol it intends to
+        use.  No observers fire; account state is discarded.
+
+        Pass 2: replay — build the canonical union-of-symbol-timelines clock from
+        `ctx._bars` (or fall back to the supplied clock_series if pass-1 produced
+        no symbols, e.g. scraper-only algorithms).  Reset the context, then run
+        `_run_internal` with the real clock.  Observers fire normally; this is
+        the canonical execution.
+        """
         try:
+            self._discovery_pass(
+                algorithm=algorithm, ctx=ctx,
+                clock_series=clock_series,
+                clock_timeframe=clock_timeframe,
+                clock_source=clock_source,
+                clock_symbol=clock_symbol,
+                config=config or {},
+            )
+
+            real_clock = self._build_union_clock(ctx._bars)
+            if real_clock.empty:
+                # Pure scraper-driven algo: fall back to the original clock.
+                real_clock = clock_series
+            # Always preserve original clock_source / clock_symbol for pass-2.
+            # _run_internal uses clock_symbol to decide whether to use the clock
+            # bar directly for fill resolution (sym == clock_symbol) or look up
+            # the symbol's own bars from the cache (sym != clock_symbol).
+            # Using "_union" here would force all fills through the cache lookup
+            # path, causing fills to resolve against the wrong bar.
+            real_source, real_symbol = clock_source, clock_symbol
+
+            # Reset tick-time state so pass-2 starts from scratch.
+            ctx.reset_for_replay()
+
             self._run_internal(
-                algorithm=algorithm, ctx=ctx, clock=clock_series,
-                clock_tf=clock_timeframe, clock_source=clock_source, clock_symbol=clock_symbol,
+                algorithm=algorithm, ctx=ctx, clock=real_clock,
+                clock_tf=clock_timeframe, clock_source=real_source,
+                clock_symbol=real_symbol,
                 slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
                 initial_cash=initial_cash, observer=observer, cancel=cancel_token,
                 progress=progress_callback, rng_seed=rng_seed, config=config or {},
@@ -132,6 +170,36 @@ class BacktestEngine:
         except Exception as exc:
             logger.exception("BacktestEngine.run failed")
             observer.on_error(exc)
+
+    def _discovery_pass(
+        self, *, algorithm, ctx, clock_series,
+        clock_timeframe, clock_source, clock_symbol,
+        config: dict,
+    ) -> None:
+        """Pass-1 warmup: on_start + one on_tick to populate ctx._bars.
+
+        Observers are NOT called; positions, fills, equity are not recorded.
+        If clock_series is empty/None, only `on_start` runs.
+        """
+        if clock_series is None or len(clock_series) == 0:
+            algorithm.on_start(config, None)
+            return
+
+        first_bar = clock_series.iloc[0]
+        tf_duration = timeframe_to_seconds(clock_timeframe)
+        sim_time = (first_bar["timestamp"].to_pydatetime() +
+                    pd.Timedelta(seconds=tf_duration).to_pytimedelta())
+        ctx.set_sim_time(sim_time)
+        algorithm.on_start(config, None)
+        try:
+            algorithm.on_tick(ctx)
+        except Exception:
+            # Pass-1 errors are absorbed: pass-2 will surface real errors via
+            # the observer.  Pass-1 is just a warmup to populate the bars cache.
+            logger.debug(
+                "Algorithm raised during pass-1 discovery; continuing",
+                exc_info=True,
+            )
 
     def _run_internal(
         self, *, algorithm, ctx, clock, clock_tf, clock_source, clock_symbol,
@@ -177,13 +245,6 @@ class BacktestEngine:
             # ---- 1. Tick the algorithm ----
             observer.on_tick(sim_time, {"cash": cash})
             signals = algorithm.on_tick(ctx) or []
-
-            # Rebuild clock from real data after first tick if clock was synthetic
-            if bar_idx == 0 and clock_source == "synthetic" and ctx._bars:
-                real_clock = self._build_union_clock(ctx._bars)
-                if not real_clock.empty:
-                    clock = real_clock
-                    tf_duration = timeframe_to_seconds(clock_tf)
 
             if signals:
                 all_signals_count += len(signals)
@@ -236,7 +297,6 @@ class BacktestEngine:
                         resolved = svc_for_sym.resolve_symbol(sym, src)
                         if s != sym and s != resolved:
                             continue
-                        import numpy as np
                         cache_key = id(df)
                         if cache_key not in self._ts_cache:
                             ts_col = pd.to_datetime(df["timestamp"])
@@ -250,8 +310,7 @@ class BacktestEngine:
                         cutoff = pd.Timestamp(sim_time)
                         if cutoff.tz is not None:
                             cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-                        cutoff_ns = cutoff.value  # always ns
-                        idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
+                        idx = np.searchsorted(ns, cutoff.value, side="right") - 1
                         if idx >= 0:
                             fill_bar = df.iloc[idx]
                         break
@@ -462,7 +521,6 @@ class BacktestEngine:
                 ctx._default_source or "polygon", sym, "1day",
             )
             if df is not None and not df.empty:
-                import numpy as np
                 ts = pd.to_datetime(df["timestamp"])
                 if ts.dt.tz is not None:
                     ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
@@ -755,45 +813,50 @@ class BacktestEngine:
 
         return cash, positions
 
-    def _lookup_symbol_close(self, sym: str, sim_time, ctx, fallback_bar) -> float:
-        """Get the most recent close price for a symbol from its own data series.
+    def _lookup_symbol_close(self, sym: str, sim_time, ctx, fallback_bar=None) -> float:
+        """Return the most recent close price for `sym` from its OWN data series.
 
-        The bars cache may be keyed by the provider-specific symbol form
-        ('BTC-USD' for yfinance) while `sym` is the algorithm-canonical form
-        ('BTC/USD'). Resolve through the asset registry so positions are
-        marked-to-market against THEIR symbol's price, not the clock bar.
+        Resolves the algorithm-canonical symbol form (e.g. "BTC/USD") to the
+        provider-specific cache key (e.g. "BTC-USD") via the asset registry,
+        then does a searchsorted lookup at or before sim_time.
 
-        Falls back to the clock bar's close only as last resort (may be 0 for
-        synthetic clocks, or wrong if it's a different symbol).
+        Returns 0.0 if no cache entry matches the symbol or if sim_time precedes
+        the symbol's first bar.  The CALLER is responsible for falling back to
+        cost basis on 0.0 — this function must NOT return the clock-bar's close
+        (post-P3), since the clock bar belongs to a different symbol in a
+        multi-asset backtest and using it would silently mis-price positions
+        (the 2026-05-27 25-50× equity-inflation bug).
+
+        The `fallback_bar` parameter is kept for call-site compatibility but
+        intentionally unused.
         """
-        if ctx is not None:
-            import numpy as np
-            svc_for_sym = self._asset_registry.get_service(sym)
-            for (src, s, tf), df in ctx._bars.items():
-                if df.empty:
-                    continue
-                resolved = svc_for_sym.resolve_symbol(sym, src)
-                if s != sym and s != resolved:
-                    continue
-                cache_key = id(df)
-                if cache_key not in self._ts_cache:
-                    ts_col = pd.to_datetime(df["timestamp"])
-                    if ts_col.dt.tz is not None:
-                        ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                    # pandas 3.0 datetime64[us] default — force ns
-                    ns = ts_col.values.astype("datetime64[ns]").view("int64")
-                    closes = df["close"].values.astype(float)
-                    self._ts_cache[cache_key] = (ns, closes)
-                ns, closes = self._ts_cache[cache_key]
-                cutoff = pd.Timestamp(sim_time)
-                if cutoff.tz is not None:
-                    cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-                cutoff_ns = cutoff.value  # always ns
-                idx = np.searchsorted(ns, cutoff_ns, side="right") - 1
-                if idx >= 0:
-                    return float(closes[idx])
-                break
-        return float(fallback_bar["close"]) if fallback_bar is not None else 0.0
+        if ctx is None:
+            return 0.0
+        svc_for_sym = self._asset_registry.get_service(sym)
+        for (src, s, tf), df in ctx._bars.items():
+            if df.empty:
+                continue
+            resolved = svc_for_sym.resolve_symbol(sym, src)
+            if s != sym and s != resolved:
+                continue
+            cache_key = id(df)
+            if cache_key not in self._ts_cache:
+                ts_col = pd.to_datetime(df["timestamp"])
+                if ts_col.dt.tz is not None:
+                    ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                # pandas 3.0 datetime64[us] default — force ns
+                ns = ts_col.values.astype("datetime64[ns]").view("int64")
+                closes = df["close"].values.astype(float)
+                self._ts_cache[cache_key] = (ns, closes)
+            ns, closes = self._ts_cache[cache_key]
+            cutoff = pd.Timestamp(sim_time)
+            if cutoff.tz is not None:
+                cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+            idx = np.searchsorted(ns, cutoff.value, side="right") - 1
+            if idx >= 0:
+                return float(closes[idx])
+            return 0.0  # sim_time precedes symbol's first bar
+        return 0.0  # no cache entry matched the symbol
 
     def _lookup_option_mtm_price(self, sym: str, ctx) -> float | None:
         """Get current mid-price for an option from cached chain data."""
@@ -824,6 +887,10 @@ class BacktestEngine:
                 price = option_price if option_price is not None else ps.avg_price
             else:
                 price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+                if price == 0.0:
+                    # No MtM available — mark at cost basis (matches the existing
+                    # _positions_for_context fallback).
+                    price = ps.avg_price
             total += ps.quantity * price * svc.get_multiplier()
         return total
 
@@ -837,6 +904,8 @@ class BacktestEngine:
                 current_price = option_price if option_price is not None else ps.avg_price
             else:
                 current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
+                if current_price == 0.0:
+                    current_price = ps.avg_price
             multiplier = svc.get_multiplier()
             result.append({
                 "symbol": sym, "quantity": ps.quantity, "avg_price": ps.avg_price,
@@ -853,6 +922,10 @@ class BacktestEngine:
         Each row carries real OHLCV data from whichever symbol contributed that
         timestamp first (never zeros).  Used by the engine to tick through a
         unified timeline when backtesting multi-asset algorithms.
+
+        Timestamps are normalised to UTC-naive (tz stripped after UTC conversion)
+        to allow deduplication across DataFrames with heterogeneous timezone
+        representations.  Callers that need tz-aware timestamps must re-localise.
         """
         if not bars:
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])

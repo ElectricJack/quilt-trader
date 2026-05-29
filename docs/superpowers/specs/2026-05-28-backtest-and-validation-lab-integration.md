@@ -97,17 +97,24 @@ The backtest_runner preloads bars from `manifest.assets` using each entry's `sou
 
 The preload step writes the parquet path verbatim — there is no symbol translation layer between disk and cache.
 
-### I3: All bars-cache lookups route through `AssetService.resolve_symbol`
+### I3 (simplified post-P3): Bars-cache lookups resolve the canonical symbol once; the no-match case returns 0.0 instead of falling back to the clock bar
 
-Whenever code reads from `ctx._bars`, it must accept both the canonical and provider-specific form for the matching symbol. Three call sites enforce this:
+`BacktestEngine.run` now executes in two passes (P3, commit `d9fb57c`):
 
-- `BacktestTickContext.market_data` — algorithm's read path (commit `9352d6c`)
-- `BacktestEngine._try_fill` fill-bar lookup — order fill path (commit `144494e`)
-- `BacktestEngine._lookup_symbol_close` — mark-to-market path (commit `5ad1049`)
+1. **Pass 1 (discovery)** — `on_start` + one `on_tick` populates `ctx._bars` with every symbol the algorithm intends to read. Observers do not fire. Errors are absorbed.
+2. **Pass 2 (replay)** — the engine builds a canonical clock as the union of timestamps across every symbol in `ctx._bars` and ticks through it. The per-tick MtM and fill paths can assume the relevant symbol's bar exists at or near `sim_time`.
+
+The original three workaround call sites still resolve canonical → provider-specific cache keys, but the lookup is now safe-by-construction: when no cache entry matches the requested symbol, the function returns `0.0` (MtM) or leaves `fill_bar = bar` (fill resolution), and the caller falls back to the position's cost basis. The cross-symbol clock-bar fallback that caused the 2026-05-27 25-50× equity-inflation bug is gone.
+
+**The three sites:**
+
+- `BacktestTickContext.market_data` — algorithm convenience wrapper (commit `9352d6c`).
+- `BacktestEngine._try_fill` fill-bar lookup — order fill path (commits `144494e`, `d233c72`). Initial `fill_bar = bar` (the clock bar) is replaced by the symbol's own bar via the resolution loop when `sym != clock_symbol`; if no cache entry matches, `fill_bar` stays at the clock bar — acceptable only because the clock bar is always the leg's own symbol for single-symbol algos.
+- `BacktestEngine._lookup_symbol_close` — mark-to-market path (commits `5ad1049`, `7ec985a`). When no cache entry matches the symbol, returns `0.0`. Callers (`_positions_market_value`, `_positions_snapshot`, `_positions_for_context`) substitute `ps.avg_price` so the position is marked at cost basis instead of at a different symbol's price.
 
 Plus `CryptoAssetService.get_price` for the engine's price-discovery side.
 
-**The implementation pattern:**
+**The resolution pattern (per-tick lookup):**
 
 ```python
 svc = self._asset_registry.get_service(sym)
@@ -115,10 +122,14 @@ for (src, cache_sym, tf), df in ctx._bars.items():
     resolved = svc.resolve_symbol(sym, src)
     if cache_sym != sym and cache_sym != resolved:
         continue
-    # use df
+    # use df; break after first match
 ```
 
-**Provenance:** without this, ETH positions in a yfinance-data backtest were marked at BTC's price (BTC was the clock symbol, so the fallback lookup landed on BTC's bar). Equity inflated 25-50× until the position liquidated.
+The loop is preserved because pass-2 preserves the caller's `clock_source` / `clock_symbol` rather than using a `"_union"` marker — single-symbol algos still need fast-path direct fill-bar resolution when `sym == clock_symbol`. The loop is only invoked when `sym != clock_symbol` (multi-asset case).
+
+**Known limitation:** symbols the algorithm requests on a tick *after* pass 1 are loaded into the cache lazily (existing behavior), but their timestamps do not extend the pass-2 union clock. The discovery pass is the canonical clock contributor; if an algorithm depends on a symbol it didn't touch during pass 1, the clock will not have ticks aligned to that symbol's exclusive timestamps. Document pass-1 symbols as the canonical clock contributors.
+
+**Provenance:** P3 implementation (commits `cea6951`, `2ed9de1`, `d9fb57c`, `7ec985a`, `d233c72`). Removes the cross-symbol clock-bar fallback that caused the original wild-equity bug.
 
 ### I4: pandas 3.0 datetime64 default is microseconds; nanosecond arithmetic requires explicit casting
 
@@ -242,6 +253,48 @@ When the validation lab requests yfinance data via `quilt data download --symbol
 
 **Provenance:** the initial debugging round produced zero ETH trades because the algorithm requested `BTC/USD` data but the cache only had `BTC-USD` — the literal-match lookup failed.
 
+### I16: Benchmark loading reuses the same download-and-wait path as strategy data
+
+`BacktestRunner.run` loads the benchmark via the module-level helper `_load_benchmark_with_download(*, ds, source, symbol, date_range_start, date_range_end, downloader, on_download_start=None)`. Missing benchmark parquet triggers `_download_and_wait` and one retry; if still empty, the run finalizes without a benchmark (`logger.warning`) — strategy metrics still produced.
+
+The `on_download_start` callback fires once after the first empty-load check and before invoking `downloader`, allowing the runner to set the progress message `f"Downloading benchmark {symbol} from {source}"` only on real cache misses (no spurious "Downloading…" flash when the parquet is already cached).
+
+**Provenance:** P1 implementation (commits `00053bc` and earlier). Removes the silent benchmark drop and cost trap described in the spec's P1 motivation. Validates I17 by extension: if the benchmark source is gated on provider availability, the download path uses the same provider's `DownloadManager` semaphore the strategy uses.
+
+### I17: Provider availability is derived at request time from Settings + Accounts; never hardcoded in API or UI
+
+The single helper `coordinator/api/routes/data.py:_provider_availability(db)` is the canonical source. It is consumed by:
+- `GET /api/data/providers` — the dashboard's `RunBacktestModal` reads this via `useProviderAvailability()` on mount and renders the dropdown from `available=true` entries (it defaults to the first available provider when none is selected).
+- `POST /api/backtest-runs` — the create handler validates `body.benchmark_source` against the matrix and returns `422 {"detail": "benchmark_source 'X' is not available: <reason>"}` when the picked source has `available=false` or is missing entirely.
+
+Availability rules (alphabetical order, fixed):
+- `alpaca` available iff at least one Account with `broker_type='alpaca'` exists.
+- `coinbase` available iff at least one Account with `broker_type='coinbase'` exists.
+- `polygon` available iff the `polygon_api_key` Setting is set.
+- `theta` available iff both `theta_data_username` AND `theta_data_password` Settings are set.
+- `tradier` available iff at least one Account with `broker_type='tradier'` exists.
+- `yfinance` always available.
+
+The pre-existing `GET /api/data/providers/timeframes` (provider→supported-timeframes mapping, formerly at `/providers`) was renamed to free the `/providers` path. Existing `BacktestRun` rows referencing an unavailable source remain viewable on detail pages — only the create form gates.
+
+**Provenance:** P1 implementation (commits `2f1af4d`, `fab516b`, `36057a8`, `6c1cb13`, `d813309`, `3de8c27`).
+
+### I18: Research orchestration endpoints (`sweep`, `walk-forward`) are fire-and-poll
+
+`POST /api/research/sessions/{id}/sweep` and `.../walk-forward` return `202 Accepted` with a `JobResponse` body — `{"job_id", "session_id", "kind", "status": "queued", "progress_pct": 0.0, "run_ids": [], ...}` — immediately. The work runs as an `asyncio.create_task` registered with `ResearchJobManager`, which streams progress (`progress_pct`, `progress_message`, accumulated `run_ids`) into the `research_jobs` DB row after each completed trial / fold.
+
+Polling: `GET /api/research/sessions/{id}/jobs` lists all jobs for the session (newest first); `GET /api/research/sessions/{id}/jobs/{job_id}` returns the current state. Terminal statuses: `completed | failed | cancelled`. `DELETE /api/research/sessions/{id}/jobs/{job_id}` flips a cancel flag the orchestrator observes between trials and writes `status=cancelled` directly.
+
+Both endpoints also gate on the session existing: `404 {"detail": "session N not found"}` if the path's `session_id` doesn't exist. The job-fetch endpoints return `404` if the `job_id` is unknown OR if it belongs to a different session (cross-session leak prevention).
+
+Orphan recovery: any `queued | running` row at coordinator startup becomes `failed` with `error_message="Orphaned by coordinator restart"` (mirrors `DownloadManager.recover_orphaned_downloads`). Wired in `coordinator/main.py`'s lifespan startup; the manager's `shutdown()` is called during teardown to cancel live tasks.
+
+CLI: `quilt research sweep` / `walk-forward` POST the payload, print `queued: <job_id>`, then poll `GET /jobs/{id}` every 2s, echoing `[NN%] <progress_message>` whenever the message text changes. A `--no-wait` flag exits immediately after the POST. Terminal-status output is formatted by status (`Sweep <id> completed: N runs.` / `Sweep <id> failed: <error>` / `Sweep <id> cancelled.`).
+
+The two server-side sweep/walk-forward orchestrators (`coordinator/services/validation/sweep.py:run_sweep`, `walk_forward.py:run_walk_forward`) accept an optional `progress_callback(pct, message, run_ids) -> Awaitable[None]` — used by `ResearchJobManager._make_progress_callback` to write progress into the row and to raise `asyncio.CancelledError` from the next callback firing if the job's cancel flag is set. Sweep's grid/random/latin strategies use `asyncio.as_completed` so the callback fires per trial in completion order; sweep's `tpe` strategy is inherently sequential; walk-forward fires per OOS fold (not per inner train-sweep trial, to avoid noisy progress streams).
+
+**Provenance:** P2 implementation (commits `879e149`, `9eb5652`, `b991646`, `3eca43c`, `ae7733f`, `85c0f62`, `c7c3f7f`, `843030b`, `678ceec`). Sync endpoints were hitting CLI HTTP timeouts on multi-hour sweeps even after the band-aid 600s timeout bump (commit `8fccfcc`).
+
 ## Backtest Engine ↔ Validation Lab API contract
 
 ### What the lab guarantees the engine
@@ -343,7 +396,7 @@ These items have been promoted from the deferred list into the spec's active sco
 |---|---|---|
 | **P1 — Benchmark source expansion** | Expose all 5 wired providers in the benchmark dropdown; validate against availability matrix at request time; reuse runner's download-and-wait for missing benchmark data | Adds I16, I17 |
 | **P2 — Async-job model for `quilt research sweep` / `walk-forward`** | Endpoints return `202 + job_id`; new polling endpoint; CLI shows progress bar; job state machine | Adds I18 |
-| **P3 — Union-of-symbol-timelines backtest clock** | Two-pass execution: discover symbols on first pass, replay on real union clock on second pass | Simplifies I3 (resolution layer becomes unnecessary) |
+| **P3 — Union-of-symbol-timelines backtest clock** | Two-pass execution: discover symbols on first pass, replay on real union clock on second pass | Simplifies I3 (per-tick lookup loop preserved; the no-match fallback is hardened — clock-bar fallback removed from MtM path) |
 
 ### Backlog items **deferred from this spec** — kept as Tier 3 follow-ups
 

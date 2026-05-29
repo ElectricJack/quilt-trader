@@ -23,9 +23,37 @@ def _run(coro):
         fail(e.code, str(e))
 
 
+_poll_sleep_s = 2.0  # tests monkey-patch to 0.0 to skip the sleep
+
+
+async def _poll_job(c, session_id: int, job_id: str) -> dict:
+    """Poll the job endpoint until the status is terminal.
+
+    Returns the final job dict.  Echos a progress line whenever the message
+    text changes (so a queued→running→Trial 1→Trial 2 stream prints four
+    lines, not on every poll).
+    """
+    import asyncio
+    last_message = ""
+    while True:
+        job = await c.get(f"/api/research/sessions/{session_id}/jobs/{job_id}")
+        status = job["status"]
+        pct = job.get("progress_pct") or 0.0
+        message = job.get("progress_message") or status
+        if message != last_message:
+            click.echo(f"[{int(pct * 100):>3d}%] {message}")
+            last_message = message
+        if status in ("completed", "failed", "cancelled"):
+            return job
+        if _poll_sleep_s > 0:
+            await asyncio.sleep(_poll_sleep_s)
+
+
 @click.group("research")
-def research_group() -> None:
+@click.pass_context
+def research_group(ctx) -> None:
     """Strategy Validation Lab — sessions, sweeps, walk-forward, reports."""
+    ctx.ensure_object(dict)
 
 
 @research_group.group("session")
@@ -111,13 +139,14 @@ def session_show(ctx, session_id):
 @click.option("--manifest", required=True, help="Path to the strategy's quilt.yaml (server-resolvable).")
 @click.option("--base-config", required=True, help="Path to JSON file with base BacktestConfig (or inline JSON).")
 @click.option("--parameter-space", default=None, help='Optional override of the session\'s parameter_space (inline JSON or file path).')
-@click.option("--search", type=click.Choice(["grid", "random", "latin"]), default="grid")
+@click.option("--search", type=click.Choice(["grid", "random", "latin", "tpe"]), default="grid")
 @click.option("--max-trials", type=int, default=50)
 @click.option("--parallelism", type=int, default=1)
 @click.option("--seed", type=int, default=0)
+@click.option("--no-wait", is_flag=True, default=False, help="Print job_id and exit without polling.")
 @click.pass_context
-def cmd_sweep(ctx, session_id, manifest, base_config, parameter_space, search, max_trials, parallelism, seed):
-    """Run a hyperparameter sweep under an existing session."""
+def cmd_sweep(ctx, session_id, manifest, base_config, parameter_space, search, max_trials, parallelism, seed, no_wait):
+    """Queue a hyperparameter sweep under an existing session."""
     payload = {
         "manifest_path": manifest,
         "base_config": _parse_json_or_yaml_or_file(base_config),
@@ -132,14 +161,28 @@ def cmd_sweep(ctx, session_id, manifest, base_config, parameter_space, search, m
     async def go():
         c = _client(ctx)
         try:
-            return await c.post(f"/api/research/sessions/{session_id}/sweep", json=payload)
+            job = await c.post(f"/api/research/sessions/{session_id}/sweep", json=payload)
+            click.echo(f"queued: {job['job_id']}")
+            if no_wait:
+                return job
+            return await _poll_job(c, session_id, job["job_id"])
         finally:
             await c.aclose()
+
     body = _run(go())
     if ctx.obj.get("json_mode"):
         print_json(body)
     else:
-        click.echo(f"Sweep done: {body['n_configs']} configs, {len(body['run_ids'])} runs.")
+        status = body.get("status")
+        job_id = body["job_id"]
+        if status == "completed":
+            click.echo(f"Sweep {job_id} completed: {len(body.get('run_ids', []))} runs.")
+        elif status == "failed":
+            click.echo(f"Sweep {job_id} failed: {body.get('error_message')}", err=True)
+        elif status == "cancelled":
+            click.echo(f"Sweep {job_id} cancelled.")
+        else:
+            click.echo(f"Sweep {job_id} status: {status}")
 
 
 @research_group.command("walk-forward")
@@ -152,9 +195,10 @@ def cmd_sweep(ctx, session_id, manifest, base_config, parameter_space, search, m
 @click.option("--step-months", type=float, default=6.0)
 @click.option("--objective", type=click.Choice(["sharpe", "calmar", "sortino"]), default="sharpe")
 @click.option("--parallelism", type=int, default=1)
+@click.option("--no-wait", is_flag=True, default=False)
 @click.pass_context
-def cmd_walk_forward(ctx, session_id, manifest, base_config, parameter_space, train_years, test_years, step_months, objective, parallelism):
-    """Run a walk-forward optimization under an existing session."""
+def cmd_walk_forward(ctx, session_id, manifest, base_config, parameter_space, train_years, test_years, step_months, objective, parallelism, no_wait):
+    """Queue a walk-forward optimization under an existing session."""
     payload = {
         "manifest_path": manifest,
         "base_config": _parse_json_or_yaml_or_file(base_config),
@@ -170,14 +214,28 @@ def cmd_walk_forward(ctx, session_id, manifest, base_config, parameter_space, tr
     async def go():
         c = _client(ctx)
         try:
-            return await c.post(f"/api/research/sessions/{session_id}/walk-forward", json=payload)
+            job = await c.post(f"/api/research/sessions/{session_id}/walk-forward", json=payload)
+            click.echo(f"queued: {job['job_id']}")
+            if no_wait:
+                return job
+            return await _poll_job(c, session_id, job["job_id"])
         finally:
             await c.aclose()
+
     body = _run(go())
     if ctx.obj.get("json_mode"):
         print_json(body)
     else:
-        click.echo(f"Walk-forward done: {body['n_folds']} folds, OOS runs: {body['oos_run_ids']}")
+        status = body.get("status")
+        job_id = body["job_id"]
+        if status == "completed":
+            click.echo(f"Walk-forward {job_id} completed: {len(body.get('run_ids', []))} OOS runs.")
+        elif status == "failed":
+            click.echo(f"Walk-forward {job_id} failed: {body.get('error_message')}", err=True)
+        elif status == "cancelled":
+            click.echo(f"Walk-forward {job_id} cancelled.")
+        else:
+            click.echo(f"Walk-forward {job_id} status: {status}")
 
 
 @research_group.command("report")

@@ -20,7 +20,7 @@ async def test_create_backtest_run_starts_task(client, db_session, monkeypatch):
         "initial_cash": 25_000.0,
         "slippage_model": {"market_bps": 5.0},
         "benchmark_symbol": "SPY",
-        "benchmark_source": "polygon",
+        "benchmark_source": "yfinance",
     }
     r = await client.post("/api/backtest-runs", json=body)
     assert r.status_code == 201

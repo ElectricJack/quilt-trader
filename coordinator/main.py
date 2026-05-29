@@ -384,6 +384,28 @@ def create_app(
                 "backtest run endpoints will return 500 if the runner is invoked."
             )
 
+        from coordinator.services.research_job_manager import ResearchJobManager
+        from coordinator.services.validation.sweep import run_sweep as _run_sweep_fn
+        from coordinator.services.validation.walk_forward import run_walk_forward as _run_walk_forward_fn
+        from coordinator.database.session import get_session_factory as _get_sync_session_factory
+
+        async def _research_runner_factory(run_id: str) -> None:
+            runner = getattr(container, "backtest_runner", None)
+            if runner is None:
+                raise RuntimeError("backtest_runner not initialized")
+            await runner.run(run_id)
+
+        container.research_job_manager = ResearchJobManager(
+            session_factory=session_factory,
+            sweep_fn=_run_sweep_fn,
+            walk_forward_fn=_run_walk_forward_fn,
+            runner_factory=_research_runner_factory,
+            sync_session_factory=_get_sync_session_factory(),
+        )
+        n_recovered_jobs = await container.research_job_manager.recover_orphaned_jobs()
+        if n_recovered_jobs > 0:
+            logger.info("Recovered %d orphaned research job(s) from previous run", n_recovered_jobs)
+
         from coordinator.services.account_lifecycle import AccountLifecycleService
         account_lifecycle = AccountLifecycleService(
             session_factory=session_factory,
@@ -459,6 +481,9 @@ def create_app(
 
         if container.live_feed_aggregator:
             await container.live_feed_aggregator.stop()
+        if getattr(container, "research_job_manager", None) is not None:
+            with contextlib.suppress(Exception):
+                await container.research_job_manager.shutdown()
         await http_client.aclose()
         scheduler.shutdown()
         await engine.dispose()

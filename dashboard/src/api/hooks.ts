@@ -541,7 +541,15 @@ export function useAvailableData() {
 export function useProviders() {
   return useQuery({
     queryKey: ["data", "providers"] as const,
-    queryFn: api.listProviders,
+    queryFn: api.listProviderTimeframes,
+    staleTime: 60_000,
+  });
+}
+
+export function useProviderAvailability() {
+  return useQuery({
+    queryKey: ["data", "providers", "availability"] as const,
+    queryFn: api.listProviderAvailability,
     staleTime: 60_000,
   });
 }
