@@ -175,3 +175,79 @@ def test_two_pass_falls_back_to_original_clock_when_no_symbols():
     # Pass-2 fell back to synthetic_clock — 3 ticks.
     tick_events = [e for e in obs.events if e[0] == "tick"]
     assert len(tick_events) == 3
+
+
+def test_lookup_symbol_close_returns_symbols_own_close_not_clock_bar():
+    """Regression test for the 2026-05-27 ETH-at-BTC-price bug. When asked for
+    ETH's MtM price at a timestamp where ETH has a bar, the engine must return
+    ETH's close — not the clock bar's close (which may be BTC)."""
+    from coordinator.services.backtest_engine_v2 import BacktestEngine
+    from coordinator.services.backtest_tick_context import BacktestTickContext
+    from coordinator.services.backtest_config import BacktestConfig
+    from coordinator.services.asset_services.registry import AssetServiceRegistry
+
+    bars = {
+        ("yfinance", "BTC-USD", "1day"): _make_bar_df(
+            ["2024-01-01", "2024-01-02"], base=42_000.0,
+        ),
+        ("yfinance", "ETH-USD", "1day"): _make_bar_df(
+            ["2024-01-01", "2024-01-02"], base=2_500.0,
+        ),
+    }
+    ctx = BacktestTickContext(
+        bars=dict(bars), positions={}, cash=10_000.0,
+        default_source="yfinance",
+    )
+    eng = BacktestEngine(config=BacktestConfig(
+        start="2024-01-01", end="2024-01-02",
+        initial_cash=10_000.0, cost_profile=None,
+    ))
+    # The engine normally initialises these on entry to _run_internal; in this
+    # micro-test we drive _lookup_symbol_close directly, so set them up:
+    eng._asset_registry = AssetServiceRegistry()
+    eng._ts_cache = {}
+
+    btc_bar = bars[("yfinance", "BTC-USD", "1day")].iloc[1]
+    price = eng._lookup_symbol_close(
+        sym="ETH/USD",
+        sim_time=btc_bar["timestamp"].to_pydatetime(),
+        ctx=ctx,
+        fallback_bar=btc_bar,  # the CLOCK bar — used to be the bug source
+    )
+    # Pre-fix: returned ≈42000 (BTC close). Post-fix: ≈2500 (ETH close).
+    assert 2_400 < price < 2_600, f"expected ETH close ~2500, got {price}"
+
+
+def test_lookup_symbol_close_returns_zero_for_unknown_symbol():
+    """If a symbol has no cache entry, the lookup must return 0.0 so callers
+    can detect 'no mark available' and fall back to cost basis. It must NOT
+    return the clock bar's close (which would be a different symbol's price)."""
+    from coordinator.services.backtest_engine_v2 import BacktestEngine
+    from coordinator.services.backtest_tick_context import BacktestTickContext
+    from coordinator.services.backtest_config import BacktestConfig
+    from coordinator.services.asset_services.registry import AssetServiceRegistry
+
+    bars = {
+        ("yfinance", "BTC-USD", "1day"): _make_bar_df(
+            ["2024-01-01"], base=42_000.0,
+        ),
+    }
+    ctx = BacktestTickContext(
+        bars=dict(bars), positions={}, cash=10_000.0,
+        default_source="yfinance",
+    )
+    eng = BacktestEngine(config=BacktestConfig(
+        start="2024-01-01", end="2024-01-02",
+        initial_cash=10_000.0, cost_profile=None,
+    ))
+    eng._asset_registry = AssetServiceRegistry()
+    eng._ts_cache = {}
+
+    btc_bar = bars[("yfinance", "BTC-USD", "1day")].iloc[0]
+    price = eng._lookup_symbol_close(
+        sym="ETH/USD",  # not in cache
+        sim_time=btc_bar["timestamp"].to_pydatetime(),
+        ctx=ctx,
+        fallback_bar=btc_bar,
+    )
+    assert price == 0.0, f"expected 0.0 sentinel, got {price}"
