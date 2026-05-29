@@ -121,10 +121,47 @@ class BacktestEngine:
         rng_seed: int = 12345,
         config: Optional[dict] = None,
     ) -> None:
+        """Two-pass execution.
+
+        Pass 1: discovery — call `on_start` and one `on_tick` with the warmup bar
+        so the algorithm populates `ctx._bars` with every symbol it intends to
+        use.  No observers fire; account state is discarded.
+
+        Pass 2: replay — build the canonical union-of-symbol-timelines clock from
+        `ctx._bars` (or fall back to the supplied clock_series if pass-1 produced
+        no symbols, e.g. scraper-only algorithms).  Reset the context, then run
+        `_run_internal` with the real clock.  Observers fire normally; this is
+        the canonical execution.
+        """
         try:
+            self._discovery_pass(
+                algorithm=algorithm, ctx=ctx,
+                clock_series=clock_series,
+                clock_timeframe=clock_timeframe,
+                clock_source=clock_source,
+                clock_symbol=clock_symbol,
+                config=config or {},
+            )
+
+            real_clock = self._build_union_clock(ctx._bars)
+            if real_clock.empty:
+                # Pure scraper-driven algo: fall back to the original clock.
+                real_clock = clock_series
+            # Always preserve original clock_source / clock_symbol for pass-2.
+            # _run_internal uses clock_symbol to decide whether to use the clock
+            # bar directly for fill resolution (sym == clock_symbol) or look up
+            # the symbol's own bars from the cache (sym != clock_symbol).
+            # Using "_union" here would force all fills through the cache lookup
+            # path, causing fills to resolve against the wrong bar.
+            real_source, real_symbol = clock_source, clock_symbol
+
+            # Reset tick-time state so pass-2 starts from scratch.
+            ctx.reset_for_replay()
+
             self._run_internal(
-                algorithm=algorithm, ctx=ctx, clock=clock_series,
-                clock_tf=clock_timeframe, clock_source=clock_source, clock_symbol=clock_symbol,
+                algorithm=algorithm, ctx=ctx, clock=real_clock,
+                clock_tf=clock_timeframe, clock_source=real_source,
+                clock_symbol=real_symbol,
                 slippage=slippage, buy_fees=buy_fees, sell_fees=sell_fees,
                 initial_cash=initial_cash, observer=observer, cancel=cancel_token,
                 progress=progress_callback, rng_seed=rng_seed, config=config or {},
@@ -132,6 +169,36 @@ class BacktestEngine:
         except Exception as exc:
             logger.exception("BacktestEngine.run failed")
             observer.on_error(exc)
+
+    def _discovery_pass(
+        self, *, algorithm, ctx, clock_series,
+        clock_timeframe, clock_source, clock_symbol,
+        config: dict,
+    ) -> None:
+        """Pass-1 warmup: on_start + one on_tick to populate ctx._bars.
+
+        Observers are NOT called; positions, fills, equity are not recorded.
+        If clock_series is empty/None, only `on_start` runs.
+        """
+        if clock_series is None or len(clock_series) == 0:
+            algorithm.on_start(config, None)
+            return
+
+        first_bar = clock_series.iloc[0]
+        tf_duration = timeframe_to_seconds(clock_timeframe)
+        sim_time = (first_bar["timestamp"].to_pydatetime() +
+                    pd.Timedelta(seconds=tf_duration).to_pytimedelta())
+        ctx.set_sim_time(sim_time)
+        algorithm.on_start(config, None)
+        try:
+            algorithm.on_tick(ctx)
+        except Exception:
+            # Pass-1 errors are absorbed: pass-2 will surface real errors via
+            # the observer.  Pass-1 is just a warmup to populate the bars cache.
+            logger.debug(
+                "Algorithm raised during pass-1 discovery; continuing",
+                exc_info=True,
+            )
 
     def _run_internal(
         self, *, algorithm, ctx, clock, clock_tf, clock_source, clock_symbol,
@@ -177,13 +244,6 @@ class BacktestEngine:
             # ---- 1. Tick the algorithm ----
             observer.on_tick(sim_time, {"cash": cash})
             signals = algorithm.on_tick(ctx) or []
-
-            # Rebuild clock from real data after first tick if clock was synthetic
-            if bar_idx == 0 and clock_source == "synthetic" and ctx._bars:
-                real_clock = self._build_union_clock(ctx._bars)
-                if not real_clock.empty:
-                    clock = real_clock
-                    tf_duration = timeframe_to_seconds(clock_tf)
 
             if signals:
                 all_signals_count += len(signals)
@@ -853,6 +913,10 @@ class BacktestEngine:
         Each row carries real OHLCV data from whichever symbol contributed that
         timestamp first (never zeros).  Used by the engine to tick through a
         unified timeline when backtesting multi-asset algorithms.
+
+        Timestamps are normalised to UTC-naive (tz stripped after UTC conversion)
+        to allow deduplication across DataFrames with heterogeneous timezone
+        representations.  Callers that need tz-aware timestamps must re-localise.
         """
         if not bars:
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])

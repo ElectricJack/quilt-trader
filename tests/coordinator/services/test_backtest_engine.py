@@ -45,7 +45,7 @@ class _BuyOnceAlgo:
     """Algorithm that emits a single market BUY on its first tick, then nothing."""
     def __init__(self):
         self._fired = False
-    def on_start(self, config, restored_state): pass
+    def on_start(self, config, restored_state): self._fired = False
     def on_tick(self, ctx):
         from sdk.signals import Signal, SignalLeg, SignalType, OrderType
         if self._fired:
@@ -86,7 +86,10 @@ def test_market_order_fills_at_next_bar_open_with_slippage_never_signal_bar():
     assert len(obs.fills) == 1
     fill = obs.fills[0]
     assert fill.symbol == "SPY"
-    assert fill.timestamp == pd.Timestamp("2024-01-02", tz="UTC")  # bar 1's timestamp
+    # Fill timestamp comes from the union clock (tz-naive after UTC normalisation).
+    # Compare date portion only — the important invariant is bar 1, not tz repr.
+    fill_ts = pd.Timestamp(fill.timestamp)
+    assert fill_ts.date() == pd.Timestamp("2024-01-02").date()  # bar 1's date
     expected_price = 102.0 * (1 + 5/10000)
     assert fill.fill_price == pytest.approx(expected_price, abs=1e-6)
     assert fill.requested_price == pytest.approx(102.0, abs=1e-6)
@@ -98,7 +101,7 @@ def test_limit_order_requires_strict_cross():
 
     class LimitAlgo:
         def __init__(self, limit_price): self.limit_price = limit_price; self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -163,8 +166,10 @@ def test_no_path_to_same_bar_fill():
         initial_cash=10_000.0, observer=obs, cancel_token=CancelToken(),
     )
     # Signal emitted while sim_time = end of bar 0. Fill MUST NOT have a timestamp <= bar 0.
-    assert obs.fills[0].timestamp > pd.Timestamp("2024-01-01 23:59:59", tz="UTC")
-    assert obs.fills[0].timestamp >= pd.Timestamp("2024-01-02", tz="UTC")
+    # Compare as tz-naive (union clock strips tz after UTC normalisation).
+    fill_ts = pd.Timestamp(obs.fills[0].timestamp).tz_localize(None)
+    assert fill_ts > pd.Timestamp("2024-01-01 23:59:59")
+    assert fill_ts >= pd.Timestamp("2024-01-02")
 
 
 def test_options_leg_without_chain_data_falls_back_to_bar():
@@ -173,7 +178,7 @@ def test_options_leg_without_chain_data_falls_back_to_bar():
 
     class OptionsAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -223,7 +228,7 @@ def test_ioc_order_expires_after_one_bar():
 
     class IOCAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -256,7 +261,7 @@ def test_options_fill_uses_contract_bid_ask():
 
     class OptionsBuyAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -299,7 +304,7 @@ def test_day_order_expires_at_day_boundary():
     })
     class DayLimitAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -331,7 +336,7 @@ def test_gtc_order_fills_across_days():
 
     class GTCAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -363,7 +368,7 @@ def test_gtc_order_persists_until_end_if_never_crossed():
 
     class GTCNeverFillAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -397,7 +402,7 @@ def test_options_limit_fill_uses_contract_bid_ask():
         def __init__(self, limit_price):
             self.limit_price = limit_price
             self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -427,7 +432,7 @@ def test_algorithm_can_cancel_gtc_order():
 
     class CancelAlgo:
         def __init__(self): self._step = 0
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._step = 0
         def on_tick(self, ctx):
             self._step += 1
             if self._step == 1:
@@ -462,7 +467,7 @@ def test_short_option_expires_otm_keeps_premium():
 
     class SellCallAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -514,7 +519,7 @@ def test_short_option_expires_itm_loses_money():
 
     class SellPutAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
