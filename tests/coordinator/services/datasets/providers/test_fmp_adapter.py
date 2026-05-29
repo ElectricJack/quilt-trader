@@ -181,3 +181,57 @@ async def test_single_invokes_on_rows_once(adapter, http):
     async def on_rows(rows, page_idx): calls.append((page_idx, len(rows)))
     await adapter.fetch_dataset(_single_spec(), {}, on_rows=on_rows)
     assert calls == [(0, 1)]
+
+
+def _date_range_spec(chunk_days=90):
+    return DatasetSpec(
+        name="fmp.t_dr", provider="fmp", endpoint_path="/stable/date-thing",
+        event_date_column="d", knowledge_date_column="d",
+        symbol_keyed=False, id_columns=("d",),
+        columns={"d": "date"}, pagination=Pagination.DATE_RANGE, page_size=0,
+        date_chunk_days=chunk_days,
+    )
+
+
+@pytest.mark.asyncio
+async def test_date_range_chunks_into_windows(adapter, http):
+    # 3-day chunk over a 5-day range => 2 requests: [Jan 1-3], [Jan 4-5]
+    http.get.side_effect = [
+        _resp(200, [{"d": "2024-01-01"}, {"d": "2024-01-02"}, {"d": "2024-01-03"}]),
+        _resp(200, [{"d": "2024-01-04"}, {"d": "2024-01-05"}]),
+    ]
+    rows = await adapter.fetch_dataset(
+        _date_range_spec(chunk_days=3),
+        {"from": "2024-01-01", "to": "2024-01-05"},
+    )
+    assert len(rows) == 5
+    assert http.get.await_count == 2
+    # Verify window boundaries passed to the API
+    first_params = http.get.call_args_list[0][1]["params"]
+    assert first_params["from"] == "2024-01-01"
+    assert first_params["to"] == "2024-01-03"
+    second_params = http.get.call_args_list[1][1]["params"]
+    assert second_params["from"] == "2024-01-04"
+    assert second_params["to"] == "2024-01-05"
+
+
+@pytest.mark.asyncio
+async def test_date_range_requires_from_and_to(adapter, http):
+    with pytest.raises(ValueError, match="'from' and 'to'"):
+        await adapter.fetch_dataset(_date_range_spec(), {"from": "2024-01-01"})
+
+
+@pytest.mark.asyncio
+async def test_date_range_invokes_on_rows_per_window(adapter, http):
+    http.get.side_effect = [
+        _resp(200, [{"d": "2024-01-01"}]),
+        _resp(200, [{"d": "2024-01-04"}]),
+    ]
+    seen = []
+    async def on_rows(rows, window_idx): seen.append((window_idx, len(rows)))
+    await adapter.fetch_dataset(
+        _date_range_spec(chunk_days=3),
+        {"from": "2024-01-01", "to": "2024-01-05"},
+        on_rows=on_rows,
+    )
+    assert seen == [(0, 1), (1, 1)]

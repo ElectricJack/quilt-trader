@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import time
+from datetime import date, timedelta
 from typing import Any
 from coordinator.services.datasets.adapter import (
     DatasetAdapter, AdapterAuthError, PageCallback, StatusCallback, RowsCallback,
@@ -34,6 +35,8 @@ class FMPAdapter(DatasetAdapter):
             return await self._fetch_paged(spec, params, on_page, on_status, on_rows)
         if spec.pagination == Pagination.SINGLE:
             return await self._fetch_single(spec, params, on_status, on_rows)
+        if spec.pagination == Pagination.DATE_RANGE:
+            return await self._fetch_date_range(spec, params, on_page, on_status, on_rows)
         raise NotImplementedError(f"pagination={spec.pagination}")
 
     async def _fetch_paged(self, spec, params, on_page, on_status, on_rows):
@@ -65,6 +68,34 @@ class FMPAdapter(DatasetAdapter):
         if on_rows is not None and rows:
             await on_rows(rows, 0)
         return rows
+
+    async def _fetch_date_range(self, spec, params, on_page, on_status, on_rows):
+        start = params.pop("from", None)
+        end = params.pop("to", None)
+        if start is None or end is None:
+            raise ValueError("DATE_RANGE pagination requires 'from' and 'to' in params")
+        if isinstance(start, str):
+            start = date.fromisoformat(start)
+        if isinstance(end, str):
+            end = date.fromisoformat(end)
+
+        all_rows: list[dict] = []
+        window_idx = 0
+        chunk = timedelta(days=spec.date_chunk_days)
+        cursor = start
+        while cursor <= end:
+            window_end = min(cursor + chunk - timedelta(days=1), end)
+            page_rows = await self._request(spec.endpoint_path, {
+                **params, "from": cursor.isoformat(), "to": window_end.isoformat(),
+            })
+            if on_rows is not None and page_rows:
+                await on_rows(page_rows, window_idx)
+            all_rows.extend(page_rows)
+            if on_page is not None:
+                await on_page(window_idx, len(all_rows))
+            window_idx += 1
+            cursor = window_end + timedelta(days=1)
+        return all_rows
 
     async def _request(self, endpoint_path: str, params: dict) -> Any:
         async with self._lock:
