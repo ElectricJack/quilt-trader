@@ -383,17 +383,24 @@ class LiveFeedAggregator:
                     f"broker stream cap reached for {broker}/{asset_class}: {cap} symbols"
                 )
             if symbol not in conn.symbols:
+                # Try surgical add; fall through to tear-down-recreate if the adapter
+                # signals it can't do dynamic adds (Coinbase, etc.). The adapter base
+                # class raises NotImplementedError for exactly this case.
+                added_surgically = False
                 add = getattr(conn.handle, "add_symbols", None)
                 if callable(add):
-                    add([symbol])
-                    conn.symbols.add(symbol)
-                elif conn.handle is not None:
+                    try:
+                        add([symbol])
+                        conn.symbols.add(symbol)
+                        added_surgically = True
+                    except NotImplementedError:
+                        pass
+                if not added_surgically and conn.handle is not None:
                     old_handle = conn.handle
                     if account_id is None:
                         adapter = await self._adapter_for_provider(broker)
                     else:
                         adapter = await self._adapter_for_account(account_id)
-                    new_handle = None
                     try:
                         new_handle = adapter.start_market_data_stream(
                             list(conn.symbols | {symbol}),
