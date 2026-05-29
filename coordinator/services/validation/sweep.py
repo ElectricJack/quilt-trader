@@ -15,6 +15,11 @@ from typing import Any, Callable, Literal, Optional
 # real services and passes it through.
 RunnerFactory = Callable[[str], Awaitable[None]]
 
+# Optional callback invoked after each trial / fold completes.
+# Signature: (pct: float, message: str, run_ids: list[str]) -> Awaitable[None]
+# pct is in [0.0, 1.0]; the final tick is exactly 1.0.
+ProgressCallback = Callable[[float, str, list[str]], Awaitable[None]]
+
 import numpy as np
 
 
@@ -176,6 +181,7 @@ async def run_sweep(
     distributions: Optional[dict[str, str]] = None,
     objective: str = "sharpe_ratio",
     objective_direction: Literal["maximize", "minimize"] = "maximize",
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> SweepResult:
     """Run a parameter sweep under an existing OptimizationSession.
 
@@ -195,6 +201,9 @@ async def run_sweep(
     For ``tpe``, ``objective`` is the BacktestRun column to optimize
     (default 'sharpe_ratio'). ``objective_direction`` is 'maximize' or
     'minimize'.
+
+    ``progress_callback``, if provided, is called after each trial completes
+    with ``(pct, message, run_ids)``.  The final tick has ``pct == 1.0``.
     """
     if search == "tpe":
         return await _run_sweep_tpe(
@@ -203,6 +212,7 @@ async def run_sweep(
             parameter_space=parameter_space, max_trials=max_trials,
             seed=seed, distributions=distributions or {},
             objective=objective, objective_direction=objective_direction,
+            progress_callback=progress_callback,
         )
 
     if search == "grid":
@@ -233,12 +243,26 @@ async def run_sweep(
                 config_hash_str=config_hash(cfg),
             )
 
-    results = await asyncio.gather(*[_bounded(c) for c in configs])
+    results: list[dict[str, Any]] = []
+    completed_count = 0
+    total_count = len(configs)
+    run_ids: list[str] = []
+    tasks = [asyncio.create_task(_bounded(c)) for c in configs]
+    for fut in asyncio.as_completed(tasks):
+        result = await fut
+        results.append(result)
+        if "run_id" in result:
+            run_ids.append(result["run_id"])
+        completed_count += 1
+        if progress_callback is not None:
+            pct = completed_count / total_count
+            message = f"Trial {completed_count} of {total_count}"
+            await progress_callback(pct, message, list(run_ids))
 
     return SweepResult(
         session_id=session_id,
         n_configs=len(configs),
-        run_ids=[r["run_id"] for r in results if "run_id" in r],
+        run_ids=run_ids,
     )
 
 
@@ -254,6 +278,7 @@ async def _run_sweep_tpe(
     distributions: dict[str, str],
     objective: str,
     objective_direction: str,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> SweepResult:
     """Bayesian / Tree-Parzen-Estimator sweep via Optuna.
 
@@ -316,14 +341,19 @@ async def _run_sweep_tpe(
         if run_id is None:
             # Test mocks return without run_id; tell optuna we failed and skip
             study.tell(trial, state=optuna.trial.TrialState.FAIL)
-            continue
-        run_ids.append(run_id)
-        # Read the objective from the just-completed BacktestRun
-        row = db.query(BacktestRun).filter(BacktestRun.id == run_id).one_or_none()
-        if row is None or getattr(row, objective, None) is None:
-            study.tell(trial, state=optuna.trial.TrialState.FAIL)
-            continue
-        study.tell(trial, float(getattr(row, objective)))
+        else:
+            run_ids.append(run_id)
+            # Read the objective from the just-completed BacktestRun
+            row = db.query(BacktestRun).filter(BacktestRun.id == run_id).one_or_none()
+            if row is None or getattr(row, objective, None) is None:
+                study.tell(trial, state=optuna.trial.TrialState.FAIL)
+            else:
+                study.tell(trial, float(getattr(row, objective)))
+        # Progress callback fires at end of every trial regardless of FAIL/PASS
+        if progress_callback is not None:
+            pct = (trial_idx + 1) / max_trials
+            message = f"Trial {trial_idx + 1} of {max_trials}"
+            await progress_callback(pct, message, list(run_ids))
 
     return SweepResult(
         session_id=session_id,
