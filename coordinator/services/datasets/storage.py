@@ -124,6 +124,31 @@ def _to_naive_utc_ts(value) -> pd.Timestamp:
     return ts
 
 
+def _filter_bitemporal(
+    df: pd.DataFrame,
+    *,
+    as_of,
+    start: date | None = None,
+    end: date | None = None,
+) -> pd.DataFrame:
+    """Apply the bitemporal forward-bias filter to an already-loaded DataFrame.
+
+    Filters rows where ``knowledge_date <= as_of``, then optionally restricts
+    ``event_date`` to [start, end]. Returns an empty DataFrame unchanged.
+    Used by caching overrides in BacktestTickContext and LiveTickContext so the
+    filter logic is not duplicated.
+    """
+    if df.empty:
+        return df
+    as_of_ts = _to_naive_utc_ts(as_of)
+    out = df[df["knowledge_date"] <= as_of_ts]
+    if start is not None:
+        out = out[out["event_date"] >= _to_naive_utc_ts(start)]
+    if end is not None:
+        out = out[out["event_date"] <= _to_naive_utc_ts(end)]
+    return out.sort_values(["event_date", "knowledge_date"]).reset_index(drop=True)
+
+
 def load_dataset(
     name: str,
     *,

@@ -80,3 +80,21 @@ def test_reset_for_replay_does_not_touch_data_service():
     assert ctx._data_service is ds
     assert ctx._on_miss is on_miss
     assert ctx._default_source == "polygon"
+
+
+def test_reset_for_replay_preserves_dataset_cache():
+    """Dataset cache must survive reset_for_replay so pass-2 doesn't re-read parquet files."""
+    from coordinator.services.backtest_tick_context import BacktestTickContext
+
+    ctx = BacktestTickContext(bars={}, positions={}, cash=10_000.0)
+
+    # Manually populate the dataset cache (as the dataset() method would).
+    sentinel_df = pd.DataFrame({"event_date": [], "knowledge_date": []})
+    cache_key = ("fmp.house_disclosures", None, None)
+    ctx._dataset_cache[cache_key] = sentinel_df
+
+    ctx.reset_for_replay()
+
+    # Cache must still be present after reset.
+    assert cache_key in ctx._dataset_cache
+    assert ctx._dataset_cache[cache_key] is sentinel_df

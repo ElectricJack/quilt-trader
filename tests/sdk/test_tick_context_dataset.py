@@ -81,3 +81,9 @@ def test_dataset_has_no_as_of_parameter():
     import inspect
     sig = inspect.signature(TickContext.dataset)
     assert "as_of" not in sig.parameters
+
+
+def test_live_tick_context_inherits_tick_context():
+    from worker.context import LiveTickContext
+    from sdk.context import TickContext
+    assert issubclass(LiveTickContext, TickContext)
