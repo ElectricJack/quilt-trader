@@ -1,0 +1,52 @@
+from __future__ import annotations
+import asyncio
+import time
+from typing import Any
+from coordinator.services.datasets.adapter import (
+    DatasetAdapter, AdapterAuthError, PageCallback, StatusCallback, RowsCallback,
+)
+from coordinator.services.datasets.quota import QuotaTracker, QuotaExhausted
+from coordinator.services.datasets.registry import DatasetSpec, Pagination
+
+
+class FMPAdapter(DatasetAdapter):
+    provider = "fmp"
+    BASE_URL = "https://financialmodelingprep.com"
+
+    def __init__(
+        self,
+        api_key: str,
+        http_client: Any,
+        quota_tracker: QuotaTracker,
+        daily_limit: int = 250,
+        min_request_interval_s: float = 0.0,
+    ):
+        self._api_key = api_key
+        self._http = http_client
+        self._quota = quota_tracker
+        self._daily_limit = daily_limit
+        self._min_interval = min_request_interval_s
+        self._lock = asyncio.Lock()
+        self._last_call = 0.0
+
+    async def fetch_dataset(self, spec, params, *, on_page=None, on_status=None, on_rows=None):
+        raise NotImplementedError("pagination dispatch added in later tasks")
+
+    async def _request(self, endpoint_path: str, params: dict) -> Any:
+        async with self._lock:
+            elapsed = time.monotonic() - self._last_call
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
+            await self._quota.acquire(self.provider, self._daily_limit)
+            url = f"{self.BASE_URL}{endpoint_path}"
+            qs = {**params, "apikey": self._api_key}
+            resp = await self._http.get(url, params=qs, timeout=30.0)
+            self._last_call = time.monotonic()
+
+        if resp.status_code == 429:
+            await self._quota.mark_exhausted(self.provider)
+            raise QuotaExhausted(self.provider, -1, self._daily_limit)
+        if resp.status_code == 401:
+            raise AdapterAuthError("FMP API key rejected")
+        resp.raise_for_status()
+        return resp.json()
