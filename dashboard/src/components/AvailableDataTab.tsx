@@ -9,7 +9,7 @@ import { useProcessedCoverage, type AssetType, type DisplayRow } from "../hooks/
 import { TimeWindowControls } from "./TimeWindowControls";
 import { DataFilterBar } from "./DataFilterBar";
 import { InteractiveCoverageBar } from "./InteractiveCoverageBar";
-import { DatasetPreviewModal } from "./DatasetPreviewModal";
+import { MarketDataPreviewModal } from "./MarketDataPreviewModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   CompareView,
@@ -525,7 +525,7 @@ export function AvailableDataTab() {
       )}
 
       {/* Dataset Preview modal */}
-      <DatasetPreviewModal
+      <MarketDataPreviewModal
         open={!!preview}
         onClose={() => { setPreview(null); setMarkerDate(null); }}
         provider={preview?.provider ?? null}

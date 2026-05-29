@@ -85,7 +85,7 @@ const barColumns: ColumnDef<MarketDataBar, unknown>[] = [
 
 // ─── Props ─────────────────────────────────────────────────────────────────────
 
-interface DatasetPreviewModalProps {
+interface MarketDataPreviewModalProps {
   open: boolean;
   onClose: () => void;
   provider: string | null;
@@ -95,13 +95,13 @@ interface DatasetPreviewModalProps {
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 
-export function DatasetPreviewModal({
+export function MarketDataPreviewModal({
   open,
   onClose,
   provider,
   symbol,
   timeframe,
-}: DatasetPreviewModalProps) {
+}: MarketDataPreviewModalProps) {
   const {
     bars: pagedBars,
     loading: isLoading,
