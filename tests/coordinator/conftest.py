@@ -9,6 +9,7 @@ os.environ.setdefault("QT_TICK_COALESCE_WINDOW_MS", "10")
 # packages/ directory when tests boot a coordinator lifespan.
 os.environ.setdefault("QT_DISABLE_SCRAPER_CATCHUP", "1")
 
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from coordinator.database.connection import create_engine
 from coordinator.database.models import Base
 from httpx import ASGITransport, AsyncClient
@@ -22,6 +23,21 @@ async def db_engine():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session_factory(tmp_path):
+    """Lightweight async session factory backed by an isolated SQLite DB.
+
+    Suitable for unit tests that need real DB interactions without the full
+    app lifespan (e.g. QuotaTracker, DatasetJobDispatcher tests).
+    """
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sf = async_sessionmaker(engine, expire_on_commit=False)
+    yield sf
     await engine.dispose()
 
 
