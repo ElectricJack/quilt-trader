@@ -153,7 +153,8 @@ class ResearchJobManager:
             self._cancel_flags.pop(job_id, None)
 
     async def _dispatch_sweep(self, session_id: int, payload: dict, progress_cb) -> None:
-        assert self._sync_sf is not None, "sync_session_factory required for sweep dispatch"
+        if self._sync_sf is None:
+            raise RuntimeError("sync_session_factory required for sweep dispatch")
         with self._sync_sf() as db:
             await self._sweep_fn(
                 db, self._runner_factory,
@@ -170,7 +171,8 @@ class ResearchJobManager:
             db.commit()
 
     async def _dispatch_walk_forward(self, session_id: int, payload: dict, progress_cb) -> None:
-        assert self._sync_sf is not None
+        if self._sync_sf is None:
+            raise RuntimeError("sync_session_factory required for walk-forward dispatch")
         with self._sync_sf() as db:
             await self._wf_fn(
                 db, self._runner_factory,
