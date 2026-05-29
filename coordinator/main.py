@@ -361,6 +361,8 @@ def create_app(
         app.state.quota_tracker = quota_tracker
         app.state.dataset_adapters = dataset_adapters
         app.state.dataset_service = dataset_service
+        app.state.dataset_dispatcher = dataset_dispatcher
+        app.state.download_manager = download_manager
         if n_recovered > 0:
             logger.info("Recovered %d orphaned download row(s) from previous run", n_recovered)
 

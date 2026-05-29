@@ -74,8 +74,13 @@ class DatasetJobDispatcher(JobDispatcher):
         async def on_page(idx, total):
             await self._set(job, progress_message=f"page {idx} / {total} rows")
 
+        # Strip framework-only keys (e.g. storage partition hint) before
+        # the params are passed through to the upstream API.
+        api_params = {k: v for k, v in params.items()
+                      if k not in spec.storage_only_keys}
+
         try:
-            await adapter.fetch_dataset(spec, dict(params),
+            await adapter.fetch_dataset(spec, dict(api_params),
                                         on_rows=on_rows, on_page=on_page)
             await self._set(job, status="completed",
                             completed_at=datetime.now(timezone.utc),

@@ -10,6 +10,19 @@ from coordinator.services.datasets.quota import QuotaTracker, QuotaExhausted
 from coordinator.services.datasets.registry import DatasetSpec, Pagination
 
 
+class FMPTierGated(Exception):
+    """Raised when FMP returns HTTP 402 (paid-tier endpoint/parameter on free tier).
+
+    The pagination loops catch this and treat it as "no more reachable data" rather
+    than a hard job failure — so a free-tier job persists the rows it could fetch
+    on page 0 and exits cleanly with status=completed.
+    """
+    def __init__(self, message: str, endpoint: str, params: dict):
+        super().__init__(message)
+        self.endpoint = endpoint
+        self.params = params
+
+
 class FMPAdapter(DatasetAdapter):
     provider = "fmp"
     BASE_URL = "https://financialmodelingprep.com"
@@ -43,10 +56,21 @@ class FMPAdapter(DatasetAdapter):
         all_rows: list[dict] = []
         page = int(params.pop("_start_page", 0))
         while True:
-            page_rows = await self._request(
-                spec.endpoint_path,
-                {**params, "page": page, "limit": spec.page_size},
-            )
+            try:
+                page_rows = await self._request(
+                    spec.endpoint_path,
+                    {**params, "page": page, "limit": spec.page_size},
+                )
+            except FMPTierGated:
+                # Free-tier hit the paid wall mid-pagination — preserve what
+                # we got and exit cleanly. The job is "completed" with
+                # whatever was reachable on the free plan.
+                if on_status is not None:
+                    await on_status(
+                        f"FMP free-tier ceiling reached after page {page}; "
+                        "upgrade to paginate further"
+                    )
+                break
             if not page_rows:
                 break
             if on_rows is not None:
@@ -113,5 +137,11 @@ class FMPAdapter(DatasetAdapter):
             raise QuotaExhausted(self.provider, -1, self._daily_limit)
         if resp.status_code == 401:
             raise AdapterAuthError("FMP API key rejected")
+        if resp.status_code == 402:
+            raise FMPTierGated(
+                f"FMP 402: {resp.text[:160]}",
+                endpoint=endpoint_path,
+                params={k: v for k, v in params.items() if k != "apikey"},
+            )
         resp.raise_for_status()
         return resp.json()

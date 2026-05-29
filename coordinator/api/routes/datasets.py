@@ -261,7 +261,26 @@ async def queue_download(req: DownloadRequest, request: Request):
         s.add(row)
         await s.commit()
         await s.refresh(row)
-        return _row_to_dict(row)
+        result = _row_to_dict(row)
+
+    # Kick off the dispatcher so the job actually runs. The task is fire-and-
+    # forget; the dispatcher writes status transitions back to the DB row.
+    dispatcher = getattr(request.app.state, "dataset_dispatcher", None)
+    manager = getattr(request.app.state, "download_manager", None)
+    if dispatcher is not None:
+        # Re-load the row inside the task's own session to avoid leaking the
+        # response-scoped one across the task boundary.
+        async def _run(job_id: int) -> None:
+            async with sf() as s2:
+                job = await s2.get(DatasetDownload, job_id)
+                if job is None:
+                    return
+            await dispatcher.execute(job, manager=manager)
+
+        import asyncio as _asyncio
+        _asyncio.create_task(_run(row.id))
+
+    return result
 
 
 def _row_to_dict(r: DatasetDownload) -> dict:

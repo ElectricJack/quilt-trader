@@ -24,6 +24,12 @@ class DatasetSpec:
     date_chunk_days: int = 365
     knowledge_date_lag: timedelta = timedelta(0)
     free_tier: bool = True
+    # Keys to strip from request_payload before it's passed to the adapter.
+    # Use when a payload key is a framework-level hint (e.g. the storage
+    # partition key) rather than an upstream API query param. Common case:
+    # a symbol_keyed dataset where the "symbol" slot holds a politician
+    # name / entity id that the API doesn't accept as ?symbol=.
+    storage_only_keys: tuple[str, ...] = ()
 
 
 _REGISTRY: dict[str, DatasetSpec] = {}

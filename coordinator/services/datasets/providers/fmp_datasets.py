@@ -6,6 +6,10 @@ The coordinator's lifespan imports this module once at startup.
 from coordinator.services.datasets.registry import DatasetSpec, Pagination, register
 
 
+# Free-tier FMP only exposes the firehose. By-name and by-symbol filtering
+# endpoints (/stable/house-trades-by-name, /stable/house-trades) are paid-tier.
+# To get a specific politician's trades on free tier, download this firehose
+# and filter in-algo via lastName / firstName.
 register(DatasetSpec(
     name="fmp.house_disclosures",
     provider="fmp",
@@ -13,13 +17,21 @@ register(DatasetSpec(
     event_date_column="transactionDate",
     knowledge_date_column="disclosureDate",
     symbol_keyed=False,
-    id_columns=("disclosureDate", "transactionDate", "name", "symbol", "amount", "type"),
+    id_columns=("disclosureDate", "transactionDate", "firstName", "lastName",
+                "symbol", "amount", "type"),
     columns={
-        "symbol": "str", "name": "str", "office": "str", "district": "str",
+        "symbol": "str", "firstName": "str", "lastName": "str",
+        "office": "str", "district": "str", "owner": "str",
         "transactionDate": "date", "disclosureDate": "date",
-        "amount": "str", "type": "str", "assetDescription": "str", "link": "str",
+        "assetDescription": "str", "assetType": "str",
+        "type": "str", "amount": "str",
+        "capitalGainsOver200USD": "str", "comment": "str", "link": "str",
     },
-    pagination=Pagination.PAGE, page_size=100,
+    # FMP free tier caps `limit` at 5 and rejects `page>0` for this endpoint.
+    # The adapter catches the resulting 402 and treats it as end-of-data so
+    # the job completes cleanly with whatever was reachable. Paid plans can
+    # raise page_size and continue paginating.
+    pagination=Pagination.PAGE, page_size=5,
 ))
 
 register(DatasetSpec(
