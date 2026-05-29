@@ -196,6 +196,7 @@ async def get_dataset_rows(
     start: date | None = Query(None),
     end: date | None = Query(None),
     columns: str | None = Query(None),
+    q: str | None = Query(None, description="case-insensitive substring filter across all columns"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
@@ -203,6 +204,9 @@ async def get_dataset_rows(
         spec = _registry_get(name)
     except KeyError:
         raise HTTPException(404, f"unknown dataset: {name}")
+    # as_of is a forward-bias guard for algorithm execution, not a browsing
+    # constraint. Browsing the UI defaults it to "now" so users see every
+    # row that's been disclosed (i.e., everything on disk).
     as_of_dt = (
         pd.Timestamp(as_of, tz="UTC").to_pydatetime()
         if as_of
@@ -210,6 +214,11 @@ async def get_dataset_rows(
     )
     cols = columns.split(",") if columns else None
     df = load_dataset(name, as_of=as_of_dt, symbol=symbol, start=start, end=end, columns=cols)
+    if q:
+        needle = q.lower()
+        # Build a per-row haystack lazily via DataFrame.astype(str).agg
+        haystack = df.astype(str).apply(lambda r: " ".join(r.values).lower(), axis=1)
+        df = df[haystack.str.contains(needle, regex=False, na=False)]
     total = len(df)
     page = df.iloc[offset : offset + limit]
     return {

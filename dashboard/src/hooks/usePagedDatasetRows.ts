@@ -5,9 +5,9 @@ export function usePagedDatasetRows(
   name: string | null,
   params: {
     symbol?: string;
-    as_of?: string;
     start?: string;
     end?: string;
+    q?: string;
     page: number;
     pageSize: number;
   }
@@ -17,9 +17,9 @@ export function usePagedDatasetRows(
     queryFn: () =>
       api.getDatasetRows(name!, {
         symbol: params.symbol,
-        as_of: params.as_of,
         start: params.start,
         end: params.end,
+        q: params.q,
         limit: params.pageSize,
         offset: params.page * params.pageSize,
       }),

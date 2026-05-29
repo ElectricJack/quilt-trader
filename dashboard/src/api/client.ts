@@ -1202,6 +1202,7 @@ export const api = {
       start?: string;
       end?: string;
       columns?: string;
+      q?: string;
       limit?: number;
       offset?: number;
     }
@@ -1212,6 +1213,7 @@ export const api = {
     if (params.start) qs.set("start", params.start);
     if (params.end) qs.set("end", params.end);
     if (params.columns) qs.set("columns", params.columns);
+    if (params.q) qs.set("q", params.q);
     if (params.limit !== undefined) qs.set("limit", String(params.limit));
     if (params.offset !== undefined) qs.set("offset", String(params.offset));
     const suffix = qs.toString() ? `?${qs}` : "";

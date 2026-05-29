@@ -2,9 +2,11 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
+import type { CoverageRange } from "../api/client";
 import { DataTable } from "./DataTable";
 import { DatasetPreviewModal } from "./DatasetPreviewModal";
 import { DatasetsFilterBar } from "./DatasetsFilterBar";
+import { InteractiveCoverageBar } from "./InteractiveCoverageBar";
 import type { ColumnDef } from "@tanstack/react-table";
 
 interface Row {
@@ -16,6 +18,11 @@ interface Row {
   event_date_max: string | null;
   knowledge_date_max: string | null;
   file_size_bytes: number;
+}
+
+function toIsoDay(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.slice(0, 10);
 }
 
 export function DatasetsAvailableSection() {
@@ -112,6 +119,24 @@ export function DatasetsAvailableSection() {
       });
   }, [specs.data, detailQueries.data, search, providerFilter]);
 
+  // Shared bar window across all datasets so coverage spans are visually
+  // comparable. Spans the wider of (today − 2y) and the earliest event_date
+  // across all datasets, through today.
+  const { windowStart, windowEnd } = useMemo(() => {
+    const today = new Date();
+    const twoYearsAgo = new Date(today);
+    twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
+    let earliestMs = twoYearsAgo.getTime();
+    for (const r of rows) {
+      const d = toIsoDay(r.event_date_min);
+      if (d) earliestMs = Math.min(earliestMs, new Date(d).getTime());
+    }
+    return {
+      windowStart: new Date(earliestMs).toISOString().slice(0, 10),
+      windowEnd: today.toISOString().slice(0, 10),
+    };
+  }, [rows]);
+
   const columns = useMemo<ColumnDef<Row>[]>(
     () => [
       { header: "Dataset", accessorKey: "name" },
@@ -125,11 +150,36 @@ export function DatasetsAvailableSection() {
         accessorFn: (r) => (r.total_rows > 0 ? r.total_rows.toLocaleString() : "—"),
       },
       {
-        header: "Event range",
-        accessorFn: (r) =>
-          r.event_date_min && r.event_date_max
-            ? `${r.event_date_min.slice(0, 10)} → ${r.event_date_max.slice(0, 10)}`
-            : "—",
+        header: "Coverage",
+        cell: ({ row }) => {
+          const r = row.original;
+          const startIso = toIsoDay(r.event_date_min);
+          const endIso = toIsoDay(r.event_date_max);
+          if (!startIso || !endIso) {
+            return (
+              <span className="text-xs text-gray-600">no data</span>
+            );
+          }
+          const ranges: CoverageRange[] = [{ start: startIso, end: endIso }];
+          return (
+            <div className="flex items-center gap-2 min-w-[16rem]">
+              <span className="text-[10px] text-gray-500 font-mono whitespace-nowrap">
+                {startIso}
+              </span>
+              <InteractiveCoverageBar
+                ranges={ranges}
+                provider={r.provider}
+                windowStart={windowStart}
+                windowEnd={windowEnd}
+                markerDate={null}
+                onClick={() => undefined}
+              />
+              <span className="text-[10px] text-gray-500 font-mono whitespace-nowrap">
+                {endIso}
+              </span>
+            </div>
+          );
+        },
       },
       {
         header: "Fresh as of",
@@ -143,7 +193,7 @@ export function DatasetsAvailableSection() {
             : "—",
       },
     ],
-    [],
+    [windowStart, windowEnd],
   );
 
   return (
@@ -155,6 +205,9 @@ export function DatasetsAvailableSection() {
         onProvider={setProviderFilter}
         providers={providers}
       />
+      <div className="text-[10px] text-gray-500 font-mono px-2">
+        Coverage bar window: {windowStart} → {windowEnd}
+      </div>
       <DataTable
         data={rows}
         columns={columns}
