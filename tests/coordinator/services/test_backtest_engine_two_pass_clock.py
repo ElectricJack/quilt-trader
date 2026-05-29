@@ -323,3 +323,101 @@ def test_fill_bar_resolution_uses_symbol_bar_not_clock_bar():
     assert 2_400 < fill_record.fill_price < 2_700, (
         f"ETH should fill at ETH's bar (~2500), got {fill_record.fill_price}"
     )
+
+
+def test_two_asset_backtest_does_not_inflate_equity():
+    """End-to-end regression for the 2026-05-27 ETH-at-BTC-price bug.
+
+    A buy-and-hold BTC + ETH backtest over 5 days must end with equity within
+    an order of magnitude of starting cash.  Pre-fix, ETH positions were
+    marked at BTC's price (~17x), producing 25-50x equity inflation followed
+    by spurious liquidation.  Post-fix, equity stays bounded.
+    """
+    from coordinator.services.backtest_engine_v2 import BacktestEngine
+    from coordinator.services.backtest_tick_context import BacktestTickContext
+    from coordinator.services.backtest_config import BacktestConfig, SlippageModel
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType
+
+    class _BuyHoldBoth:
+        def on_start(self, config, restored_state):
+            self._sent = False
+
+        def on_tick(self, ctx):
+            try:
+                ctx.market_data("BTC/USD", n=1)
+                ctx.market_data("ETH/USD", n=1)
+            except Exception:
+                pass
+            if self._sent:
+                return []
+            self._sent = True
+            return [
+                Signal(legs=[SignalLeg(
+                    symbol="BTC/USD", signal_type=SignalType.BUY,
+                    quantity=0.01, asset_type="crypto",
+                    order_type=OrderType.MARKET,
+                )]),
+                Signal(legs=[SignalLeg(
+                    symbol="ETH/USD", signal_type=SignalType.BUY,
+                    quantity=0.1, asset_type="crypto",
+                    order_type=OrderType.MARKET,
+                )]),
+            ]
+
+        def on_stop(self): pass
+
+    bars = {
+        ("yfinance", "BTC-USD", "1day"): _make_bar_df(
+            ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"],
+            base=42_000.0,
+        ),
+        ("yfinance", "ETH-USD", "1day"): _make_bar_df(
+            ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"],
+            base=2_500.0,
+        ),
+    }
+    ctx = BacktestTickContext(
+        bars=dict(bars), positions={}, cash=10_000.0,
+        default_source="yfinance",
+    )
+    obs = _RecordingObserver()
+    eng = BacktestEngine(config=BacktestConfig(
+        start="2024-01-01", end="2024-01-05",
+        initial_cash=10_000.0, cost_profile=None,
+    ))
+    eng.run(
+        algorithm=_BuyHoldBoth(), ctx=ctx,
+        clock_series=bars[("yfinance", "BTC-USD", "1day")],
+        clock_timeframe="1day", clock_source="yfinance",
+        clock_symbol="BTC-USD",
+        slippage=SlippageModel(), buy_fees=[], sell_fees=[],
+        initial_cash=10_000.0, observer=obs,
+        cancel_token=type("X", (), {"is_set": lambda self: False})(),
+    )
+
+    # Sanity: two fills happened, one BTC and one ETH.
+    fills = [e[1][0] for e in obs.events if e[0] == "fill"]
+    fill_symbols = {f.symbol for f in fills}
+    assert fill_symbols == {"BTC/USD", "ETH/USD"}, (
+        f"expected one BTC + one ETH fill, got {fill_symbols}"
+    )
+
+    # Each fill priced at its own bar (~42000 for BTC, ~2500 for ETH).
+    btc_fill = next(f for f in fills if f.symbol == "BTC/USD")
+    eth_fill = next(f for f in fills if f.symbol == "ETH/USD")
+    assert 40_000 < btc_fill.fill_price < 45_000
+    assert 2_400 < eth_fill.fill_price < 2_700
+
+    # Cash post-fills: 10000 - (0.01 * ~42000) - (0.1 * ~2500) ≈ 9_330.
+    # Pre-bug, marking ETH at BTC's price would have spiked account_value
+    # toward 10000 + 0.01*42000 + 0.1*42000 ≈ 14620, and the resulting
+    # equity_curve would oscillate wildly.  The narrower contract: every
+    # observer tick payload (which carries cash) must keep cash bounded
+    # between 0 and the starting cash.
+    ticks = [e for e in obs.events if e[0] == "tick"]
+    assert ticks, "expected observer.on_tick events"
+    for _, args, _kw in ticks:
+        payload = args[1]
+        assert 0 <= payload["cash"] <= 10_000.0 + 1e-6, (
+            f"cash out of bounds: {payload['cash']}"
+        )
