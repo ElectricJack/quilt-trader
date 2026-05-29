@@ -546,6 +546,14 @@ export function useProviders() {
   });
 }
 
+export function useProviderAvailability() {
+  return useQuery({
+    queryKey: ["data", "providers", "availability"] as const,
+    queryFn: api.listProviderAvailability,
+    staleTime: 60_000,
+  });
+}
+
 export function useStorageSummary() {
   return useQuery({
     queryKey: ["data", "storage-summary"] as const,

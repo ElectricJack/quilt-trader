@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useCreateBacktestRun } from "../api/hooks";
+import { useCreateBacktestRun, useProviderAvailability } from "../api/hooks";
 import { useUIStore } from "../stores/ui";
 
 // ── Spec D U1: run backtest modal ──
@@ -48,7 +48,7 @@ export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = 
   const [marketBps, setMarketBps] = useState(5.0);
   const [useBarRange, setUseBarRange] = useState(false);
   const [benchmarkSymbol, setBenchmarkSymbol] = useState("SPY");
-  const [benchmarkSource, setBenchmarkSource] = useState("polygon");
+  const [benchmarkSource, setBenchmarkSource] = useState("");
   const [configOverrides, setConfigOverrides] = useState<Record<string, unknown>>(
     Object.fromEntries(manifestConfig.map((p) => [p.name, p.default]))
   );
@@ -64,6 +64,16 @@ export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = 
       }
     }
   }, [preloadSetId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { data: providersData } = useProviderAvailability();
+  const availableProviders = (providersData ?? []).filter((p) => p.available);
+
+  useEffect(() => {
+    if (!benchmarkSource && availableProviders.length > 0) {
+      setBenchmarkSource(availableProviders[0].name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableProviders]);
 
   function handleLoadSet(setId: string) {
     setSelectedSetId(setId);
@@ -211,8 +221,11 @@ export function RunBacktestModal({ open, onClose, algorithmId, manifestConfig = 
               onChange={(e) => setBenchmarkSource(e.target.value)}
               className="block w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mt-1"
             >
-              <option value="polygon">polygon</option>
-              <option value="theta">theta</option>
+              {availableProviders.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name}
+                </option>
+              ))}
             </select>
           </label>
         </div>
