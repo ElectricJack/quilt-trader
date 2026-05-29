@@ -268,6 +268,22 @@ The pre-existing `GET /api/data/providers/timeframes` (provider→supported-time
 
 **Provenance:** P1 implementation (commits `2f1af4d`, `fab516b`, `36057a8`, `6c1cb13`, `d813309`, `3de8c27`).
 
+### I18: Research orchestration endpoints (`sweep`, `walk-forward`) are fire-and-poll
+
+`POST /api/research/sessions/{id}/sweep` and `.../walk-forward` return `202 Accepted` with a `JobResponse` body — `{"job_id", "session_id", "kind", "status": "queued", "progress_pct": 0.0, "run_ids": [], ...}` — immediately. The work runs as an `asyncio.create_task` registered with `ResearchJobManager`, which streams progress (`progress_pct`, `progress_message`, accumulated `run_ids`) into the `research_jobs` DB row after each completed trial / fold.
+
+Polling: `GET /api/research/sessions/{id}/jobs` lists all jobs for the session (newest first); `GET /api/research/sessions/{id}/jobs/{job_id}` returns the current state. Terminal statuses: `completed | failed | cancelled`. `DELETE /api/research/sessions/{id}/jobs/{job_id}` flips a cancel flag the orchestrator observes between trials and writes `status=cancelled` directly.
+
+Both endpoints also gate on the session existing: `404 {"detail": "session N not found"}` if the path's `session_id` doesn't exist. The job-fetch endpoints return `404` if the `job_id` is unknown OR if it belongs to a different session (cross-session leak prevention).
+
+Orphan recovery: any `queued | running` row at coordinator startup becomes `failed` with `error_message="Orphaned by coordinator restart"` (mirrors `DownloadManager.recover_orphaned_downloads`). Wired in `coordinator/main.py`'s lifespan startup; the manager's `shutdown()` is called during teardown to cancel live tasks.
+
+CLI: `quilt research sweep` / `walk-forward` POST the payload, print `queued: <job_id>`, then poll `GET /jobs/{id}` every 2s, echoing `[NN%] <progress_message>` whenever the message text changes. A `--no-wait` flag exits immediately after the POST. Terminal-status output is formatted by status (`Sweep <id> completed: N runs.` / `Sweep <id> failed: <error>` / `Sweep <id> cancelled.`).
+
+The two server-side sweep/walk-forward orchestrators (`coordinator/services/validation/sweep.py:run_sweep`, `walk_forward.py:run_walk_forward`) accept an optional `progress_callback(pct, message, run_ids) -> Awaitable[None]` — used by `ResearchJobManager._make_progress_callback` to write progress into the row and to raise `asyncio.CancelledError` from the next callback firing if the job's cancel flag is set. Sweep's grid/random/latin strategies use `asyncio.as_completed` so the callback fires per trial in completion order; sweep's `tpe` strategy is inherently sequential; walk-forward fires per OOS fold (not per inner train-sweep trial, to avoid noisy progress streams).
+
+**Provenance:** P2 implementation (commits `879e149`, `9eb5652`, `b991646`, `3eca43c`, `ae7733f`, `85c0f62`, `c7c3f7f`, `843030b`, `678ceec`). Sync endpoints were hitting CLI HTTP timeouts on multi-hour sweeps even after the band-aid 600s timeout bump (commit `8fccfcc`).
+
 ## Backtest Engine ↔ Validation Lab API contract
 
 ### What the lab guarantees the engine
