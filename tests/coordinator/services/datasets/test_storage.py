@@ -1,8 +1,9 @@
 import pytest
 import pandas as pd
 from pathlib import Path
+from datetime import datetime, timezone
 from coordinator.services.datasets.registry import DatasetSpec, Pagination, register, clear_registry
-from coordinator.services.datasets.storage import DatasetService
+from coordinator.services.datasets.storage import DatasetService, load_dataset, set_default_service
 
 
 @pytest.fixture(autouse=True)
@@ -120,3 +121,74 @@ def spec_path(service, spec):
     if spec.symbol_keyed:
         return service._data_root / "datasets" / spec.provider / short  # caller picks symbol file
     return service._data_root / "datasets" / spec.provider / f"{short}.parquet"
+
+
+# ---------------------------------------------------------------------------
+# Task 3: load_dataset() tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def configured_service(service):
+    set_default_service(service)
+    yield service
+    set_default_service(None)
+
+
+@pytest.mark.asyncio
+async def test_load_dataset_requires_as_of_keyword(configured_service):
+    _bitemporal_spec()
+    with pytest.raises(TypeError):
+        load_dataset("fmp.house_disclosures")  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_load_dataset_filters_knowledge_after_as_of(configured_service):
+    spec = _bitemporal_spec()
+    await configured_service.upsert(spec, [
+        {"transactionDate": "2024-01-15", "disclosureDate": "2024-02-12",
+         "symbol": "NVDA", "name": "P"},  # knowledge 2024-02-12 — visible at as_of=2024-03-01
+        {"transactionDate": "2024-03-01", "disclosureDate": "2024-04-01",
+         "symbol": "TSLA", "name": "G"},  # knowledge 2024-04-01 — hidden at as_of=2024-03-01
+    ])
+    df = load_dataset("fmp.house_disclosures", as_of=datetime(2024, 3, 1, tzinfo=timezone.utc))
+    assert len(df) == 1
+    assert df.iloc[0]["symbol"] == "NVDA"
+
+
+@pytest.mark.asyncio
+async def test_load_dataset_returns_empty_when_path_missing(configured_service):
+    _bitemporal_spec()
+    df = load_dataset("fmp.house_disclosures", as_of=datetime(2024, 3, 1, tzinfo=timezone.utc))
+    assert df.empty
+
+
+@pytest.mark.asyncio
+async def test_load_dataset_applies_event_date_window(configured_service):
+    spec = _bitemporal_spec()
+    await configured_service.upsert(spec, [
+        {"transactionDate": "2023-12-01", "disclosureDate": "2023-12-15",
+         "symbol": "A", "name": "X"},
+        {"transactionDate": "2024-01-15", "disclosureDate": "2024-01-30",
+         "symbol": "B", "name": "Y"},
+        {"transactionDate": "2024-06-01", "disclosureDate": "2024-06-15",
+         "symbol": "C", "name": "Z"},
+    ])
+    df = load_dataset(
+        "fmp.house_disclosures",
+        as_of=datetime(2024, 12, 31, tzinfo=timezone.utc),
+        start=pd.Timestamp("2024-01-01").date(),
+        end=pd.Timestamp("2024-05-31").date(),
+    )
+    assert list(df["symbol"]) == ["B"]
+
+
+@pytest.mark.asyncio
+async def test_load_dataset_symbol_keyed_reads_correct_file(configured_service, tmp_path):
+    spec = _bitemporal_spec(name="fmp.insider_trading", symbol_keyed=True)
+    await configured_service.upsert(spec, [
+        {"transactionDate": "2024-01-01", "disclosureDate": "2024-01-15",
+         "symbol": "AAPL", "name": "X"}
+    ], symbol="AAPL")
+    df = load_dataset("fmp.insider_trading", as_of=datetime(2024, 12, 31, tzinfo=timezone.utc),
+                      symbol="AAPL")
+    assert len(df) == 1

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 
 from coordinator.services.datasets.registry import DatasetSpec
+from coordinator.services.datasets import registry as _registry
 
 _LOG = logging.getLogger(__name__)
 
@@ -86,3 +88,66 @@ class DatasetService:
             _LOG.warning("%s exceeded 500 MB; consider partitioning", path)
 
         return len(df)
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton + query helper
+# ---------------------------------------------------------------------------
+
+_default_service: "DatasetService | None" = None
+
+
+def set_default_service(svc: "DatasetService | None") -> None:
+    """Wire the singleton at app startup so module-level helpers know where to read from."""
+    global _default_service
+    _default_service = svc
+
+
+def _get_service() -> "DatasetService":
+    if _default_service is None:
+        raise RuntimeError(
+            "DatasetService not configured; call set_default_service() at startup"
+        )
+    return _default_service
+
+
+def _empty_frame_for(spec: DatasetSpec) -> pd.DataFrame:
+    bitemp_cols = ["event_date", "knowledge_date"]
+    extra = [c for c in spec.columns if c not in (spec.event_date_column, spec.knowledge_date_column)]
+    return pd.DataFrame(columns=bitemp_cols + extra)
+
+
+def _to_naive_utc_ts(value) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts
+
+
+def load_dataset(
+    name: str,
+    *,
+    as_of: datetime,                        # required keyword — no default
+    symbol: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    columns: list[str] | None = None,
+) -> pd.DataFrame:
+    """Read a bitemporal dataset and apply the forward-bias filter.
+
+    The ``knowledge_date <= as_of`` filter is the framework's single chokepoint
+    for forward-bias prevention. ``as_of`` is a required keyword — never default
+    to "now".
+    """
+    spec = _registry.get(name)
+    svc = _get_service()
+    path = svc._path_for(spec, symbol)
+    if not path.exists():
+        return _empty_frame_for(spec)
+    df = pd.read_parquet(path, columns=columns)
+    df = df[df["knowledge_date"] <= _to_naive_utc_ts(as_of)]
+    if start is not None:
+        df = df[df["event_date"] >= _to_naive_utc_ts(start)]
+    if end is not None:
+        df = df[df["event_date"] <= _to_naive_utc_ts(end)]
+    return df.sort_values(["event_date", "knowledge_date"]).reset_index(drop=True)
