@@ -32,6 +32,8 @@ class FMPAdapter(DatasetAdapter):
     async def fetch_dataset(self, spec, params, *, on_page=None, on_status=None, on_rows=None):
         if spec.pagination == Pagination.PAGE:
             return await self._fetch_paged(spec, params, on_page, on_status, on_rows)
+        if spec.pagination == Pagination.SINGLE:
+            return await self._fetch_single(spec, params, on_status, on_rows)
         raise NotImplementedError(f"pagination={spec.pagination}")
 
     async def _fetch_paged(self, spec, params, on_page, on_status, on_rows):
@@ -51,6 +53,18 @@ class FMPAdapter(DatasetAdapter):
                 await on_page(page, len(all_rows))
             page += 1
         return all_rows
+
+    async def _fetch_single(self, spec, params, on_status, on_rows):
+        payload = await self._request(spec.endpoint_path, params)
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict):
+            rows = payload.get("historical") or payload.get("data") or []
+        else:
+            rows = []
+        if on_rows is not None and rows:
+            await on_rows(rows, 0)
+        return rows
 
     async def _request(self, endpoint_path: str, params: dict) -> Any:
         async with self._lock:

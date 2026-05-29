@@ -147,3 +147,37 @@ async def test_page_pagination_invokes_on_page_after_each(adapter, http):
     async def on_page(idx, total): pages.append((idx, total))
     await adapter.fetch_dataset(_page_spec(), {}, on_page=on_page)
     assert pages == [(0, 1), (1, 2)]
+
+
+def _single_spec():
+    return DatasetSpec(
+        name="fmp.t_single", provider="fmp", endpoint_path="/stable/single-thing",
+        event_date_column="d", knowledge_date_column="d",
+        symbol_keyed=False, id_columns=("d",),
+        columns={"d": "date"}, pagination=Pagination.SINGLE, page_size=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_returns_flat_array(adapter, http):
+    http.get.return_value = _resp(200, [{"d": "2024-01-01"}, {"d": "2024-01-02"}])
+    rows = await adapter.fetch_dataset(_single_spec(), {})
+    assert rows == [{"d": "2024-01-01"}, {"d": "2024-01-02"}]
+    assert http.get.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_single_unwraps_historical_key(adapter, http):
+    payload = {"historical": [{"d": "2024-01-01"}, {"d": "2024-01-02"}]}
+    http.get.return_value = _resp(200, payload)
+    rows = await adapter.fetch_dataset(_single_spec(), {})
+    assert rows == [{"d": "2024-01-01"}, {"d": "2024-01-02"}]
+
+
+@pytest.mark.asyncio
+async def test_single_invokes_on_rows_once(adapter, http):
+    http.get.return_value = _resp(200, [{"d": "2024-01-01"}])
+    calls = []
+    async def on_rows(rows, page_idx): calls.append((page_idx, len(rows)))
+    await adapter.fetch_dataset(_single_spec(), {}, on_rows=on_rows)
+    assert calls == [(0, 1)]
