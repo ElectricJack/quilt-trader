@@ -6,6 +6,7 @@ generic /api/settings/{key} CRUD surface. Supported keys and their slugs:
   github_pat          → /api/settings/github-pat
   discord_bot_token   → /api/settings/discord-token
   polygon_api_key     → /api/settings/polygon-key
+  fmp_api_key         → /api/settings/fmp-key
   coordinator_ip      → /api/settings/coordinator-ip
   tailscale_authkey   → /api/settings/tailscale-authkey
   theta_data          → /api/settings/theta-data   (uses --username + --password)
@@ -32,6 +33,8 @@ _KEY_TO_SLUG: dict[str, str] = {
     "discord-token": "discord-token",
     "polygon_api_key": "polygon-key",
     "polygon-key": "polygon-key",
+    "fmp_api_key": "fmp-key",
+    "fmp-key": "fmp-key",
     "coordinator_ip": "coordinator-ip",
     "coordinator-ip": "coordinator-ip",
     "tailscale_authkey": "tailscale-authkey",
