@@ -277,6 +277,90 @@ def create_app(
         set_download_manager(download_manager)
 
         n_recovered = await download_manager.recover_orphaned_downloads()
+
+        # -------------------------------------------------------------------
+        # Dataset framework wiring: QuotaTracker, FMPAdapter, DatasetJobDispatcher
+        # -------------------------------------------------------------------
+        from coordinator.services.datasets.quota import QuotaTracker
+        from coordinator.services.datasets.providers.fmp import FMPAdapter
+        from coordinator.services.datasets.storage import DatasetService, set_default_service
+        from coordinator.services.download_job import DatasetJobDispatcher
+        from zoneinfo import ZoneInfo
+        from pathlib import Path as _Path
+        import coordinator.services.datasets.providers.fmp_datasets  # noqa: F401
+
+        async with session_factory() as _ds:
+            _fmp_key_row = (await _ds.execute(
+                select(Setting).where(Setting.key == "fmp_api_key")
+            )).scalar_one_or_none()
+            fmp_key: str | None = None
+            if _fmp_key_row is not None:
+                try:
+                    fmp_key = encryption.decrypt(_fmp_key_row.value)
+                except Exception as _e:  # noqa: BLE001
+                    logger.warning("Failed to decrypt fmp_api_key: %s", _e)
+
+            _fmp_limit_row = (await _ds.execute(
+                select(Setting).where(Setting.key == "fmp_daily_quota_limit")
+            )).scalar_one_or_none()
+            _fmp_interval_row = (await _ds.execute(
+                select(Setting).where(Setting.key == "fmp_min_request_interval_s")
+            )).scalar_one_or_none()
+            _reset_tz_row = (await _ds.execute(
+                select(Setting).where(Setting.key == "dataset_quota_reset_tz")
+            )).scalar_one_or_none()
+
+        fmp_daily_limit = 250
+        try:
+            if _fmp_limit_row is not None:
+                fmp_daily_limit = int(_fmp_limit_row.value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "fmp_daily_quota_limit setting %r is not an int; using default %d",
+                getattr(_fmp_limit_row, "value", None), fmp_daily_limit,
+            )
+
+        fmp_min_interval = 0.0
+        try:
+            if _fmp_interval_row is not None:
+                fmp_min_interval = float(_fmp_interval_row.value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "fmp_min_request_interval_s setting %r is not a number; using default %.1f",
+                getattr(_fmp_interval_row, "value", None), fmp_min_interval,
+            )
+
+        reset_tz_name = (_reset_tz_row.value if _reset_tz_row is not None else None) or "UTC"
+        quota_reset_tz = ZoneInfo(reset_tz_name)
+
+        quota_tracker = QuotaTracker(session_factory, reset_tz=quota_reset_tz)
+        dataset_service = DatasetService(data_root=_Path("data"))
+        set_default_service(dataset_service)
+
+        dataset_adapters: dict = {}
+        if fmp_key:
+            dataset_adapters["fmp"] = FMPAdapter(
+                api_key=fmp_key,
+                http_client=http_client,
+                quota_tracker=quota_tracker,
+                daily_limit=fmp_daily_limit,
+                min_request_interval_s=fmp_min_interval,
+            )
+            logger.info("FMP adapter configured (daily_limit=%d)", fmp_daily_limit)
+        else:
+            logger.info("fmp_api_key not configured; FMPAdapter will be unavailable.")
+
+        dataset_dispatcher = DatasetJobDispatcher(
+            adapters=dataset_adapters,
+            service=dataset_service,
+            session_factory=session_factory,
+        )
+        download_manager.register_dispatcher(dataset_dispatcher)
+        await dataset_dispatcher.recover_orphaned_jobs()
+
+        app.state.quota_tracker = quota_tracker
+        app.state.dataset_adapters = dataset_adapters
+        app.state.dataset_service = dataset_service
         if n_recovered > 0:
             logger.info("Recovered %d orphaned download row(s) from previous run", n_recovered)
 
