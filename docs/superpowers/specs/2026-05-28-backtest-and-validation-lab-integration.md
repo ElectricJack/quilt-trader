@@ -97,17 +97,24 @@ The backtest_runner preloads bars from `manifest.assets` using each entry's `sou
 
 The preload step writes the parquet path verbatim — there is no symbol translation layer between disk and cache.
 
-### I3: All bars-cache lookups route through `AssetService.resolve_symbol`
+### I3 (simplified post-P3): Bars-cache lookups resolve the canonical symbol once; the no-match case returns 0.0 instead of falling back to the clock bar
 
-Whenever code reads from `ctx._bars`, it must accept both the canonical and provider-specific form for the matching symbol. Three call sites enforce this:
+`BacktestEngine.run` now executes in two passes (P3, commit `d9fb57c`):
 
-- `BacktestTickContext.market_data` — algorithm's read path (commit `9352d6c`)
-- `BacktestEngine._try_fill` fill-bar lookup — order fill path (commit `144494e`)
-- `BacktestEngine._lookup_symbol_close` — mark-to-market path (commit `5ad1049`)
+1. **Pass 1 (discovery)** — `on_start` + one `on_tick` populates `ctx._bars` with every symbol the algorithm intends to read. Observers do not fire. Errors are absorbed.
+2. **Pass 2 (replay)** — the engine builds a canonical clock as the union of timestamps across every symbol in `ctx._bars` and ticks through it. The per-tick MtM and fill paths can assume the relevant symbol's bar exists at or near `sim_time`.
+
+The original three workaround call sites still resolve canonical → provider-specific cache keys, but the lookup is now safe-by-construction: when no cache entry matches the requested symbol, the function returns `0.0` (MtM) or leaves `fill_bar = bar` (fill resolution), and the caller falls back to the position's cost basis. The cross-symbol clock-bar fallback that caused the 2026-05-27 25-50× equity-inflation bug is gone.
+
+**The three sites:**
+
+- `BacktestTickContext.market_data` — algorithm convenience wrapper (commit `9352d6c`).
+- `BacktestEngine._try_fill` fill-bar lookup — order fill path (commits `144494e`, `d233c72`). Initial `fill_bar = bar` (the clock bar) is replaced by the symbol's own bar via the resolution loop when `sym != clock_symbol`; if no cache entry matches, `fill_bar` stays at the clock bar — acceptable only because the clock bar is always the leg's own symbol for single-symbol algos.
+- `BacktestEngine._lookup_symbol_close` — mark-to-market path (commits `5ad1049`, `7ec985a`). When no cache entry matches the symbol, returns `0.0`. Callers (`_positions_market_value`, `_positions_snapshot`, `_positions_for_context`) substitute `ps.avg_price` so the position is marked at cost basis instead of at a different symbol's price.
 
 Plus `CryptoAssetService.get_price` for the engine's price-discovery side.
 
-**The implementation pattern:**
+**The resolution pattern (per-tick lookup):**
 
 ```python
 svc = self._asset_registry.get_service(sym)
@@ -115,10 +122,14 @@ for (src, cache_sym, tf), df in ctx._bars.items():
     resolved = svc.resolve_symbol(sym, src)
     if cache_sym != sym and cache_sym != resolved:
         continue
-    # use df
+    # use df; break after first match
 ```
 
-**Provenance:** without this, ETH positions in a yfinance-data backtest were marked at BTC's price (BTC was the clock symbol, so the fallback lookup landed on BTC's bar). Equity inflated 25-50× until the position liquidated.
+The loop is preserved because pass-2 preserves the caller's `clock_source` / `clock_symbol` rather than using a `"_union"` marker — single-symbol algos still need fast-path direct fill-bar resolution when `sym == clock_symbol`. The loop is only invoked when `sym != clock_symbol` (multi-asset case).
+
+**Known limitation:** symbols the algorithm requests on a tick *after* pass 1 are loaded into the cache lazily (existing behavior), but their timestamps do not extend the pass-2 union clock. The discovery pass is the canonical clock contributor; if an algorithm depends on a symbol it didn't touch during pass 1, the clock will not have ticks aligned to that symbol's exclusive timestamps. Document pass-1 symbols as the canonical clock contributors.
+
+**Provenance:** P3 implementation (commits `cea6951`, `2ed9de1`, `d9fb57c`, `7ec985a`, `d233c72`). Removes the cross-symbol clock-bar fallback that caused the original wild-equity bug.
 
 ### I4: pandas 3.0 datetime64 default is microseconds; nanosecond arithmetic requires explicit casting
 
@@ -385,7 +396,7 @@ These items have been promoted from the deferred list into the spec's active sco
 |---|---|---|
 | **P1 — Benchmark source expansion** | Expose all 5 wired providers in the benchmark dropdown; validate against availability matrix at request time; reuse runner's download-and-wait for missing benchmark data | Adds I16, I17 |
 | **P2 — Async-job model for `quilt research sweep` / `walk-forward`** | Endpoints return `202 + job_id`; new polling endpoint; CLI shows progress bar; job state machine | Adds I18 |
-| **P3 — Union-of-symbol-timelines backtest clock** | Two-pass execution: discover symbols on first pass, replay on real union clock on second pass | Simplifies I3 (resolution layer becomes unnecessary) |
+| **P3 — Union-of-symbol-timelines backtest clock** | Two-pass execution: discover symbols on first pass, replay on real union clock on second pass | Simplifies I3 (per-tick lookup loop preserved; the no-match fallback is hardened — clock-bar fallback removed from MtM path) |
 
 ### Backlog items **deferred from this spec** — kept as Tier 3 follow-ups
 
