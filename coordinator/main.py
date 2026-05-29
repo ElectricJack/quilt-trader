@@ -605,6 +605,9 @@ def create_app(
     from coordinator.api.routes.data import router as data_router
     app.include_router(data_router)
 
+    from coordinator.api.routes.datasets import router as datasets_router
+    app.include_router(datasets_router)
+
     from coordinator.api.routes.runs import router as runs_router
     app.include_router(runs_router)
 
