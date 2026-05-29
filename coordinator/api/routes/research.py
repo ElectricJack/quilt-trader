@@ -18,10 +18,8 @@ from coordinator.services.validation.optimization_session import (
     create_session,
     get_session_runs,
 )
-from coordinator.services.validation.sweep import run_sweep
 from coordinator.services.validation.walk_forward import (
     concatenate_oos_curves,
-    run_walk_forward,
 )
 from coordinator.services.validation.regime import (
     regime_conditional_metrics,
@@ -73,12 +71,6 @@ class SweepRequest(BaseModel):
     seed: int = 0
 
 
-class SweepResponse(BaseModel):
-    session_id: int
-    n_configs: int
-    run_ids: list[str]
-
-
 class WalkForwardRequest(BaseModel):
     manifest_path: str
     base_config: dict
@@ -90,10 +82,18 @@ class WalkForwardRequest(BaseModel):
     parallelism: int = 1
 
 
-class WalkForwardResponse(BaseModel):
+class JobResponse(BaseModel):
+    job_id: str
     session_id: int
-    n_folds: int
-    oos_run_ids: list[str]
+    kind: str
+    status: str
+    progress_pct: float = 0.0
+    progress_message: str | None = None
+    run_ids: list[str] = []
+    error_message: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    created_at: str | None = None
 
 
 class ReportResponse(BaseModel):
@@ -188,17 +188,21 @@ async def get_session_endpoint(
     return _session_to_response(sess, n_runs)
 
 
-@router.post("/sessions/{session_id}/sweep", response_model=SweepResponse)
-async def sweep_endpoint(session_id: int, payload: SweepRequest) -> SweepResponse:
-    """Run a hyperparameter sweep under an existing session."""
+def _get_research_job_manager():
     container = get_container()
-    runner = getattr(container, "backtest_runner", None)
-    if runner is None:
-        raise HTTPException(503, "backtest_runner not initialized")
+    mgr = getattr(container, "research_job_manager", None)
+    if mgr is None:
+        raise HTTPException(503, "research_job_manager not initialized")
+    return mgr
 
-    async def runner_factory(run_id: str) -> None:
-        await runner.run(run_id)
 
+@router.post(
+    "/sessions/{session_id}/sweep",
+    response_model=JobResponse,
+    status_code=202,
+)
+async def sweep_endpoint(session_id: int, payload: SweepRequest) -> JobResponse:
+    """Queue a sweep job and return immediately with the job_id (I18)."""
     SessionLocal = get_session_factory()
     with SessionLocal() as db:
         sess = (
@@ -208,46 +212,35 @@ async def sweep_endpoint(session_id: int, payload: SweepRequest) -> SweepRespons
         )
         if sess is None:
             raise HTTPException(404, f"session {session_id} not found")
-
+        # Resolve parameter_space: payload override, then session default.
         param_space = (
             payload.parameter_space
             if payload.parameter_space is not None
             else json.loads(sess.parameter_space)
         )
 
-        result = await run_sweep(
-            db,
-            runner_factory,
-            session_id=session_id,
-            manifest_path=payload.manifest_path,
-            base_config=payload.base_config,
-            parameter_space=param_space,
-            search=payload.search,
-            max_trials=payload.max_trials,
-            parallelism=payload.parallelism,
-            seed=payload.seed,
+    mgr = _get_research_job_manager()
+    request_payload = payload.model_dump(exclude_none=True)
+    request_payload["parameter_space"] = param_space
+    try:
+        job_id = await mgr.create_sweep_job(
+            session_id=session_id, request_payload=request_payload,
         )
-        db.commit()
-        return SweepResponse(
-            session_id=result.session_id,
-            n_configs=result.n_configs,
-            run_ids=result.run_ids,
-        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    job = await mgr.get_job(job_id)
+    return JobResponse(**job)
 
 
-@router.post("/sessions/{session_id}/walk-forward", response_model=WalkForwardResponse)
+@router.post(
+    "/sessions/{session_id}/walk-forward",
+    response_model=JobResponse,
+    status_code=202,
+)
 async def walk_forward_endpoint(
     session_id: int, payload: WalkForwardRequest
-) -> WalkForwardResponse:
-    """Run a walk-forward optimization under an existing session."""
-    container = get_container()
-    runner = getattr(container, "backtest_runner", None)
-    if runner is None:
-        raise HTTPException(503, "backtest_runner not initialized")
-
-    async def runner_factory(run_id: str) -> None:
-        await runner.run(run_id)
-
+) -> JobResponse:
+    """Queue a walk-forward job and return immediately with the job_id (I18)."""
     SessionLocal = get_session_factory()
     with SessionLocal() as db:
         sess = (
@@ -257,32 +250,54 @@ async def walk_forward_endpoint(
         )
         if sess is None:
             raise HTTPException(404, f"session {session_id} not found")
-
         param_space = (
             payload.parameter_space
             if payload.parameter_space is not None
             else json.loads(sess.parameter_space)
         )
 
-        result = await run_walk_forward(
-            db,
-            runner_factory,
-            session_id=session_id,
-            manifest_path=payload.manifest_path,
-            base_config=payload.base_config,
-            parameter_space=param_space,
-            train_years=payload.train_years,
-            test_years=payload.test_years,
-            step_months=payload.step_months,
-            objective=payload.objective,
-            parallelism=payload.parallelism,
+    mgr = _get_research_job_manager()
+    request_payload = payload.model_dump(exclude_none=True)
+    request_payload["parameter_space"] = param_space
+    try:
+        job_id = await mgr.create_walk_forward_job(
+            session_id=session_id, request_payload=request_payload,
         )
-        db.commit()
-        return WalkForwardResponse(
-            session_id=result.session_id,
-            n_folds=result.n_folds,
-            oos_run_ids=result.oos_run_ids,
-        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    job = await mgr.get_job(job_id)
+    return JobResponse(**job)
+
+
+@router.get(
+    "/sessions/{session_id}/jobs",
+    response_model=list[JobResponse],
+)
+async def list_jobs_endpoint(session_id: int) -> list[JobResponse]:
+    mgr = _get_research_job_manager()
+    return [JobResponse(**j) for j in await mgr.list_jobs(session_id)]
+
+
+@router.get(
+    "/sessions/{session_id}/jobs/{job_id}",
+    response_model=JobResponse,
+)
+async def get_job_endpoint(session_id: int, job_id: str) -> JobResponse:
+    mgr = _get_research_job_manager()
+    job = await mgr.get_job(job_id)
+    if job is None or job["session_id"] != session_id:
+        raise HTTPException(404, "job not found")
+    return JobResponse(**job)
+
+
+@router.delete("/sessions/{session_id}/jobs/{job_id}")
+async def cancel_job_endpoint(session_id: int, job_id: str) -> dict:
+    mgr = _get_research_job_manager()
+    job = await mgr.get_job(job_id)
+    if job is None or job["session_id"] != session_id:
+        raise HTTPException(404, "job not found")
+    await mgr.cancel_job(job_id)
+    return {"ok": True}
 
 
 @router.post("/sessions/{session_id}/report", response_model=ReportResponse)
