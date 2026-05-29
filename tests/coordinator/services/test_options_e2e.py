@@ -22,7 +22,7 @@ class _SimpleOptionsAlgo:
         self._step = 0
 
     def on_start(self, config, restored_state):
-        pass
+        self._step = 0
 
     def on_tick(self, ctx):
         self._step += 1

@@ -51,7 +51,7 @@ def test_sell_to_open_creates_short_position():
     """Selling an option we don't own should NOT produce realized PnL."""
     class SellToOpenAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -96,7 +96,7 @@ def test_straddle_round_trip():
     """Sell at bid $8, buy back at ask $8.50 -> loss of $50 per contract."""
     class RoundTripAlgo:
         def __init__(self): self._step = 0
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._step = 0
         def on_tick(self, ctx):
             self._step += 1
             if self._step == 1:
@@ -147,7 +147,7 @@ def test_options_fill_never_uses_equity_price():
     """When option chain lookup fails, reject the fill — never use the underlying's bar price."""
     class BuyUnknownOptionAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
@@ -234,7 +234,7 @@ def test_short_option_mtm_reflects_liability():
     """A short option position should show as a LIABILITY in portfolio value."""
     class SellAndHoldAlgo:
         def __init__(self): self._fired = False
-        def on_start(self, c, s): pass
+        def on_start(self, c, s): self._fired = False
         def on_tick(self, ctx):
             if self._fired: return []
             self._fired = True
