@@ -235,6 +235,49 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+## Datasets framework (FMP)
+
+### `DatasetGoal` declarative model
+- **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** v1 ships explicit per-download queueing (CLI / REST `POST /api/datasets/downloads`). A declarative goal model parallel to `DataGoal` ("keep all house disclosures from 2020 onward fresh") is real value but couples the datasets lane to a second new subsystem before we've used the first one in anger.
+- **What's needed:** `DatasetGoal` DB model (`(dataset_name, params_json, status, last_progress)`), a `DatasetGoalProcessor` running every 60s (mirroring `GoalProcessor`), and goal-vs-on-disk diffing to compute the next `DatasetDownload` to queue.
+
+### `DatasetRefreshScheduler` for live mode
+- **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** live algorithms need datasets refreshed without manual queueing, but the right scheduler shape depends on knowing real usage patterns (cron-like? per-dataset cadence on the spec? quota-aware backoff?). v1 expects external scheduling (a cron job hitting REST, or manual CLI runs).
+- **What's needed:** a `DatasetRefreshScheduler` alongside the existing `GoalProcessor` that periodically queues `DatasetDownload` refreshes per dataset's configured cadence. Refresh strategy: for datasets with native "since" cursors, fetch only `knowledge_date > max(on_disk)`; for full-history endpoints (e.g. income_statement), accept periodic full re-fetch.
+
+### Shared `AsyncJobManager` base for ResearchJob + DatasetDownload
+- **Surfaced by:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** `ResearchJobManager` (shipped in the backtest-lab merge) and the new `DatasetJobDispatcher` implement the same shape — DB row → `asyncio.create_task` → poll → cancel-flag → progress callback → orphan recovery. The datasets spec aligns column names and status vocabulary so a future extraction is mechanical, but doing the refactor mid-spec introduces risk to two subsystems for no immediate user value.
+- **What's needed:** extract a shared `AsyncJobManager` base class. Subclasses provide: model class, dispatcher map (or single execute callable), recovery query. Migrate `ResearchJobManager` and `DatasetJobDispatcher` to inherit.
+
+### Retry-with-backoff for adapter 5xx
+- **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** v1 fails the job on 5xx; user re-queues. Adding bounded retry (e.g. 3 attempts with exponential backoff) is cheap but only worth doing if 5xx noise proves frequent in practice with real FMP traffic.
+
+### Per-dataset quota budgets
+- **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** v1 enforces only a per-provider daily limit. Per-dataset budgets ("spend at most 50 calls/day on house_disclosures") are useful when multiple goals compete, but moot until `DatasetGoal` ships.
+
+### Lazy / streaming `DataFrame` returns
+- **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** v1 reads full parquet into pandas. Polars `LazyFrame` or a DuckDB query layer becomes valuable when a single dataset's file exceeds ~1GB or when an algorithm wants pushdown filters server-side. Not the case yet.
+
+### Year-partitioned parquet for huge datasets
+- **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** v1 stores one parquet per (dataset, symbol or firehose). Upsert helper warns at 500MB. Year-partitioning (`<name>/<year>.parquet`) lets us skip irrelevant years on read, but adds a path-resolution layer that's not worth it until a real dataset crosses the threshold.
+
+### Bulk operations on datasets in UI
+- **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** Market data has Compare / Fill Gaps / Delete; datasets v1 is view-only. Each operation has different semantics for bitemporal data (e.g. "delete" — only later knowledge_date rows? all amendments?) that need their own thinking.
+
+### Auto-discovery of FMP endpoints
+- **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
+- **Why deferred:** intentionally NOT a v1 feature — every dataset is explicitly registered with a deliberate bitemporal mapping. Auto-discovery (generate `DatasetSpec` from an FMP endpoint catalog) would let users add datasets without thinking about which column is the knowledge timestamp, defeating the framework's safety guarantee. Revisit only with a strong opinion on safe defaults.
+
+---
+
 ## How to use this file
 
 When **deferring work** in a new spec:
