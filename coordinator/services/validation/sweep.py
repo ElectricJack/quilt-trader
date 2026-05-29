@@ -243,14 +243,12 @@ async def run_sweep(
                 config_hash_str=config_hash(cfg),
             )
 
-    results: list[dict[str, Any]] = []
     completed_count = 0
     total_count = len(configs)
     run_ids: list[str] = []
     tasks = [asyncio.create_task(_bounded(c)) for c in configs]
     for fut in asyncio.as_completed(tasks):
         result = await fut
-        results.append(result)
         if "run_id" in result:
             run_ids.append(result["run_id"])
         completed_count += 1
