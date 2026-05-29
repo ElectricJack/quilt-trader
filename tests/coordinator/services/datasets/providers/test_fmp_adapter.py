@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 from coordinator.services.datasets.providers.fmp import FMPAdapter
 from coordinator.services.datasets.quota import QuotaTracker, QuotaExhausted
 from coordinator.services.datasets.adapter import AdapterAuthError
+from coordinator.services.datasets.registry import DatasetSpec, Pagination
 
 
 def _resp(status: int, json_body=None, body_text: str | None = None):
@@ -90,3 +91,59 @@ async def test_acquire_raising_short_circuits_http(adapter, http, quota_ok):
     with pytest.raises(QuotaExhausted):
         await adapter._request("/x", {})
     http.get.assert_not_awaited()
+
+
+def _page_spec():
+    return DatasetSpec(
+        name="fmp.t_page", provider="fmp", endpoint_path="/stable/page-thing",
+        event_date_column="d", knowledge_date_column="d",
+        symbol_keyed=False, id_columns=("d", "x"),
+        columns={"d": "date", "x": "int"}, pagination=Pagination.PAGE, page_size=2,
+    )
+
+
+@pytest.mark.asyncio
+async def test_page_pagination_terminates_on_empty(adapter, http):
+    http.get.side_effect = [
+        _resp(200, [{"d": "2024-01-01", "x": 1}, {"d": "2024-01-02", "x": 2}]),
+        _resp(200, [{"d": "2024-01-03", "x": 3}]),
+        _resp(200, []),
+    ]
+    rows = await adapter.fetch_dataset(_page_spec(), {})
+    assert len(rows) == 3
+    assert http.get.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_page_pagination_invokes_on_rows_per_page(adapter, http):
+    http.get.side_effect = [
+        _resp(200, [{"d": "2024-01-01", "x": 1}]),
+        _resp(200, []),
+    ]
+    seen = []
+    async def on_rows(rows, page_idx): seen.append((page_idx, len(rows)))
+    await adapter.fetch_dataset(_page_spec(), {}, on_rows=on_rows)
+    assert seen == [(0, 1)]
+
+
+@pytest.mark.asyncio
+async def test_page_pagination_passes_page_and_limit(adapter, http):
+    http.get.side_effect = [_resp(200, [])]
+    await adapter.fetch_dataset(_page_spec(), {"symbol": "AAPL"})
+    args, kwargs = http.get.call_args_list[0]
+    assert kwargs["params"]["page"] == 0
+    assert kwargs["params"]["limit"] == 2
+    assert kwargs["params"]["symbol"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_page_pagination_invokes_on_page_after_each(adapter, http):
+    http.get.side_effect = [
+        _resp(200, [{"d": "2024-01-01", "x": 1}]),
+        _resp(200, [{"d": "2024-01-02", "x": 2}]),
+        _resp(200, []),
+    ]
+    pages = []
+    async def on_page(idx, total): pages.append((idx, total))
+    await adapter.fetch_dataset(_page_spec(), {}, on_page=on_page)
+    assert pages == [(0, 1), (1, 2)]

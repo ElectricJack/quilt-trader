@@ -30,7 +30,27 @@ class FMPAdapter(DatasetAdapter):
         self._last_call = 0.0
 
     async def fetch_dataset(self, spec, params, *, on_page=None, on_status=None, on_rows=None):
-        raise NotImplementedError("pagination dispatch added in later tasks")
+        if spec.pagination == Pagination.PAGE:
+            return await self._fetch_paged(spec, params, on_page, on_status, on_rows)
+        raise NotImplementedError(f"pagination={spec.pagination}")
+
+    async def _fetch_paged(self, spec, params, on_page, on_status, on_rows):
+        all_rows: list[dict] = []
+        page = int(params.pop("_start_page", 0))
+        while True:
+            page_rows = await self._request(
+                spec.endpoint_path,
+                {**params, "page": page, "limit": spec.page_size},
+            )
+            if not page_rows:
+                break
+            if on_rows is not None:
+                await on_rows(page_rows, page)
+            all_rows.extend(page_rows)
+            if on_page is not None:
+                await on_page(page, len(all_rows))
+            page += 1
+        return all_rows
 
     async def _request(self, endpoint_path: str, params: dict) -> Any:
         async with self._lock:
