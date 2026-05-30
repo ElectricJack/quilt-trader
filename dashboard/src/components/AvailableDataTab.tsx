@@ -1,5 +1,6 @@
 // src/components/AvailableDataTab.tsx
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { DatasetsAvailableSection } from "./DatasetsAvailableSection";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 import { useCoverage, useAvailableData, useFillGaps, useDownloads, useDeleteDatasets, useStorageSummary } from "../api/hooks";
@@ -9,7 +10,7 @@ import { useProcessedCoverage, type AssetType, type DisplayRow } from "../hooks/
 import { TimeWindowControls } from "./TimeWindowControls";
 import { DataFilterBar } from "./DataFilterBar";
 import { InteractiveCoverageBar } from "./InteractiveCoverageBar";
-import { DatasetPreviewModal } from "./DatasetPreviewModal";
+import { MarketDataPreviewModal } from "./MarketDataPreviewModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   CompareView,
@@ -50,6 +51,7 @@ function writeCompareToUrl(datasets: CompareDataset[], mode: CompareMode, open: 
 const ACTIVE_STATUSES = new Set(["pending", "running", "queued"]);
 
 export function AvailableDataTab() {
+  const [view, setView] = useState<"market" | "datasets">("market");
   const [searchParams, setSearchParams] = useSearchParams();
   const initialSearch = searchParams.get("search") ?? "";
   const initialPreview = searchParams.get("preview");
@@ -318,6 +320,33 @@ export function AvailableDataTab() {
 
   return (
     <div className="space-y-4">
+      {/* Market Data / Datasets toggle */}
+      <div className="flex gap-1">
+        <button
+          onClick={() => setView("market")}
+          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+            view === "market"
+              ? "bg-gray-700 text-gray-100"
+              : "bg-gray-900 text-gray-500 hover:text-gray-400 border border-gray-800"
+          }`}
+        >
+          Market Data
+        </button>
+        <button
+          onClick={() => setView("datasets")}
+          className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+            view === "datasets"
+              ? "bg-gray-700 text-gray-100"
+              : "bg-gray-900 text-gray-500 hover:text-gray-400 border border-gray-800"
+          }`}
+        >
+          Datasets
+        </button>
+      </div>
+
+      {view === "datasets" && <DatasetsAvailableSection />}
+
+      {view === "market" && <div className="space-y-4">
       {/* Storage summary */}
       {storageSummary && (
         <div className="flex items-center gap-4 px-3 py-2 bg-gray-900/50 rounded text-xs text-gray-400 font-mono">
@@ -525,13 +554,15 @@ export function AvailableDataTab() {
       )}
 
       {/* Dataset Preview modal */}
-      <DatasetPreviewModal
+      <MarketDataPreviewModal
         open={!!preview}
         onClose={() => { setPreview(null); setMarkerDate(null); }}
         provider={preview?.provider ?? null}
         symbol={preview?.symbol ?? null}
         timeframe={preview?.timeframe ?? null}
       />
+      </div>}
+
     </div>
   );
 }

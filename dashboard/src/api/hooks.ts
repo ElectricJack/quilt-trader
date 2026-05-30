@@ -745,6 +745,50 @@ export function useDeleteThetaData() {
   });
 }
 
+export function useSetFmpKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (value: string) => api.setFmpKey(value),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useDeleteFmpKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteFmpKey(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useSetFmpTier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      daily_quota_limit?: number | null;
+      min_request_interval_s?: number | null;
+      quota_reset_tz?: string | null;
+    }) => api.setFmpTier(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
+export function useDeleteFmpTier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteFmpTier(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.settings() });
+    },
+  });
+}
+
 export function useSetCoordinatorIp() {
   const qc = useQueryClient();
   return useMutation({

@@ -170,3 +170,50 @@ async def test_two_accounts_open_separate_streams_same_broker_asset_class(
     await agg.start_subscription("acct-2", "alpaca", "SPY", "equities")
     assert len(handles_opened) == 2
     assert seen_api_keys == ["acct-1", "acct-2"]
+
+
+@pytest.mark.asyncio
+async def test_adapter_with_unsupported_add_symbols_triggers_recreate(tmp_path, monkeypatch):
+    """When an adapter's handle declares add_symbols but raises NotImplementedError
+    (Coinbase contract), the aggregator must tear down and recreate the handle with
+    the full symbol list, rather than propagating the exception."""
+    handles_opened: list = []
+    handles_closed: list = []
+
+    class CoinbaseLikeHandle:
+        def __init__(self, symbols):
+            self.symbols: set[str] = set(symbols)
+            self.closed = False
+            handles_opened.append(self)
+        def add_symbols(self, syms):
+            raise NotImplementedError(
+                "CoinbaseLikeHandle does not support add_symbols; "
+                "tear down and recreate the handle with the full symbol list"
+            )
+        def remove_symbols(self, syms):
+            raise NotImplementedError
+        def close(self):
+            self.closed = True
+            handles_closed.append(self)
+
+    class FakeAdapter:
+        def start_market_data_stream(self, symbols, on_trade, on_quote, asset_class="crypto"):
+            return CoinbaseLikeHandle(symbols)
+        def close(self): pass
+
+    agg = LiveFeedAggregator(session_factory=None, encryption=None)
+    async def fake_adapter_for_provider(broker):
+        return FakeAdapter()
+    monkeypatch.setattr(agg, "_adapter_for_provider", fake_adapter_for_provider)
+    monkeypatch.setattr(agg, "_ticks_dir",
+                        lambda b, s: tmp_path / b / s / "ticks")
+    async def noop_mark_running(*a, **kw): pass
+    monkeypatch.setattr(agg, "_mark_subscription_running", noop_mark_running)
+
+    await agg.start_subscription(None, "coinbase", "BTCUSD", "crypto")
+    await agg.start_subscription(None, "coinbase", "ETHUSD", "crypto")
+
+    assert len(handles_opened) == 2, "second crypto subscription should recreate the handle"
+    assert handles_opened[0].closed, "old handle should have been closed during recreate"
+    assert handles_opened[1].symbols == {"BTCUSD", "ETHUSD"}, \
+        "recreated handle should carry the full symbol list"

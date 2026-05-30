@@ -630,3 +630,45 @@ class AlgorithmDeploymentReport(Base):
     monthly_returns_matrix: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     eoy_returns: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     runs_index: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
+
+class DatasetDownload(Base):
+    __tablename__ = "dataset_downloads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    request_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued", index=True)
+    # queued | running | completed | failed | cancelled | paused_quota
+
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    rows_fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    calls_consumed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    progress_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    progress_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    last_page: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_event_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_by: Mapped[str] = mapped_column(String, nullable=False, default="manual")
+
+
+class QuotaUsage(Base):
+    __tablename__ = "quota_usage"
+    __table_args__ = (
+        UniqueConstraint("provider", "reset_window", name="uq_quota_window"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    reset_window: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    calls_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    daily_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    exhausted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

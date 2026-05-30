@@ -10,7 +10,7 @@ options backtesting is a follow-up spec (Spec D §12).
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 import pandas as pd
@@ -69,6 +69,7 @@ class BacktestTickContext(TickContext):
         self._cancel_orders_requested = False
         self._option_chain_cache: dict[tuple, "pd.DataFrame"] = {}
         self._ts_index_cache: dict[int, tuple] = {}  # id(df) -> (ns_array, tz_stripped)
+        self._dataset_cache: dict[tuple, pd.DataFrame] = {}  # (name, symbol, columns) -> raw parquet bytes-from-disk
 
     # ---- mutation hooks called by the engine ----
 
@@ -92,6 +93,10 @@ class BacktestTickContext(TickContext):
         self._account_value = self._initial_cash
         self._buying_power = self._initial_cash
         self._positions = {}
+        # _dataset_cache is intentionally NOT cleared here: dataset files are
+        # immutable within a backtest run, so the cached parquet bytes read
+        # during pass-1 discovery remain valid for the pass-2 replay.
+        # This mirrors the same intentional preservation of _bars.
 
     def update_account(
         self, *, cash: float, account_value: float, buying_power: float,
@@ -228,6 +233,45 @@ class BacktestTickContext(TickContext):
             self._custom_data_cache[source_name] = df
             return df
         return pd.DataFrame()
+
+    def dataset(
+        self,
+        name: str,
+        *,
+        symbol: str | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        lookback_days: int | None = None,
+        lag: timedelta = timedelta(0),
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Cached bitemporal dataset lookup for backtest contexts.
+
+        Parquet bytes are read once per (name, symbol, columns) key and stored
+        in _dataset_cache for the lifetime of the backtest (including across
+        reset_for_replay). The per-tick bitemporal filter is re-applied on
+        every call so no-look-ahead is always enforced.
+        """
+        if lag < timedelta(0):
+            raise ValueError("lag must be non-negative")
+        effective_as_of = self.timestamp - lag
+        if lookback_days is not None:
+            if start is not None or end is not None:
+                raise ValueError("lookback_days is mutually exclusive with start/end")
+            end = effective_as_of.date() if hasattr(effective_as_of, "date") else effective_as_of
+            start = end - timedelta(days=lookback_days)
+        cache_key = (name, symbol, tuple(columns) if columns is not None else None)
+        if cache_key not in self._dataset_cache:
+            from coordinator.services.datasets.storage import _get_service
+            from coordinator.services.datasets import registry as _reg
+            spec = _reg.get(name)
+            path = _get_service()._path_for(spec, symbol)
+            self._dataset_cache[cache_key] = (
+                pd.read_parquet(path, columns=columns) if path.exists() else pd.DataFrame()
+            )
+        df = self._dataset_cache[cache_key]
+        from coordinator.services.datasets.storage import _filter_bitemporal
+        return _filter_bitemporal(df, as_of=effective_as_of, start=start, end=end)
 
     @staticmethod
     def _resolve_custom_data(custom_dir, source_name: str):

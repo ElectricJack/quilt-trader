@@ -1,15 +1,17 @@
-from datetime import datetime
+import time
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 import logging
 import pandas as pd
-from sdk.models import Position
+from sdk.context import TickContext
+from sdk.models import OptionChain, Position
 from worker.broker_adapter import BrokerAdapter
 from worker.data_client import DataClient
 
 logger = logging.getLogger(__name__)
 
 
-class LiveTickContext:
+class LiveTickContext(TickContext):
     def __init__(
         self,
         timestamp: datetime,
@@ -26,6 +28,10 @@ class LiveTickContext:
         self._buffer = buffer
         self._custom_data = custom_data or {}
         self._price_cache: dict[str, float] = {}
+        # Dataset cache: (name, symbol, columns) -> (monotonic_time, DataFrame)
+        # Entries are refreshed when the TTL expires (default 60 s).
+        self._dataset_cache: dict[tuple, tuple[float, pd.DataFrame]] = {}
+        self._dataset_cache_ttl_s: float = 60.0
 
     @property
     def timestamp(self) -> datetime:
@@ -89,6 +95,60 @@ class LiveTickContext:
             "open": price, "high": price, "low": price,
             "close": price, "volume": 0,
         }])
+
+    def option_chain(self, symbol: str, expiration: Optional[date] = None) -> OptionChain:
+        """Return the live option chain for *symbol*, delegating to the broker adapter."""
+        exp = expiration or (self._timestamp.date() if self._timestamp else date.today())
+        if isinstance(exp, str):
+            exp = date.fromisoformat(exp)
+        try:
+            snapshot = self._broker.get_option_chain(symbol, exp)
+            calls = [c for c in snapshot.contracts if c.option_type == "call"]
+            puts = [c for c in snapshot.contracts if c.option_type == "put"]
+            return OptionChain(underlying=symbol, expiration=exp, calls=calls, puts=puts)
+        except (NotImplementedError, Exception):
+            return OptionChain(underlying=symbol, expiration=exp, calls=[], puts=[])
+
+    def dataset(
+        self,
+        name: str,
+        *,
+        symbol: str | None = None,
+        start=None,
+        end=None,
+        lookback_days: int | None = None,
+        lag: timedelta = timedelta(0),
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Cached bitemporal dataset lookup for live contexts.
+
+        Parquet bytes are cached per (name, symbol, columns) key with a 60 s
+        TTL (configurable via ``_dataset_cache_ttl_s``). On TTL expiry the file
+        is re-read from disk so the live process picks up intraday data refreshes.
+        The bitemporal filter is always re-applied after the cache fetch.
+        """
+        if lag < timedelta(0):
+            raise ValueError("lag must be non-negative")
+        effective_as_of = self.timestamp - lag
+        if lookback_days is not None:
+            if start is not None or end is not None:
+                raise ValueError("lookback_days is mutually exclusive with start/end")
+            end = effective_as_of.date() if hasattr(effective_as_of, "date") else effective_as_of
+            start = end - timedelta(days=lookback_days)
+        cache_key = (name, symbol, tuple(columns) if columns is not None else None)
+        now = time.monotonic()
+        entry = self._dataset_cache.get(cache_key)
+        if entry is None or (now - entry[0]) > self._dataset_cache_ttl_s:
+            from coordinator.services.datasets.storage import _get_service
+            from coordinator.services.datasets import registry as _reg
+            spec = _reg.get(name)
+            path = _get_service()._path_for(spec, symbol)
+            df = pd.read_parquet(path, columns=columns) if path.exists() else pd.DataFrame()
+            entry = (now, df)
+            self._dataset_cache[cache_key] = entry
+        df = entry[1]
+        from coordinator.services.datasets.storage import _filter_bitemporal
+        return _filter_bitemporal(df, as_of=effective_as_of, start=start, end=end)
 
     def data(self, source_name: str) -> pd.DataFrame:
         if source_name in self._custom_data:

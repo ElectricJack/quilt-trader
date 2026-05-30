@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -57,3 +57,32 @@ class TickContext(ABC):
     @abstractmethod
     def option_chain(self, symbol: str, expiration: Optional[date] = None) -> OptionChain:
         ...
+
+    def dataset(
+        self,
+        name: str,
+        *,
+        symbol: str | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        lookback_days: int | None = None,
+        lag: timedelta = timedelta(0),
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Load a registered bitemporal dataset, filtered to what was knowable as-of
+        the runtime clock (minus optional ``lag``).
+
+        There is NO ``as_of`` parameter — the runtime clock is the only source of truth.
+        ``lag`` must be >= 0; it can only delay, never peek ahead.
+        """
+        if lag < timedelta(0):
+            raise ValueError("lag must be non-negative")
+        effective_as_of = self.timestamp - lag
+        if lookback_days is not None:
+            if start is not None or end is not None:
+                raise ValueError("lookback_days is mutually exclusive with start/end")
+            end = effective_as_of.date() if hasattr(effective_as_of, "date") else effective_as_of
+            start = end - timedelta(days=lookback_days)
+        from coordinator.services.datasets.storage import load_dataset  # lazy — sdk can't import coordinator at module level
+        return load_dataset(name, as_of=effective_as_of, symbol=symbol,
+                            start=start, end=end, columns=columns)

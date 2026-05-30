@@ -212,3 +212,145 @@ def _to_iso(date_str: str) -> str:
     if "T" in date_str:
         return date_str
     return f"{date_str}T00:00:00+00:00"
+
+
+# ── Datasets ─────────────────────────────────────────────────────────
+
+@click.group("datasets")
+def datasets_group() -> None:
+    """Manage time-series datasets (FMP and beyond)."""
+
+
+data_group.add_command(datasets_group)
+
+
+@datasets_group.command("list")
+@click.pass_context
+def datasets_list(ctx):
+    """List available datasets."""
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.get("/api/datasets")
+        finally:
+            await c.aclose()
+    rows = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(rows)
+    else:
+        for r in rows:
+            click.echo(
+                f"{r['name']:<40} provider={r['provider']}"
+                f" pagination={r['pagination']}"
+            )
+
+
+@datasets_group.command("show")
+@click.argument("name")
+@click.pass_context
+def datasets_show(ctx, name):
+    """Show details for a single dataset."""
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.get(f"/api/datasets/{name}")
+        finally:
+            await c.aclose()
+    spec = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(spec)
+    else:
+        click.echo(_json.dumps(spec, indent=2, default=str))
+
+
+@datasets_group.command("download")
+@click.argument("name")
+@click.option("--symbol", default=None, help="Filter by symbol.")
+@click.option("--from", "date_from", default=None, help="Start date (YYYY-MM-DD).")
+@click.option("--to", "date_to", default=None, help="End date (YYYY-MM-DD).")
+@click.option("--param", "extra_params", multiple=True,
+              metavar="KEY=VALUE", help="Extra dataset params (repeat for multiple).")
+@click.pass_context
+def datasets_download(ctx, name, symbol, date_from, date_to, extra_params):
+    """Enqueue a dataset download job."""
+    params: dict = {}
+    if symbol:
+        params["symbol"] = symbol
+    if date_from:
+        params["from"] = date_from
+    if date_to:
+        params["to"] = date_to
+    for kv in extra_params:
+        k, _, v = kv.partition("=")
+        params[k] = v
+    payload = {"name": name, "params": params}
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.post("/api/datasets/downloads", json=payload)
+        finally:
+            await c.aclose()
+    body = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(body)
+    else:
+        click.echo(
+            f"queued download #{body.get('id')} for {name}"
+            f" (status={body.get('status')})"
+        )
+
+
+@datasets_group.command("downloads")
+@click.option("--status", default=None, help="Filter by status.")
+@click.option("--provider", default=None, help="Filter by provider.")
+@click.pass_context
+def datasets_downloads(ctx, status, provider):
+    """List dataset download jobs."""
+    qs_parts = {}
+    if status:
+        qs_parts["status"] = status
+    if provider:
+        qs_parts["provider"] = provider
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.get("/api/datasets/downloads",
+                               params=qs_parts if qs_parts else None)
+        finally:
+            await c.aclose()
+    rows = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(rows)
+    else:
+        for r in rows:
+            pct = r.get("progress_pct", 0) or 0
+            click.echo(
+                f"#{r['id']:<5} {r.get('dataset_name', ''):<32}"
+                f" {r.get('status', ''):<14}"
+                f" rows={r.get('rows_fetched', 0)}"
+                f" progress={pct * 100:.0f}%"
+            )
+
+
+@datasets_group.command("quota")
+@click.pass_context
+def datasets_quota(ctx):
+    """Show API quota usage for dataset providers."""
+    async def go():
+        c = _client(ctx)
+        try:
+            return await c.get("/api/datasets/quota")
+        finally:
+            await c.aclose()
+    rows = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(rows)
+    elif not rows:
+        click.echo("(no usage yet today)")
+    else:
+        for r in rows:
+            flag = " EXHAUSTED" if r.get("exhausted") else ""
+            click.echo(
+                f"{r['provider']:<10}"
+                f" {r['calls_used']}/{r['daily_limit']}{flag}"
+            )

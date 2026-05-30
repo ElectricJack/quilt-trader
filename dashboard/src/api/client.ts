@@ -246,6 +246,43 @@ export interface EventParams {
   offset?: number;
 }
 
+// ── Datasets framework ──
+
+export interface DatasetSpec {
+  name: string;
+  provider: string;
+  endpoint_path: string;
+  event_date_column: string;
+  knowledge_date_column: string | null;
+  symbol_keyed: boolean;
+  id_columns: string[];
+  columns: Record<string, string>;
+  pagination: "single" | "page" | "date_range";
+  page_size: number;
+  date_chunk_days: number;
+  free_tier: boolean;
+}
+
+export interface DatasetCoverageEntry {
+  symbol: string | null;
+  row_count: number;
+  event_date_min: string | null;
+  event_date_max: string | null;
+  knowledge_date_max: string | null;
+  file_size_bytes: number;
+  last_modified: number;
+}
+
+export interface DatasetRowsResponse {
+  total: number;
+  rows: Record<string, unknown>[];
+  spec_summary: {
+    columns: Record<string, string>;
+    event_date_column: string;
+    knowledge_date_column: string | null;
+  };
+}
+
 // ─── Generic request helper ────────────────────────────────────────────────────
 
 async function request<T>(
@@ -737,6 +774,32 @@ export const api = {
       method: "DELETE",
     });
   },
+  setFmpKey(value: string): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/fmp-key", {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
+  },
+  deleteFmpKey(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/fmp-key", {
+      method: "DELETE",
+    });
+  },
+  setFmpTier(body: {
+    daily_quota_limit?: number | null;
+    min_request_interval_s?: number | null;
+    quota_reset_tz?: string | null;
+  }): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/fmp-tier", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+  deleteFmpTier(): Promise<SettingsStatus> {
+    return request<SettingsStatus>("/api/settings/fmp-tier", {
+      method: "DELETE",
+    });
+  },
   setCoordinatorIp(value: string): Promise<SettingsStatus> {
     return request<SettingsStatus>("/api/settings/coordinator-ip", {
       method: "PUT",
@@ -1107,6 +1170,56 @@ export const api = {
     if (params?.run_id) qs.set("run_id", params.run_id);
     const suffix = qs.toString() ? `?${qs}` : "";
     return request<{ items: DeploymentTrade[] }>(`/api/deployments/${id}/trades${suffix}`);
+  },
+
+  // ── Datasets framework ──
+  listDatasets(): Promise<DatasetSpec[]> {
+    return request<DatasetSpec[]>("/api/datasets");
+  },
+  getDataset(name: string): Promise<DatasetSpec> {
+    return request<DatasetSpec>(`/api/datasets/${encodeURIComponent(name)}`);
+  },
+  listDatasetProviders(): Promise<{ name: string; available: boolean; reason: string | null }[]> {
+    return request<{ name: string; available: boolean; reason: string | null }[]>(
+      "/api/datasets/providers"
+    );
+  },
+  getDatasetCoverageIndex(): Promise<{ name: string; provider: string; symbol_keyed: boolean; detail_url: string }[]> {
+    return request<{ name: string; provider: string; symbol_keyed: boolean; detail_url: string }[]>(
+      "/api/datasets/coverage"
+    );
+  },
+  getDatasetCoverage(name: string): Promise<{ name: string; symbols: DatasetCoverageEntry[] }> {
+    return request<{ name: string; symbols: DatasetCoverageEntry[] }>(
+      `/api/datasets/${encodeURIComponent(name)}/coverage`
+    );
+  },
+  getDatasetRows(
+    name: string,
+    params: {
+      symbol?: string;
+      as_of?: string;
+      start?: string;
+      end?: string;
+      columns?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<DatasetRowsResponse> {
+    const qs = new URLSearchParams();
+    if (params.symbol) qs.set("symbol", params.symbol);
+    if (params.as_of) qs.set("as_of", params.as_of);
+    if (params.start) qs.set("start", params.start);
+    if (params.end) qs.set("end", params.end);
+    if (params.columns) qs.set("columns", params.columns);
+    if (params.q) qs.set("q", params.q);
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return request<DatasetRowsResponse>(
+      `/api/datasets/${encodeURIComponent(name)}/rows${suffix}`
+    );
   },
 };
 

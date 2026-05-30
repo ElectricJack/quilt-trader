@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from coordinator.database.models import MarketDataDownload
 from coordinator.services.data_service import DataService
+from coordinator.services.download_job import BarsJobDispatcher, JobDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,12 @@ class DownloadManager:
             self._provider_semaphores[provider_name] = asyncio.Semaphore(n)
             self._initial_concurrency[provider_name] = n
         self._fallback_semaphore = asyncio.Semaphore(1)
+        self._dispatchers: dict[type, JobDispatcher] = {}
+        self.register_dispatcher(BarsJobDispatcher())
+
+    def register_dispatcher(self, dispatcher: JobDispatcher) -> None:
+        """Register a job dispatcher for a given job model type."""
+        self._dispatchers[dispatcher.job_model] = dispatcher
 
     def _semaphore_for(self, provider: str) -> asyncio.Semaphore:
         return self._provider_semaphores.get(provider, self._fallback_semaphore)
@@ -292,22 +299,16 @@ class DownloadManager:
                 if dl.status != "queued":
                     return
 
-                symbols = dl.symbols
-                provider_name = dl.provider
-                data_type = dl.data_type
-                timeframe = dl.timeframe
-                start = dl.date_range_start
-                end = dl.date_range_end
-
                 await session.execute(
                     update(MarketDataDownload)
                     .where(MarketDataDownload.id == download_id)
                     .values(status="running", started_at=datetime.now(timezone.utc))
                 )
                 await session.commit()
-            await self._run_download_body(
-                download_id, symbols, provider_name, data_type, timeframe, start, end,
-            )
+            dispatcher = self._dispatchers.get(type(dl))
+            if dispatcher is None:
+                raise RuntimeError(f"no dispatcher registered for {type(dl).__name__}")
+            await dispatcher.execute(dl, self)
 
     async def _run_download_body(
         self,

@@ -42,7 +42,8 @@ async def _delete_setting(db: AsyncSession, key: str) -> None:
 
 
 async def _settings_status(db: AsyncSession) -> dict:
-    keys = ["github_pat", "discord_bot_token", "polygon_api_key", "theta_data_username", "tailscale_authkey"]
+    keys = ["github_pat", "discord_bot_token", "polygon_api_key", "theta_data_username",
+            "tailscale_authkey", "fmp_api_key"]
     result = {}
     for key in keys:
         val = await _get_setting(db, key)
@@ -54,6 +55,11 @@ async def _settings_status(db: AsyncSession) -> dict:
     # the free-tier rate limits applied in coordinator/main.py.
     result["polygon_min_request_interval_s"] = await _get_setting(db, "polygon_min_request_interval_s")
     result["polygon_concurrency"] = await _get_setting(db, "polygon_concurrency")
+    # FMP tier overrides — visible plaintext. Defaults match free tier
+    # (250 calls/day, no inter-request pacing) applied in coordinator/main.py.
+    result["fmp_daily_quota_limit"] = await _get_setting(db, "fmp_daily_quota_limit")
+    result["fmp_min_request_interval_s"] = await _get_setting(db, "fmp_min_request_interval_s")
+    result["dataset_quota_reset_tz"] = await _get_setting(db, "dataset_quota_reset_tz")
     return result
 
 
@@ -179,4 +185,67 @@ async def set_tailscale_authkey(body: SingleValueBody, db: AsyncSession = Depend
 @router.delete("/tailscale-authkey")
 async def delete_tailscale_authkey(db: AsyncSession = Depends(get_db)):
     await _delete_setting(db, "tailscale_authkey")
+    return await _settings_status(db)
+
+
+@router.put("/fmp-key")
+async def set_fmp_key(body: SingleValueBody, db: AsyncSession = Depends(get_db)):
+    container = get_container()
+    encrypted = container.encryption.encrypt(body.value)
+    await _set_setting(db, "fmp_api_key", encrypted)
+    return await _settings_status(db)
+
+
+@router.delete("/fmp-key")
+async def delete_fmp_key(db: AsyncSession = Depends(get_db)):
+    await _delete_setting(db, "fmp_api_key")
+    return await _settings_status(db)
+
+
+class FMPTierBody(BaseModel):
+    """FMP daily quota + pacing overrides. Free tier is 250 calls/day with no
+    documented per-second cap. Paid tiers raise the daily limit; some plans
+    may want a small inter-request pacing floor."""
+    daily_quota_limit: Optional[int] = None
+    min_request_interval_s: Optional[float] = None
+    quota_reset_tz: Optional[str] = None
+
+
+@router.put("/fmp-tier")
+async def set_fmp_tier(body: FMPTierBody, db: AsyncSession = Depends(get_db)):
+    """Set FMP rate-limit overrides. Each field can be omitted to clear it;
+    all stored plaintext (non-secret). Restart the coordinator to apply."""
+    if body.daily_quota_limit is not None:
+        if body.daily_quota_limit < 1:
+            from fastapi import HTTPException
+            raise HTTPException(400, "daily_quota_limit must be >= 1")
+        await _set_setting(db, "fmp_daily_quota_limit", str(body.daily_quota_limit))
+    else:
+        await _delete_setting(db, "fmp_daily_quota_limit")
+    if body.min_request_interval_s is not None:
+        if body.min_request_interval_s < 0:
+            from fastapi import HTTPException
+            raise HTTPException(400, "min_request_interval_s must be >= 0")
+        await _set_setting(db, "fmp_min_request_interval_s", str(body.min_request_interval_s))
+    else:
+        await _delete_setting(db, "fmp_min_request_interval_s")
+    if body.quota_reset_tz is not None:
+        # Validate tz string by attempting to construct ZoneInfo
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(body.quota_reset_tz)
+        except Exception as e:
+            from fastapi import HTTPException
+            raise HTTPException(400, f"invalid quota_reset_tz: {e}")
+        await _set_setting(db, "dataset_quota_reset_tz", body.quota_reset_tz)
+    else:
+        await _delete_setting(db, "dataset_quota_reset_tz")
+    return await _settings_status(db)
+
+
+@router.delete("/fmp-tier")
+async def delete_fmp_tier(db: AsyncSession = Depends(get_db)):
+    await _delete_setting(db, "fmp_daily_quota_limit")
+    await _delete_setting(db, "fmp_min_request_interval_s")
+    await _delete_setting(db, "dataset_quota_reset_tz")
     return await _settings_status(db)
