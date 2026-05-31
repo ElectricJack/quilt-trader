@@ -22,6 +22,7 @@ export function JsonTextField({
   const id = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
   const timer = useRef<number | null>(null);
   const initialText = value === null ? "" : JSON.stringify(value, null, 2);
 
@@ -35,10 +36,13 @@ export function JsonTextField({
     const next = value === null ? "" : JSON.stringify(value, null, 2);
     el.value = next;
     setError(null);
+    // Reset dirty state when value is cleared from outside (e.g. modal reset)
+    if (value === null) setDirty(false);
   }, [value]);
 
   const onTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const next = e.target.value;
+    setDirty(true);
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (next.trim() === "") {
@@ -84,7 +88,7 @@ export function JsonTextField({
           (disabled ? " opacity-70 cursor-not-allowed" : "")
         }
       />
-      {!disabled && (
+      {!disabled && dirty && (
         <div className="text-xs">
           {valid ? (
             <span className="text-green-400">✓ valid JSON</span>
