@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { wsManager } from "../api/websocket";
 import { keys } from "../api/hooks";
+import type { ResearchJob } from "../api/client";
 
 export function useWebSocketSync(): void {
   const queryClient = useQueryClient();
@@ -78,6 +79,30 @@ export function useWebSocketSync(): void {
       }
     );
 
+    const unsubscribeResearchJob = wsManager.subscribe(
+      "research_job",
+      (data) => {
+        const msg = data as Partial<ResearchJob> & {
+          session_id: number;
+          job_id: string;
+        };
+        // Patch any cached jobs-list query for this session
+        queryClient.setQueriesData<ResearchJob[] | undefined>(
+          { queryKey: keys.researchJobs(msg.session_id) },
+          (old) =>
+            old?.map((j) =>
+              j.job_id === msg.job_id ? { ...j, ...msg } : j,
+            ) ?? old,
+        );
+        // Patch the single-job query if anyone's watching it
+        queryClient.setQueryData(
+          keys.researchJob(msg.session_id, msg.job_id),
+          (old: ResearchJob | undefined) =>
+            old ? { ...old, ...msg } : (msg as ResearchJob),
+        );
+      },
+    );
+
     return () => {
       unsubscribeInstanceStarted();
       unsubscribeInstanceStopped();
@@ -86,6 +111,7 @@ export function useWebSocketSync(): void {
       unsubscribeTradeExecuted();
       unsubscribeStateCheckpoint();
       unsubscribeDeploymentStatus();
+      unsubscribeResearchJob();
       wsManager.disconnect();
     };
   }, [queryClient]);
