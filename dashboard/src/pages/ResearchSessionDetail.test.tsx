@@ -58,12 +58,17 @@ describe("ResearchSessionDetail", () => {
     const { api } = await import("../api/client");
     (api.getResearchSession as any).mockResolvedValue(SESSION);
     (api.listResearchJobs as any).mockResolvedValue([]);
-    const { rerender } = render(wrap(<ResearchSessionDetail />));
+
+    const { unmount } = render(wrap(<ResearchSessionDetail />));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /generate report/i })).toBeDisabled();
     });
+    unmount();
+
+    // Fresh render with updated mock — using a new QueryClient is safe here
+    // because we fully unmounted and the previous client was torn down.
     (api.getResearchSession as any).mockResolvedValue({ ...SESSION, n_runs: 3 });
-    rerender(wrap(<ResearchSessionDetail />));
+    render(wrap(<ResearchSessionDetail />));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /generate report/i })).not.toBeDisabled();
     });
