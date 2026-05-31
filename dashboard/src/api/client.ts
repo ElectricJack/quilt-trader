@@ -224,6 +224,8 @@ export interface ResearchSession {
   notes: string;
   created_at: string;
   completed_at: string | null;
+  algorithm_id: string;
+  base_config: Record<string, unknown>;
   parameter_space: Record<string, unknown>;
   pre_registered_criteria: Record<string, unknown>;
   n_runs: number;
@@ -246,15 +248,14 @@ export interface ResearchJob {
 export interface CreateSessionRequest {
   name: string;
   hypothesis: string;
+  algorithm_id: string;
+  base_config: Record<string, unknown>;
   parameter_space: Record<string, unknown>;
   pre_registered_criteria: Record<string, unknown>;
   notes?: string;
 }
 
 export interface CreateSweepRequest {
-  algorithm_id: string;
-  base_config: Record<string, unknown>;
-  parameter_space?: Record<string, unknown> | null;
   search?: "grid" | "random" | "latin" | "tpe";
   max_trials?: number;
   parallelism?: number;
