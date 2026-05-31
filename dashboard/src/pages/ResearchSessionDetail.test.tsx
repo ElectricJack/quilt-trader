@@ -25,6 +25,8 @@ vi.mock("../api/hooks", async (importOriginal) => {
 const SESSION = {
   id: 7, name: "Smoke", hypothesis: "ws works", status: "open" as const,
   notes: "", created_at: "2026-05-30", completed_at: null,
+  algorithm_id: "test-algo-a",
+  base_config: { vol: 0.10 },
   parameter_space: { x: [1, 2] }, pre_registered_criteria: { min_sharpe: 1 },
   n_runs: 0,
 };
@@ -108,6 +110,16 @@ describe("ResearchSessionDetail", () => {
     render(wrap(<ResearchSessionDetail />));
     await waitFor(() => screen.getByText("Smoke"));
     fireEvent.click(screen.getByRole("button", { name: /new sweep/i }));
-    expect(await screen.findByText(/algorithm/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/search/i)).toBeInTheDocument();
+  });
+
+  it("summary card renders algorithm chip", async () => {
+    const { api } = await import("../api/client");
+    (api.getResearchSession as any).mockResolvedValue(SESSION);
+    (api.listResearchJobs as any).mockResolvedValue([]);
+    render(wrap(<ResearchSessionDetail />));
+    await waitFor(() => {
+      expect(screen.getByText(/algo:.*test-algo-a/i)).toBeInTheDocument();
+    });
   });
 });
