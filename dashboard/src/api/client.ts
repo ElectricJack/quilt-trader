@@ -215,6 +215,58 @@ export interface FillGapsResponse {
   gap_count: number;
 }
 
+// ── Research / Validation Lab ──
+export interface ResearchSession {
+  id: number;
+  name: string;
+  hypothesis: string;
+  status: "open" | "running" | "completed" | "failed";
+  notes: string;
+  created_at: string;
+  completed_at: string | null;
+  parameter_space: Record<string, unknown>;
+  pre_registered_criteria: Record<string, unknown>;
+  n_runs: number;
+}
+
+export interface ResearchJob {
+  job_id: string;
+  session_id: number;
+  kind: "sweep" | "walk-forward";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  progress_pct: number;
+  progress_message: string | null;
+  run_ids: string[];
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string | null;
+}
+
+export interface CreateSessionRequest {
+  name: string;
+  hypothesis: string;
+  parameter_space: Record<string, unknown>;
+  pre_registered_criteria: Record<string, unknown>;
+  notes?: string;
+}
+
+export interface CreateSweepRequest {
+  algorithm_id: string;
+  base_config: Record<string, unknown>;
+  parameter_space?: Record<string, unknown> | null;
+  search?: "grid" | "random" | "latin" | "tpe";
+  max_trials?: number;
+  parallelism?: number;
+  seed?: number;
+}
+
+export interface GenerateReportResponse {
+  session_id: number;
+  markdown_path: string;
+  html_path: string;
+}
+
 export interface DataGoal {
   id: string;
   name: string;
@@ -1219,6 +1271,51 @@ export const api = {
     const suffix = qs.toString() ? `?${qs}` : "";
     return request<DatasetRowsResponse>(
       `/api/datasets/${encodeURIComponent(name)}/rows${suffix}`
+    );
+  },
+
+  // ── Research / Validation Lab ──
+  listResearchSessions(): Promise<ResearchSession[]> {
+    return request<ResearchSession[]>("/api/research/sessions");
+  },
+  getResearchSession(id: number): Promise<ResearchSession> {
+    return request<ResearchSession>(`/api/research/sessions/${id}`);
+  },
+  createResearchSession(body: CreateSessionRequest): Promise<ResearchSession> {
+    return request<ResearchSession>("/api/research/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  listResearchJobs(sessionId: number): Promise<ResearchJob[]> {
+    return request<ResearchJob[]>(
+      `/api/research/sessions/${sessionId}/jobs`,
+    );
+  },
+  getResearchJob(sessionId: number, jobId: string): Promise<ResearchJob> {
+    return request<ResearchJob>(
+      `/api/research/sessions/${sessionId}/jobs/${jobId}`,
+    );
+  },
+  createResearchSweep(
+    sessionId: number,
+    body: CreateSweepRequest,
+  ): Promise<ResearchJob> {
+    return request<ResearchJob>(
+      `/api/research/sessions/${sessionId}/sweep`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
+  cancelResearchJob(sessionId: number, jobId: string): Promise<{ ok: true }> {
+    return request<{ ok: true }>(
+      `/api/research/sessions/${sessionId}/jobs/${jobId}`,
+      { method: "DELETE" },
+    );
+  },
+  generateResearchReport(sessionId: number): Promise<GenerateReportResponse> {
+    return request<GenerateReportResponse>(
+      `/api/research/sessions/${sessionId}/report`,
+      { method: "POST" },
     );
   },
 };
