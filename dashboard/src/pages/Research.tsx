@@ -45,6 +45,7 @@ export function Research() {
             <thead className="bg-gray-950 text-gray-400 text-xs">
               <tr>
                 <th className="px-4 py-2 text-left">Name</th>
+                <th className="px-4 py-2 text-left">Algorithm</th>
                 <th className="px-4 py-2 text-left">Status</th>
                 <th className="px-4 py-2 text-left">Hypothesis</th>
                 <th className="px-4 py-2 text-right">Runs</th>
@@ -59,6 +60,7 @@ export function Research() {
                   className="border-t border-gray-800 cursor-pointer hover:bg-gray-800/50 text-gray-200"
                 >
                   <td className="px-4 py-2 font-medium">{s.name}</td>
+                  <td className="px-4 py-2 text-gray-400 font-mono text-xs">{s.algorithm_id}</td>
                   <td className="px-4 py-2">{s.status}</td>
                   <td className="px-4 py-2 text-gray-400 truncate max-w-md" title={s.hypothesis}>
                     {s.hypothesis.length > 80 ? s.hypothesis.slice(0, 80) + "…" : s.hypothesis}

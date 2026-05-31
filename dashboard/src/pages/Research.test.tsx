@@ -35,10 +35,10 @@ describe("Research", () => {
     (api.listResearchSessions as any).mockResolvedValue([
       { id: 1, name: "S1", hypothesis: "H1", status: "open", notes: "",
         created_at: "2026-05-30", completed_at: null, parameter_space: {},
-        pre_registered_criteria: {}, n_runs: 0 },
+        pre_registered_criteria: {}, n_runs: 0, algorithm_id: "algo-abc", base_config: {} },
       { id: 2, name: "S2", hypothesis: "H2", status: "running", notes: "",
         created_at: "2026-05-30", completed_at: null, parameter_space: {},
-        pre_registered_criteria: {}, n_runs: 3 },
+        pre_registered_criteria: {}, n_runs: 3, algorithm_id: "algo-def", base_config: {} },
     ]);
     render(wrap(<Research />));
     await waitFor(() => {
@@ -54,6 +54,20 @@ describe("Research", () => {
     fireEvent.click(screen.getByRole("button", { name: /new session/i }));
     await waitFor(() => {
       expect(screen.getByText(/new research session/i)).toBeInTheDocument();
+    });
+  });
+
+  it("renders Algorithm column", async () => {
+    const { api } = await import("../api/client");
+    (api.listResearchSessions as any).mockResolvedValue([
+      { id: 1, name: "S1", hypothesis: "H1", status: "open", notes: "",
+        created_at: "2026-05-30", completed_at: null,
+        algorithm_id: "algo-abc", base_config: {},
+        parameter_space: {}, pre_registered_criteria: {}, n_runs: 0 },
+    ]);
+    render(wrap(<Research />));
+    await waitFor(() => {
+      expect(screen.getByText(/algo-abc/)).toBeInTheDocument();
     });
   });
 });
