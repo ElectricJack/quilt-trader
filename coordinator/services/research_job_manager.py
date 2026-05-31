@@ -250,7 +250,7 @@ class ResearchJobManager:
                 row.progress_pct = pct
                 row.progress_message = message
                 if run_ids:
-                    row.run_ids = (row.run_ids or []) + run_ids
+                    row.run_ids = list(run_ids)
                 await s.commit()
             await self._publish_update(job_id)
         return cb

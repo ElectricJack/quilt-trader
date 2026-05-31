@@ -263,3 +263,37 @@ async def test_on_job_update_optional(db_session_factory):
     session_id = await _seed_session_sf(db_session_factory)
     job_id = await _seed_queued_job(db_session_factory, session_id, kind="sweep")
     await mgr._mark_running(job_id)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_progress_callback_run_ids_replace_not_append(db_session_factory):
+    """Callers pass the cumulative run_ids list each tick. The callback must
+    REPLACE the DB column, not append — otherwise the row's run_ids grows
+    O(N^2) with duplicates.
+    """
+    from coordinator.services.research_job_manager import ResearchJobManager
+    on_update = AsyncMock(return_value=None)
+    mgr = ResearchJobManager(
+        session_factory=db_session_factory,
+        sweep_fn=AsyncMock(), walk_forward_fn=AsyncMock(),
+        runner_factory=AsyncMock(), sync_session_factory=None,
+        on_job_update=on_update,
+    )
+    session_id = await _seed_session_sf(db_session_factory)
+    job_id = await _seed_queued_job(db_session_factory, session_id, kind="sweep")
+    cancel_flag = asyncio.Event()
+    cb = mgr._make_progress_callback(job_id, cancel_flag)
+
+    # Simulate three sequential trials with cumulative run_id lists, as the
+    # real sweep_fn does (run_ids.append(...) then pass list(run_ids)).
+    await cb(0.33, "trial 1/3", ["r1"])
+    await cb(0.66, "trial 2/3", ["r1", "r2"])
+    await cb(1.00, "trial 3/3", ["r1", "r2", "r3"])
+
+    from sqlalchemy import select
+    async with db_session_factory() as s:
+        row = await s.get(ResearchJob, job_id)
+        assert row.run_ids == ["r1", "r2", "r3"], (
+            f"Expected exactly 3 unique ids, got {row.run_ids} "
+            f"(len={len(row.run_ids)}; quadratic accumulation bug?)"
+        )
