@@ -13,6 +13,8 @@ def create_session(
     *,
     name: str,
     hypothesis: str,
+    algorithm_id: str,                  # NEW — required
+    base_config: dict[str, Any],        # NEW — required (caller may pass {})
     parameter_space: dict[str, Any],
     pre_registered_criteria: dict[str, Any],
     notes: str = "",
@@ -20,11 +22,15 @@ def create_session(
     """Create a new OptimizationSession.
 
     The session must be created *before* any backtest runs are attached to it;
-    this enforces pre-registration of hypothesis and criteria.
+    this enforces pre-registration of hypothesis, algorithm, base_config, and
+    criteria. Algorithm and base_config are immutable post-create — they
+    define what experiment this session IS.
     """
     sess = OptimizationSession(
         name=name,
         hypothesis=hypothesis,
+        algorithm_id=algorithm_id,
+        base_config=base_config,
         parameter_space=json.dumps(parameter_space),
         pre_registered_criteria=json.dumps(pre_registered_criteria),
         notes=notes,
