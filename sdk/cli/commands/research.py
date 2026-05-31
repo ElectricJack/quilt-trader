@@ -139,7 +139,12 @@ def session_show(ctx, session_id):
     if ctx.obj.get("json_mode"):
         print_json(body)
     else:
-        click.echo(json.dumps(body, indent=2))
+        click.echo(f"Session #{body['id']}: {body['name']}")
+        click.echo(f"Status:       {body['status']}")
+        click.echo(f"Algorithm:    {body['algorithm_id']}")
+        click.echo(f"Base config:  {json.dumps(body['base_config'])}")
+        click.echo(f"Hypothesis:   {body['hypothesis']}")
+        click.echo(f"Created:      {body['created_at']}")
 
 
 @research_group.command("sweep")
