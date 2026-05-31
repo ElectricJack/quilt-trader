@@ -64,6 +64,12 @@ def session_group() -> None:
 @session_group.command("create")
 @click.option("--name", required=True, help="Unique session name.")
 @click.option("--hypothesis", required=True, help="Pre-registered hypothesis text.")
+@click.option("--algorithm-id", required=True, help="Installed algorithm id to bind to this session.")
+@click.option(
+    "--base-config",
+    required=True,
+    help="Non-swept config — JSON inline, .json/.yaml path, or '{}'",
+)
 @click.option(
     "--parameter-space",
     required=True,
@@ -76,11 +82,13 @@ def session_group() -> None:
 )
 @click.option("--notes", default="", help="Free-form notes.")
 @click.pass_context
-def session_create(ctx, name, hypothesis, parameter_space, criteria, notes):
+def session_create(ctx, name, hypothesis, algorithm_id, base_config, parameter_space, criteria, notes):
     """Create a new OptimizationSession (pre-registration step)."""
     payload = {
         "name": name,
         "hypothesis": hypothesis,
+        "algorithm_id": algorithm_id,
+        "base_config": _parse_json_or_yaml_or_file(base_config),
         "parameter_space": _parse_json_or_yaml_or_file(parameter_space),
         "pre_registered_criteria": _parse_json_or_yaml_or_file(criteria),
         "notes": notes,
