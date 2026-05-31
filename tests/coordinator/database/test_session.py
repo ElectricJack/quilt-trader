@@ -18,16 +18,20 @@ def test_get_session_factory_returns_sync_factory(tmp_path, monkeypatch):
         assert isinstance(db, Session)
 
         # Create tables and round-trip an OptimizationSession to prove the engine works
-        from coordinator.database.models import Base
+        from coordinator.database.models import Base, Algorithm
         Base.metadata.create_all(db.get_bind())
 
         import json
+        db.add(Algorithm(id="test-algo-session", name="test-algo-session",
+                         repo_url="https://github.com/test/test-algo-session"))
+        db.flush()
         sess = OptimizationSession(
             name="t",
             hypothesis="H",
             parameter_space=json.dumps({}),
             pre_registered_criteria=json.dumps({}),
             status="open",
+            algorithm_id="test-algo-session", base_config={},
         )
         db.add(sess)
         db.commit()

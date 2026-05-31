@@ -8,13 +8,27 @@ from sqlalchemy import select
 from coordinator.database.models import OptimizationSession, ResearchJob
 
 
+async def _seed_algorithm(session_factory, *, id="test-algo-fixture") -> str:
+    from coordinator.database.models import Algorithm
+    async with session_factory() as s:
+        # Use merge so repeated calls within the same DB don't violate PK uniqueness.
+        s.add(Algorithm(id=id, name=id, repo_url=f"https://github.com/test/{id}"))
+        try:
+            await s.commit()
+        except Exception:
+            await s.rollback()
+    return id
+
+
 async def _seed_session(container, *, parameter_space: str = '{"vol_target":[0.1,0.15]}') -> int:
     """Insert an OptimizationSession; return its id."""
+    algo_id = await _seed_algorithm(container.session_factory)
     async with container.session_factory() as s:
         sess = OptimizationSession(
             name="t", hypothesis="h",
             parameter_space=parameter_space,
             pre_registered_criteria="{}",
+            algorithm_id=algo_id, base_config={},
         )
         s.add(sess)
         await s.commit()
@@ -194,7 +208,8 @@ async def test_get_job_404_when_session_mismatch(test_app):
     s1 = await _seed_session(container)
     async with container.session_factory() as s:
         sess2 = OptimizationSession(name="t2", hypothesis="h",
-                                    parameter_space="{}", pre_registered_criteria="{}")
+                                    parameter_space="{}", pre_registered_criteria="{}",
+                                    algorithm_id="test-algo-fixture", base_config={})
         s.add(sess2)
         await s.flush()
         s2 = sess2.id

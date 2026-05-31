@@ -8,8 +8,17 @@ import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from coordinator.database.models import Base, OptimizationSession
+from coordinator.database.models import Base, OptimizationSession, Algorithm
 from coordinator.services.validation.report import build_markdown_report, ReportInputs
+
+
+def _seed_algorithm_sync(db, *, id="test-algo-fixture"):
+    db.add(Algorithm(
+        id=id, name=id,
+        repo_url=f"https://github.com/test/{id}",
+    ))
+    db.flush()
+    return id
 
 
 @pytest.fixture
@@ -21,12 +30,14 @@ def db_session():
 
 
 def test_build_markdown_report_contains_required_sections(db_session, tmp_path):
+    algo_id = _seed_algorithm_sync(db_session, id="rpt-algo-001")
     sess = OptimizationSession(
         name="rpt-test-001",
         hypothesis="H: TSMOM works",
         parameter_space=json.dumps({"vol_target": [0.10, 0.15]}),
         pre_registered_criteria=json.dumps({"oos_sharpe_lci": 0.5}),
         status="completed",
+        algorithm_id=algo_id, base_config={},
     )
     db_session.add(sess)
     db_session.commit()
@@ -79,12 +90,14 @@ from coordinator.services.validation.report import build_html_report
 
 
 def test_build_html_report_embeds_charts(db_session, tmp_path):
+    algo_id = _seed_algorithm_sync(db_session, id="html-algo-001")
     sess = OptimizationSession(
         name="html-test-001",
         hypothesis="H",
         parameter_space=json.dumps({}),
         pre_registered_criteria=json.dumps({"oos_sharpe_lci": 0.5}),
         status="completed",
+        algorithm_id=algo_id, base_config={},
     )
     db_session.add(sess)
     db_session.commit()

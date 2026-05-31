@@ -8,12 +8,25 @@ from sqlalchemy import select
 from coordinator.database.models import ResearchJob, OptimizationSession
 
 
+async def _seed_algorithm(session_factory, *, id="test-algo-fixture") -> str:
+    from coordinator.database.models import Algorithm
+    async with session_factory() as s:
+        s.add(Algorithm(
+            id=id, name=id,
+            repo_url=f"https://github.com/test/{id}",
+        ))
+        await s.commit()
+    return id
+
+
 async def _seed_session(container) -> int:
     """Insert an OptimizationSession; return its id."""
+    algo_id = await _seed_algorithm(container.session_factory)
     async with container.session_factory() as s:
         sess = OptimizationSession(
             name="t", hypothesis="h",
             parameter_space="{}", pre_registered_criteria="{}",
+            algorithm_id=algo_id, base_config={},
         )
         s.add(sess)
         await s.commit()
@@ -131,14 +144,19 @@ async def test_cancel_job_flips_status_to_cancelled(test_app):
 # ---------------------------------------------------------------------------
 
 async def _seed_session_sf(db_session_factory) -> int:
-    from coordinator.database.models import OptimizationSession
+    from coordinator.database.models import OptimizationSession, Algorithm
     import uuid as _uuid
+    aid = f"test-algo-{_uuid.uuid4().hex[:6]}"
+    async with db_session_factory() as s:
+        s.add(Algorithm(id=aid, name=aid, repo_url=f"https://github.com/test/{aid}"))
+        await s.commit()
     async with db_session_factory() as s:
         row = OptimizationSession(
             name=f"smoke-{_uuid.uuid4().hex[:6]}",
             hypothesis="ws update smoke",
             parameter_space='{"x": [1]}',
             pre_registered_criteria='{"min_sharpe": 0.0}',
+            algorithm_id=aid, base_config={},
         )
         s.add(row)
         await s.commit()
