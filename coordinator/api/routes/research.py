@@ -43,6 +43,8 @@ router = APIRouter(prefix="/api/research", tags=["research"])
 class CreateSessionRequest(BaseModel):
     name: str
     hypothesis: str
+    algorithm_id: str                                  # required
+    base_config: dict = Field(default_factory=dict)    # defaults to {}
     parameter_space: dict
     pre_registered_criteria: dict
     notes: str = ""
@@ -56,6 +58,8 @@ class SessionResponse(BaseModel):
     notes: str
     created_at: str
     completed_at: str | None = None
+    algorithm_id: str
+    base_config: dict
     parameter_space: dict
     pre_registered_criteria: dict
     n_runs: int
@@ -135,6 +139,8 @@ def _session_to_response(sess: OptimizationSession, n_runs: int) -> SessionRespo
         notes=sess.notes,
         created_at=sess.created_at.isoformat() if sess.created_at else "",
         completed_at=sess.completed_at.isoformat() if sess.completed_at else None,
+        algorithm_id=sess.algorithm_id,
+        base_config=sess.base_config if sess.base_config is not None else {},
         parameter_space=json.loads(sess.parameter_space),
         pre_registered_criteria=json.loads(sess.pre_registered_criteria),
         n_runs=n_runs,
@@ -173,15 +179,31 @@ async def _resolve_manifest_path(
 
 @router.post("/sessions", response_model=SessionResponse)
 async def create_session_endpoint(payload: CreateSessionRequest) -> SessionResponse:
-    """Pre-register an OptimizationSession. Hypothesis and criteria are
-    immutable after this call (enforced by uniqueness on `name`)."""
+    """Pre-register an OptimizationSession. Hypothesis, algorithm, base_config,
+    and criteria are immutable after this call."""
     SessionLocal = get_session_factory()
     with SessionLocal() as db:
+        # Validate the algorithm exists AND has a source_path.
+        algo = (
+            db.query(Algorithm)
+            .filter(Algorithm.id == payload.algorithm_id)
+            .one_or_none()
+        )
+        if algo is None:
+            raise HTTPException(404, f"unknown algorithm: {payload.algorithm_id}")
+        if not algo.source_path:
+            raise HTTPException(
+                400,
+                f"algorithm {payload.algorithm_id} has no source_path; "
+                "cannot bind to a session",
+            )
         try:
             sess = create_session(
                 db,
                 name=payload.name,
                 hypothesis=payload.hypothesis,
+                algorithm_id=payload.algorithm_id,
+                base_config=payload.base_config,
                 parameter_space=payload.parameter_space,
                 pre_registered_criteria=payload.pre_registered_criteria,
                 notes=payload.notes,
@@ -189,6 +211,8 @@ async def create_session_endpoint(payload: CreateSessionRequest) -> SessionRespo
             db.commit()
             db.refresh(sess)
             return _session_to_response(sess, n_runs=0)
+        except HTTPException:
+            raise
         except Exception as e:
             db.rollback()
             raise HTTPException(400, f"failed to create session: {e}") from e

@@ -9,7 +9,7 @@ from coordinator.database.models import Algorithm, OptimizationSession
 
 
 @pytest.mark.asyncio
-async def test_create_session_endpoint(test_app):
+async def test_create_session_endpoint(test_app, seeded_algorithm):
     """POST /api/research/sessions creates a session and returns it."""
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
         resp = await client.post(
@@ -17,6 +17,8 @@ async def test_create_session_endpoint(test_app):
             json={
                 "name": "ep-test-001",
                 "hypothesis": "endpoint test hypothesis",
+                "algorithm_id": seeded_algorithm.id,
+                "base_config": {},
                 "parameter_space": {"vol_target": [0.10, 0.15]},
                 "pre_registered_criteria": {"oos_sharpe_lci": 0.5},
             },
@@ -29,7 +31,7 @@ async def test_create_session_endpoint(test_app):
 
 
 @pytest.mark.asyncio
-async def test_list_and_get_sessions(test_app):
+async def test_list_and_get_sessions(test_app, seeded_algorithm):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
         # Create one
         await client.post(
@@ -37,6 +39,8 @@ async def test_list_and_get_sessions(test_app):
             json={
                 "name": "ep-test-list-001",
                 "hypothesis": "h",
+                "algorithm_id": seeded_algorithm.id,
+                "base_config": {},
                 "parameter_space": {},
                 "pre_registered_criteria": {},
             },
@@ -62,11 +66,13 @@ async def test_get_session_not_found(test_app):
 
 
 @pytest.mark.asyncio
-async def test_create_session_duplicate_name_rejected(test_app):
+async def test_create_session_duplicate_name_rejected(test_app, seeded_algorithm):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
         payload = {
             "name": "ep-test-dup-001",
             "hypothesis": "h",
+            "algorithm_id": seeded_algorithm.id,
+            "base_config": {},
             "parameter_space": {},
             "pre_registered_criteria": {},
         }
@@ -206,3 +212,96 @@ async def test_walk_forward_accepts_algorithm_id(
         assert len(wf) >= 1
         payload = wf[-1].request_payload
         assert payload["manifest_path"] == f"{seeded_algorithm.source_path}/quilt.yaml"
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — algorithm_id + base_config binding on session create
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_session_requires_algorithm_id(test_client, seeded_algorithm):
+    """Omitting algorithm_id from the body returns 422."""
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-no-algo",
+        "hypothesis": "h",
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_unknown_algorithm_id(test_client):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-unknown-algo",
+        "hypothesis": "h",
+        "algorithm_id": "no-such-algorithm",
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+    })
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_algorithm_with_null_source_path(
+    test_client, db_session_factory,
+):
+    """An algorithm row without source_path can't be the subject of an
+    experiment — sweeps can't resolve a manifest from it."""
+    from coordinator.database.models import Algorithm
+    async with db_session_factory() as s:
+        s.add(Algorithm(
+            id="orphan-algo",
+            name="Orphan",
+            repo_url="https://github.com/test/orphan-algo",
+            source_path=None,
+            install_status="failed",
+        ))
+        await s.commit()
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-orphan",
+        "hypothesis": "h",
+        "algorithm_id": "orphan-algo",
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+    })
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_session_accepts_empty_base_config(test_client, seeded_algorithm):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-empty-base",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["base_config"] == {}
+
+
+@pytest.mark.asyncio
+async def test_session_response_includes_algorithm_id_and_base_config(
+    test_client, seeded_algorithm,
+):
+    create_resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-roundtrip",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {"vol": 0.10, "k": "v"},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+    })
+    assert create_resp.status_code == 200
+    sid = create_resp.json()["id"]
+    get_resp = await test_client.get(f"/api/research/sessions/{sid}")
+    assert get_resp.status_code == 200
+    body = get_resp.json()
+    assert body["algorithm_id"] == seeded_algorithm.id
+    assert body["base_config"] == {"vol": 0.10, "k": "v"}
