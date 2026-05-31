@@ -4,6 +4,7 @@ interface JsonTextFieldProps {
   label: string;
   value: Record<string, unknown> | null;
   onChange: (parsed: Record<string, unknown> | null) => void;
+  onError?: (hasError: boolean) => void;
   disabled?: boolean;
   placeholder?: string;
   rows?: number;
@@ -14,6 +15,7 @@ export function JsonTextField({
   label,
   value,
   onChange,
+  onError,
   disabled,
   placeholder,
   rows = 6,
@@ -47,6 +49,7 @@ export function JsonTextField({
     timer.current = window.setTimeout(() => {
       if (next.trim() === "") {
         setError(null);
+        onError?.(false);
         onChange(null);
         return;
       }
@@ -54,13 +57,16 @@ export function JsonTextField({
         const parsed = JSON.parse(next);
         if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
           setError("Top-level value must be an object");
+          onError?.(true);
           return;
         }
         setError(null);
+        onError?.(false);
         onChange(parsed);
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Invalid JSON";
         setError(`Parse error: ${msg}`);
+        onError?.(true);
       }
     }, 200);
   };
