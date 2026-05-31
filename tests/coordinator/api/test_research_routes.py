@@ -192,22 +192,50 @@ async def test_sweep_returns_404_for_unknown_session(test_client):
 
 
 @pytest.mark.asyncio
-async def test_walk_forward_accepts_algorithm_id(
-    test_client, seeded_session, seeded_algorithm, db_session_factory,
+async def test_walk_forward_request_rejects_legacy_fields(
+    test_client, seeded_session,
 ):
     resp = await test_client.post(
         f"/api/research/sessions/{seeded_session.id}/walk-forward",
-        json={"algorithm_id": seeded_algorithm.id, "base_config": {}},
+        json={"manifest_path": "/x/quilt.yaml"},
     )
-    assert resp.status_code in (200, 202), resp.text
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_walk_forward_uses_session_algorithm_and_base_config(
+    test_client, seeded_session, db_session_factory,
+):
+    resp = await test_client.post(
+        f"/api/research/sessions/{seeded_session.id}/walk-forward",
+        json={"train_years": 4.0, "test_years": 1.0,
+              "step_months": 6.0, "objective": "sharpe"},
+    )
+    assert resp.status_code == 202, resp.text
     from sqlalchemy import select
-    from coordinator.database.models import ResearchJob
+    from coordinator.database.models import ResearchJob, OptimizationSession
     async with db_session_factory() as s:
-        rows = (await s.execute(select(ResearchJob))).scalars().all()
-        wf = [r for r in rows if r.kind == "walk-forward"]
-        assert len(wf) >= 1
-        payload = wf[-1].request_payload
-        assert payload["manifest_path"] == f"{seeded_algorithm.source_path}/quilt.yaml"
+        sess = await s.get(OptimizationSession, seeded_session.id)
+        jobs = (await s.execute(
+            select(ResearchJob)
+            .where(ResearchJob.session_id == seeded_session.id)
+            .where(ResearchJob.kind == "walk-forward")
+        )).scalars().all()
+        assert len(jobs) >= 1
+        latest = jobs[-1]
+        assert latest.request_payload["manifest_path"].endswith("/quilt.yaml")
+        assert latest.request_payload["base_config"] == sess.base_config
+        import json
+        assert latest.request_payload["parameter_space"] == json.loads(sess.parameter_space)
+
+
+@pytest.mark.asyncio
+async def test_walk_forward_returns_404_for_unknown_session(test_client):
+    resp = await test_client.post(
+        "/api/research/sessions/99999/walk-forward",
+        json={},
+    )
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

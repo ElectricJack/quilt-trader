@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,23 +76,13 @@ class SweepRequest(BaseModel):
 
 
 class WalkForwardRequest(BaseModel):
-    manifest_path: str | None = None
-    algorithm_id: str | None = None
-    base_config: dict
-    parameter_space: dict | None = None
     train_years: float = 4.0
     test_years: float = 1.0
     step_months: float = 6.0
     objective: Literal["sharpe", "calmar", "sortino"] = "sharpe"
     parallelism: int = 1
 
-    @model_validator(mode="after")
-    def _exactly_one_of_manifest_or_algorithm(self):
-        if (self.manifest_path is None) == (self.algorithm_id is None):
-            raise ValueError(
-                "provide exactly one of manifest_path or algorithm_id"
-            )
-        return self
+    model_config = {"extra": "forbid"}
 
 
 class JobResponse(BaseModel):
@@ -304,31 +294,32 @@ async def walk_forward_endpoint(
     payload: WalkForwardRequest,
     db: AsyncSession = Depends(get_db),
 ) -> JobResponse:
-    """Queue a walk-forward job and return immediately with the job_id (I18)."""
-    SessionLocal = get_session_factory()
-    with SessionLocal() as sync_db:
-        sess = (
-            sync_db.query(OptimizationSession)
-            .filter(OptimizationSession.id == session_id)
-            .one_or_none()
+    """Queue a walk-forward job. Algorithm + base_config + parameter_space
+    from session; request body carries only train/test/step/objective."""
+    sess = (
+        await db.execute(
+            select(OptimizationSession).where(OptimizationSession.id == session_id)
         )
-        if sess is None:
-            raise HTTPException(404, f"session {session_id} not found")
-        param_space = (
-            payload.parameter_space
-            if payload.parameter_space is not None
-            else json.loads(sess.parameter_space)
-        )
+    ).scalar_one_or_none()
+    if sess is None:
+        raise HTTPException(404, f"session {session_id} not found")
 
     manifest_path = await _resolve_manifest_path_from_algorithm(
-        db,
-        algorithm_id=payload.algorithm_id,
+        db, algorithm_id=sess.algorithm_id,
     )
+
+    request_payload = {
+        "manifest_path": manifest_path,
+        "base_config": sess.base_config,
+        "parameter_space": json.loads(sess.parameter_space),
+        "train_years": payload.train_years,
+        "test_years": payload.test_years,
+        "step_months": payload.step_months,
+        "objective": payload.objective,
+        "parallelism": payload.parallelism,
+    }
+
     mgr = _get_research_job_manager()
-    request_payload = payload.model_dump(exclude_none=True)
-    request_payload["manifest_path"] = manifest_path
-    request_payload.pop("algorithm_id", None)
-    request_payload["parameter_space"] = param_space
     try:
         job_id = await mgr.create_walk_forward_job(
             session_id=session_id, request_payload=request_payload,
