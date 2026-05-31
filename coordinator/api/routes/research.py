@@ -66,23 +66,13 @@ class SessionResponse(BaseModel):
 
 
 class SweepRequest(BaseModel):
-    # Exactly one of manifest_path or algorithm_id must be provided.
-    manifest_path: str | None = None
-    algorithm_id: str | None = None
-    base_config: dict
-    parameter_space: dict | None = None  # None → use session's parameter_space
+    # algorithm + base_config + parameter_space come from the session.
     search: Literal["grid", "random", "latin", "tpe"] = "grid"
     max_trials: int = 50
     parallelism: int = 1
     seed: int = 0
 
-    @model_validator(mode="after")
-    def _exactly_one_of_manifest_or_algorithm(self):
-        if (self.manifest_path is None) == (self.algorithm_id is None):
-            raise ValueError(
-                "provide exactly one of manifest_path or algorithm_id"
-            )
-        return self
+    model_config = {"extra": "forbid"}  # reject legacy fields explicitly
 
 
 class WalkForwardRequest(BaseModel):
@@ -147,18 +137,12 @@ def _session_to_response(sess: OptimizationSession, n_runs: int) -> SessionRespo
     )
 
 
-async def _resolve_manifest_path(
+async def _resolve_manifest_path_from_algorithm(
     db: AsyncSession,
     *,
-    manifest_path: str | None,
-    algorithm_id: str | None,
+    algorithm_id: str,
 ) -> str:
-    """Return manifest_path either as-given or resolved from an algorithm_id.
-
-    Caller ensures exactly one of the two is set (the Pydantic validator
-    enforces that)."""
-    if manifest_path is not None:
-        return manifest_path
+    """Resolve an algorithm id to its on-disk manifest path."""
     algo = (
         await db.execute(select(Algorithm).where(Algorithm.id == algorithm_id))
     ).scalar_one_or_none()
@@ -167,7 +151,8 @@ async def _resolve_manifest_path(
     if not algo.source_path:
         raise HTTPException(
             400,
-            f"algorithm {algorithm_id} has no source_path; cannot resolve manifest",
+            f"algorithm {algorithm_id} has no source_path; "
+            "cannot resolve manifest",
         )
     return f"{algo.source_path}/quilt.yaml"
 
@@ -274,33 +259,31 @@ async def sweep_endpoint(
     payload: SweepRequest,
     db: AsyncSession = Depends(get_db),
 ) -> JobResponse:
-    """Queue a sweep job and return immediately with the job_id (I18)."""
-    SessionLocal = get_session_factory()
-    with SessionLocal() as sync_db:
-        sess = (
-            sync_db.query(OptimizationSession)
-            .filter(OptimizationSession.id == session_id)
-            .one_or_none()
+    """Queue a sweep job. Algorithm, base_config, and parameter_space all
+    come from the session; the request body carries only execution params."""
+    sess = (
+        await db.execute(
+            select(OptimizationSession).where(OptimizationSession.id == session_id)
         )
-        if sess is None:
-            raise HTTPException(404, f"session {session_id} not found")
-        # Resolve parameter_space: payload override, then session default.
-        param_space = (
-            payload.parameter_space
-            if payload.parameter_space is not None
-            else json.loads(sess.parameter_space)
-        )
+    ).scalar_one_or_none()
+    if sess is None:
+        raise HTTPException(404, f"session {session_id} not found")
 
-    manifest_path = await _resolve_manifest_path(
-        db,
-        manifest_path=payload.manifest_path,
-        algorithm_id=payload.algorithm_id,
+    manifest_path = await _resolve_manifest_path_from_algorithm(
+        db, algorithm_id=sess.algorithm_id,
     )
+
+    request_payload = {
+        "manifest_path": manifest_path,
+        "base_config": sess.base_config,
+        "parameter_space": json.loads(sess.parameter_space),
+        "search": payload.search,
+        "max_trials": payload.max_trials,
+        "parallelism": payload.parallelism,
+        "seed": payload.seed,
+    }
+
     mgr = _get_research_job_manager()
-    request_payload = payload.model_dump(exclude_none=True)
-    request_payload["manifest_path"] = manifest_path
-    request_payload.pop("algorithm_id", None)
-    request_payload["parameter_space"] = param_space
     try:
         job_id = await mgr.create_sweep_job(
             session_id=session_id, request_payload=request_payload,
@@ -337,9 +320,8 @@ async def walk_forward_endpoint(
             else json.loads(sess.parameter_space)
         )
 
-    manifest_path = await _resolve_manifest_path(
+    manifest_path = await _resolve_manifest_path_from_algorithm(
         db,
-        manifest_path=payload.manifest_path,
         algorithm_id=payload.algorithm_id,
     )
     mgr = _get_research_job_manager()

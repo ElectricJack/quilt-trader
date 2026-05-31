@@ -102,14 +102,17 @@ async def db_session_factory(test_app):
 
 
 @pytest_asyncio.fixture
-async def seeded_session(db_session_factory):
+async def seeded_session(db_session_factory, seeded_algorithm):
     """Insert an OptimizationSession and yield it."""
     async with db_session_factory() as s:
         sess = OptimizationSession(
             name=f"test-sess-{uuid.uuid4().hex[:8]}",
             hypothesis="test hypothesis",
-            parameter_space='{"k":[1,2]}',
-            pre_registered_criteria="{}",
+            algorithm_id=seeded_algorithm.id,
+            base_config={"vol_target": 0.10},
+            parameter_space=json.dumps({"lookback": [20, 50]}),
+            pre_registered_criteria=json.dumps({"min_sharpe": 0.0}),
+            status="open",
         )
         s.add(sess)
         await s.commit()
@@ -134,63 +137,56 @@ async def seeded_algorithm(db_session_factory):
 
 
 # ---------------------------------------------------------------------------
-# algorithm_id / manifest_path tests
+# Task 4 — sweep payload shrinks to execution-only fields
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_sweep_accepts_algorithm_id_and_resolves_manifest(
-    test_client, seeded_session, seeded_algorithm, db_session_factory,
-):
+async def test_sweep_request_rejects_legacy_fields(test_client, seeded_session):
+    """Sweep no longer accepts manifest_path / algorithm_id / base_config /
+    parameter_space — they live on the session now."""
     resp = await test_client.post(
         f"/api/research/sessions/{seeded_session.id}/sweep",
-        json={
-            "algorithm_id": seeded_algorithm.id,
-            "base_config": {},
-            "search": "grid",
-            "max_trials": 5,
-        },
+        json={"manifest_path": "/x/quilt.yaml", "search": "grid"},
     )
-    assert resp.status_code in (200, 202), resp.text
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_sweep_uses_session_algorithm_and_base_config(
+    test_client, seeded_session, db_session_factory,
+):
+    """Sweep payload omits algorithm/base_config; ResearchJob.request_payload
+    must contain manifest_path resolved from session.algorithm_id and
+    base_config copied from session.base_config."""
+    resp = await test_client.post(
+        f"/api/research/sessions/{seeded_session.id}/sweep",
+        json={"search": "grid", "max_trials": 5},
+    )
+    assert resp.status_code == 202, resp.text
     from sqlalchemy import select
-    from coordinator.database.models import ResearchJob
+    from coordinator.database.models import ResearchJob, OptimizationSession
     async with db_session_factory() as s:
-        rows = (await s.execute(select(ResearchJob))).scalars().all()
-        jobs = [r for r in rows if r.kind == "sweep"]
+        sess = await s.get(OptimizationSession, seeded_session.id)
+        jobs = (await s.execute(
+            select(ResearchJob)
+            .where(ResearchJob.session_id == seeded_session.id)
+            .where(ResearchJob.kind == "sweep")
+        )).scalars().all()
         assert len(jobs) >= 1
         latest = jobs[-1]
-        payload = latest.request_payload
-        assert payload["manifest_path"] == f"{seeded_algorithm.source_path}/quilt.yaml"
-        assert "algorithm_id" not in payload
+        assert "manifest_path" in latest.request_payload
+        assert latest.request_payload["manifest_path"].endswith("/quilt.yaml")
+        assert latest.request_payload["base_config"] == sess.base_config
+        import json
+        assert latest.request_payload["parameter_space"] == json.loads(sess.parameter_space)
 
 
 @pytest.mark.asyncio
-async def test_sweep_rejects_both_manifest_and_algorithm_id(test_client, seeded_session):
+async def test_sweep_returns_404_for_unknown_session(test_client):
     resp = await test_client.post(
-        f"/api/research/sessions/{seeded_session.id}/sweep",
-        json={
-            "manifest_path": "/some/path/quilt.yaml",
-            "algorithm_id": "abc123",
-            "base_config": {},
-        },
-    )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_sweep_rejects_neither_manifest_nor_algorithm_id(test_client, seeded_session):
-    resp = await test_client.post(
-        f"/api/research/sessions/{seeded_session.id}/sweep",
-        json={"base_config": {}},
-    )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_sweep_rejects_unknown_algorithm_id(test_client, seeded_session):
-    resp = await test_client.post(
-        f"/api/research/sessions/{seeded_session.id}/sweep",
-        json={"algorithm_id": "no-such-algorithm", "base_config": {}},
+        "/api/research/sessions/99999/sweep",
+        json={"search": "grid", "max_trials": 5},
     )
     assert resp.status_code == 404
 
