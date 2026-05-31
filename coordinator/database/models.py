@@ -461,6 +461,13 @@ class OptimizationSession(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
+    # NEW — required after migration
+    algorithm_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("algorithms.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    base_config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     parameter_space: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     pre_registered_criteria: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     status: Mapped[str] = mapped_column(String, nullable=False, default="open")  # open | running | completed | failed
