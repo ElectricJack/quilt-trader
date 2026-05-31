@@ -4,15 +4,15 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.api.dependencies import get_container, get_db
-from coordinator.database.models import OptimizationSession, BacktestRun
+from coordinator.database.models import Algorithm, OptimizationSession, BacktestRun
 from coordinator.database.session import get_session_factory
 from coordinator.services.validation.optimization_session import (
     create_session,
@@ -62,24 +62,43 @@ class SessionResponse(BaseModel):
 
 
 class SweepRequest(BaseModel):
-    manifest_path: str
+    # Exactly one of manifest_path or algorithm_id must be provided.
+    manifest_path: str | None = None
+    algorithm_id: str | None = None
     base_config: dict
     parameter_space: dict | None = None  # None → use session's parameter_space
-    search: str = "grid"  # grid | random | latin
+    search: Literal["grid", "random", "latin", "tpe"] = "grid"
     max_trials: int = 50
     parallelism: int = 1
     seed: int = 0
 
+    @model_validator(mode="after")
+    def _exactly_one_of_manifest_or_algorithm(self):
+        if (self.manifest_path is None) == (self.algorithm_id is None):
+            raise ValueError(
+                "provide exactly one of manifest_path or algorithm_id"
+            )
+        return self
+
 
 class WalkForwardRequest(BaseModel):
-    manifest_path: str
+    manifest_path: str | None = None
+    algorithm_id: str | None = None
     base_config: dict
     parameter_space: dict | None = None
     train_years: float = 4.0
     test_years: float = 1.0
     step_months: float = 6.0
-    objective: str = "sharpe"  # sharpe | calmar | sortino
+    objective: Literal["sharpe", "calmar", "sortino"] = "sharpe"
     parallelism: int = 1
+
+    @model_validator(mode="after")
+    def _exactly_one_of_manifest_or_algorithm(self):
+        if (self.manifest_path is None) == (self.algorithm_id is None):
+            raise ValueError(
+                "provide exactly one of manifest_path or algorithm_id"
+            )
+        return self
 
 
 class JobResponse(BaseModel):
@@ -120,6 +139,31 @@ def _session_to_response(sess: OptimizationSession, n_runs: int) -> SessionRespo
         pre_registered_criteria=json.loads(sess.pre_registered_criteria),
         n_runs=n_runs,
     )
+
+
+async def _resolve_manifest_path(
+    db: AsyncSession,
+    *,
+    manifest_path: str | None,
+    algorithm_id: str | None,
+) -> str:
+    """Return manifest_path either as-given or resolved from an algorithm_id.
+
+    Caller ensures exactly one of the two is set (the Pydantic validator
+    enforces that)."""
+    if manifest_path is not None:
+        return manifest_path
+    algo = (
+        await db.execute(select(Algorithm).where(Algorithm.id == algorithm_id))
+    ).scalar_one_or_none()
+    if algo is None:
+        raise HTTPException(404, f"unknown algorithm: {algorithm_id}")
+    if not algo.source_path:
+        raise HTTPException(
+            400,
+            f"algorithm {algorithm_id} has no source_path; cannot resolve manifest",
+        )
+    return f"{algo.source_path}/quilt.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +245,16 @@ def _get_research_job_manager():
     response_model=JobResponse,
     status_code=202,
 )
-async def sweep_endpoint(session_id: int, payload: SweepRequest) -> JobResponse:
+async def sweep_endpoint(
+    session_id: int,
+    payload: SweepRequest,
+    db: AsyncSession = Depends(get_db),
+) -> JobResponse:
     """Queue a sweep job and return immediately with the job_id (I18)."""
     SessionLocal = get_session_factory()
-    with SessionLocal() as db:
+    with SessionLocal() as sync_db:
         sess = (
-            db.query(OptimizationSession)
+            sync_db.query(OptimizationSession)
             .filter(OptimizationSession.id == session_id)
             .one_or_none()
         )
@@ -219,8 +267,15 @@ async def sweep_endpoint(session_id: int, payload: SweepRequest) -> JobResponse:
             else json.loads(sess.parameter_space)
         )
 
+    manifest_path = await _resolve_manifest_path(
+        db,
+        manifest_path=payload.manifest_path,
+        algorithm_id=payload.algorithm_id,
+    )
     mgr = _get_research_job_manager()
     request_payload = payload.model_dump(exclude_none=True)
+    request_payload["manifest_path"] = manifest_path
+    request_payload.pop("algorithm_id", None)
     request_payload["parameter_space"] = param_space
     try:
         job_id = await mgr.create_sweep_job(
@@ -238,13 +293,15 @@ async def sweep_endpoint(session_id: int, payload: SweepRequest) -> JobResponse:
     status_code=202,
 )
 async def walk_forward_endpoint(
-    session_id: int, payload: WalkForwardRequest
+    session_id: int,
+    payload: WalkForwardRequest,
+    db: AsyncSession = Depends(get_db),
 ) -> JobResponse:
     """Queue a walk-forward job and return immediately with the job_id (I18)."""
     SessionLocal = get_session_factory()
-    with SessionLocal() as db:
+    with SessionLocal() as sync_db:
         sess = (
-            db.query(OptimizationSession)
+            sync_db.query(OptimizationSession)
             .filter(OptimizationSession.id == session_id)
             .one_or_none()
         )
@@ -256,8 +313,15 @@ async def walk_forward_endpoint(
             else json.loads(sess.parameter_space)
         )
 
+    manifest_path = await _resolve_manifest_path(
+        db,
+        manifest_path=payload.manifest_path,
+        algorithm_id=payload.algorithm_id,
+    )
     mgr = _get_research_job_manager()
     request_payload = payload.model_dump(exclude_none=True)
+    request_payload["manifest_path"] = manifest_path
+    request_payload.pop("algorithm_id", None)
     request_payload["parameter_space"] = param_space
     try:
         job_id = await mgr.create_walk_forward_job(
