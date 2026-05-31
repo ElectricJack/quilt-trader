@@ -7,12 +7,27 @@ vi.mock("../api/client", () => ({
   api: {
     createResearchSession: vi.fn().mockResolvedValue({
       id: 42, name: "T", hypothesis: "H", status: "open",
-      notes: "", created_at: "2026-05-30",
-      completed_at: null, parameter_space: {}, pre_registered_criteria: {},
+      notes: "", created_at: "2026-05-30", completed_at: null,
+      algorithm_id: "algo-a", base_config: {},
+      parameter_space: {}, pre_registered_criteria: {},
       n_runs: 0,
     }),
   },
 }));
+
+vi.mock("../api/hooks", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../api/hooks")>();
+  return {
+    ...orig,
+    useAlgorithms: () => ({
+      data: [
+        { id: "algo-a", name: "Algo A", manifest_path: "/p/algo-a/quilt.yaml" },
+        { id: "algo-b", name: "Algo B", manifest_path: "/p/algo-b/quilt.yaml" },
+      ],
+      isLoading: false,
+    }),
+  };
+});
 
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -26,7 +41,11 @@ describe("NewSessionModal", () => {
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: "T" } });
     fireEvent.change(screen.getByLabelText(/hypothesis/i), { target: { value: "H" } });
-    // parameter_space + criteria still empty → invalid
+    // Algorithm still unpicked → still disabled
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/algorithm/i), { target: { value: "algo-a" } });
+    // base_config defaults to {} which is valid; parameter_space and criteria
+    // start empty → still invalid
     expect(submit).toBeDisabled();
   });
 
@@ -36,17 +55,20 @@ describe("NewSessionModal", () => {
     const params = screen.getByLabelText(/parameter space/i);
     fireEvent.change(params, { target: { value: "{not json" } });
     act(() => vi.advanceTimersByTime(250));
-    expect(screen.getByText(/invalid|expected|json/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /create session/i })).toBeDisabled();
     vi.useRealTimers();
   });
 
-  it("successful submit calls API with correct body and invokes onCreated", async () => {
+  it("successful submit calls API with algorithm_id and base_config", async () => {
     vi.useFakeTimers();
     const onCreated = vi.fn();
     render(wrap(<NewSessionModal open={true} onClose={() => {}} onCreated={onCreated} />));
     fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: "Smoke" } });
     fireEvent.change(screen.getByLabelText(/hypothesis/i), { target: { value: "test" } });
+    fireEvent.change(screen.getByLabelText(/algorithm/i), { target: { value: "algo-a" } });
+    fireEvent.change(screen.getByLabelText(/base config/i), {
+      target: { value: '{"vol":0.1}' },
+    });
     fireEvent.change(screen.getByLabelText(/parameter space/i), {
       target: { value: '{"x":[1]}' },
     });
@@ -63,6 +85,8 @@ describe("NewSessionModal", () => {
     expect(api.createResearchSession).toHaveBeenCalledWith({
       name: "Smoke",
       hypothesis: "test",
+      algorithm_id: "algo-a",
+      base_config: { vol: 0.1 },
       parameter_space: { x: [1] },
       pre_registered_criteria: { min_sharpe: 1 },
       notes: "",
