@@ -18,6 +18,13 @@ _KNOWN_CRYPTO_BARE = frozenset({
     "ETC", "XRP", "ADA", "LTC", "BCH",
 })
 
+# yfinance-specific index aliases that look like equity tickers but are not.
+# These must not classify as equities — they belong to IndexAssetService territory.
+_KNOWN_INDEX_ALIASES = frozenset({
+    "GSPC",   # yfinance alias for SPX (^GSPC); canonical is SPX
+    "IXIC",   # yfinance alias for COMP (^IXIC); canonical is COMP
+})
+
 # Share-class equity tickers that use a dot in canonical form (e.g. BRK.B)
 # but a dash in yfinance form (BRK-B). Add new entries as discovered.
 _YFINANCE_SHARE_CLASS_MAP = {
@@ -57,6 +64,8 @@ class EquityAssetService:
         if not symbol or not self.CANONICAL_RE.match(symbol):
             return False
         if symbol in _KNOWN_CRYPTO_BARE:
+            return False
+        if symbol in _KNOWN_INDEX_ALIASES:
             return False
         return True
 

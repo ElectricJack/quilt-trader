@@ -80,6 +80,35 @@ class AssetServiceRegistry:
     def stream_config(self, symbol: str, broker: str) -> StreamConfig:
         return self.get_service(symbol).stream_config(broker)
 
+    def validate(self, symbol: str) -> None:
+        """Raise ValueError if symbol matches no canonical form."""
+        for svc in self._services:
+            if svc.classify(symbol):
+                return
+        raise ValueError(
+            f"{symbol!r} is not a canonical symbol. "
+            f"Crypto canonical form is e.g. 'BTCUSD'. "
+            f"Equity canonical form is e.g. 'AAPL'. "
+            f"Index canonical form is one of "
+            f"{{VIX, SPX, NDX, COMP, DJI, RUT, ...}} (see _KNOWN_INDEXES). "
+            f"Options canonical form is OCC e.g. 'AAPL240119C00150000'."
+        )
+
+    def canonicalize(self, provider_form: str, provider: str) -> str:
+        """Try each AssetService.canonicalize in classification order;
+        return the first successful canonical form."""
+        for svc in self._services:
+            try:
+                canonical = svc.canonicalize(provider_form, provider)
+            except (ValueError, KeyError):
+                continue
+            else:
+                return canonical
+        raise ValueError(
+            f"{provider_form!r} (provider={provider!r}) could not be canonicalized "
+            f"by any asset service"
+        )
+
 
 _default_registry: AssetServiceRegistry | None = None
 

@@ -248,3 +248,54 @@ class TestOptionsCanonical:
     def test_canonicalize_rejects_unknown(self, options):
         with pytest.raises(ValueError, match="not a recognized option"):
             options.canonicalize("AAPL", "polygon")
+
+
+from coordinator.services.asset_services.registry import AssetServiceRegistry
+
+
+@pytest.fixture
+def registry():
+    return AssetServiceRegistry()
+
+
+class TestRegistry:
+    def test_validate_accepts_canonicals(self, registry):
+        registry.validate("AAPL")          # equity
+        registry.validate("BTCUSD")        # crypto
+        registry.validate("VIX")           # index
+        registry.validate("AAPL240119C00150000")  # option
+        registry.validate("BRK.B")         # share-class equity
+
+    def test_validate_rejects_with_multi_class_hint(self, registry):
+        with pytest.raises(ValueError) as exc_info:
+            registry.validate("BTC")
+        msg = str(exc_info.value)
+        assert "'BTC'" in msg
+        assert "not a canonical symbol" in msg
+        assert "Crypto" in msg and "BTCUSD" in msg
+        assert "Equity" in msg and "AAPL" in msg
+        assert "Index" in msg and "VIX" in msg
+        assert "Options" in msg and "OCC" in msg
+
+    @pytest.mark.parametrize("bad", ["BTC", "ETH", "^VIX", "I:SPX", "GSPC", "O:foo", "btc-usd"])
+    def test_validate_rejects(self, registry, bad):
+        with pytest.raises(ValueError):
+            registry.validate(bad)
+
+    @pytest.mark.parametrize("provider_form,provider,expected", [
+        ("X:BTCUSD", "polygon", "BTCUSD"),
+        ("BTC-USD", "yfinance", "BTCUSD"),
+        ("^VIX", "yfinance", "VIX"),
+        ("I:SPX", "polygon", "SPX"),
+        ("O:AAPL240119C00150000", "polygon", "AAPL240119C00150000"),
+        ("AAPL", "polygon", "AAPL"),                      # already canonical
+        ("SPY240731P00340000", "polygon", "SPY240731P00340000"),  # OCC already canonical
+    ])
+    def test_canonicalize_via_registry(self, registry, provider_form, provider, expected):
+        assert registry.canonicalize(provider_form, provider) == expected
+
+    def test_canonicalize_raises_if_no_service_handles(self, registry):
+        with pytest.raises(ValueError):
+            registry.canonicalize("BTC", "polygon")       # bare ambiguous everywhere
+        with pytest.raises(ValueError):
+            registry.canonicalize("totally_bogus_symbol", "polygon")
