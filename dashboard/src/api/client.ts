@@ -229,6 +229,12 @@ export interface ResearchSession {
   parameter_space: Record<string, unknown>;
   pre_registered_criteria: Record<string, unknown>;
   n_runs: number;
+  date_range_start: string;
+  date_range_end: string;
+  initial_cash: number;
+  cost_profile: string;
+  benchmark_symbol: string | null;
+  benchmark_source: string | null;
 }
 
 export interface ResearchJob {
@@ -253,6 +259,12 @@ export interface CreateSessionRequest {
   parameter_space: Record<string, unknown>;
   pre_registered_criteria: Record<string, unknown>;
   notes?: string;
+  date_range_start: string;
+  date_range_end: string;
+  initial_cash?: number;
+  cost_profile?: string;
+  benchmark_symbol?: string | null;
+  benchmark_source?: string | null;
 }
 
 export interface CreateSweepRequest {
