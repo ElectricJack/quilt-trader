@@ -45,12 +45,15 @@ from coordinator.services.validation.optimization_session import create_session
 def db_session():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from coordinator.database.models import Base
+    from coordinator.database.models import Base, Algorithm
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     with SessionLocal() as s:
+        algo = Algorithm(id="test-algo", name="test-algo", repo_url="https://example.com/algo")
+        s.add(algo)
+        s.flush()
         yield s
 
 
@@ -60,8 +63,12 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
         db_session,
         name="wf-test-001",
         hypothesis="H",
+        algorithm_id="test-algo",
+        base_config={},
         parameter_space={"vol_target": [0.10, 0.15]},
         pre_registered_criteria={},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
     )
     db_session.commit()
 
@@ -81,7 +88,6 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
     async def fake_factory(run_id: int) -> None:
         return None
 
-    from datetime import date
     with patch("coordinator.services.validation.walk_forward.run_sweep", side_effect=fake_sweep), \
          patch("coordinator.services.validation.walk_forward._pick_best_train_config", side_effect=fake_pick_best), \
          patch("coordinator.services.validation.walk_forward._run_oos_backtest", fake_oos):
