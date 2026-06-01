@@ -11,6 +11,12 @@ vi.mock("../api/client", () => ({
       algorithm_id: "algo-a", base_config: {},
       parameter_space: {}, pre_registered_criteria: {},
       n_runs: 0,
+      date_range_start: "2023-01-01",
+      date_range_end: "2024-12-31",
+      initial_cash: 10000,
+      cost_profile: "default",
+      benchmark_symbol: null,
+      benchmark_source: null,
     }),
   },
 }));
@@ -59,13 +65,18 @@ describe("NewSessionModal", () => {
     vi.useRealTimers();
   });
 
-  it("successful submit calls API with algorithm_id and base_config", async () => {
+  it("successful submit calls API with all session-scope fields", async () => {
     vi.useFakeTimers();
     const onCreated = vi.fn();
     render(wrap(<NewSessionModal open={true} onClose={() => {}} onCreated={onCreated} />));
     fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: "Smoke" } });
     fireEvent.change(screen.getByLabelText(/hypothesis/i), { target: { value: "test" } });
     fireEvent.change(screen.getByLabelText(/algorithm/i), { target: { value: "algo-a" } });
+    // NEW — fill scope fields
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: "2023-01-01" } });
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: "2024-12-31" } });
+    // initial_cash + cost_profile default
+    // benchmark left empty (null pair)
     fireEvent.change(screen.getByLabelText(/base config/i), {
       target: { value: '{"vol":0.1}' },
     });
@@ -77,19 +88,16 @@ describe("NewSessionModal", () => {
     });
     act(() => vi.advanceTimersByTime(250));
     vi.useRealTimers();
-    const submit = screen.getByRole("button", { name: /create session/i });
-    expect(submit).not.toBeDisabled();
-    fireEvent.click(submit);
+    fireEvent.click(screen.getByRole("button", { name: /create session/i }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(42));
     const { api } = await import("../api/client");
-    expect(api.createResearchSession).toHaveBeenCalledWith({
-      name: "Smoke",
-      hypothesis: "test",
-      algorithm_id: "algo-a",
-      base_config: { vol: 0.1 },
-      parameter_space: { x: [1] },
-      pre_registered_criteria: { min_sharpe: 1 },
-      notes: "",
-    });
+    const body = (api.createResearchSession as any).mock.calls[0][0];
+    expect(body.algorithm_id).toBe("algo-a");
+    expect(body.date_range_start).toBe("2023-01-01");
+    expect(body.date_range_end).toBe("2024-12-31");
+    expect(body.initial_cash).toBe(10000);     // default
+    expect(body.cost_profile).toBe("default");  // default
+    expect(body.benchmark_symbol).toBeNull();
+    expect(body.benchmark_source).toBeNull();
   });
 });

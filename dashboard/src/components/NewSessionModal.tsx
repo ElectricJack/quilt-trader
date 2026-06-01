@@ -2,6 +2,7 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { useAlgorithms } from "../api/hooks";
 import { ExperimentConfigEditor } from "./ExperimentConfigEditor";
+import { ExperimentScopeFields } from "./ExperimentScopeFields";
 import { useCreateResearchSession } from "../hooks/useResearchMutations";
 
 interface Props {
@@ -28,6 +29,15 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
     pre_registered_criteria: null,
   });
   const [configValid, setConfigValid] = useState(false);
+  const [scope, setScope] = useState({
+    date_range_start: "",
+    date_range_end: "",
+    initial_cash: 10000,
+    cost_profile: "default",
+    benchmark_symbol: null as string | null,
+    benchmark_source: null as string | null,
+  });
+  const [scopeValid, setScopeValid] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   if (!open) return null;
@@ -40,6 +50,7 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
     config.parameter_space !== null &&
     config.pre_registered_criteria !== null &&
     configValid &&
+    scopeValid &&
     !mut.isPending;
 
   const handleSubmit = async () => {
@@ -53,6 +64,7 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
         parameter_space: config.parameter_space ?? {},
         pre_registered_criteria: config.pre_registered_criteria ?? {},
         notes: notes.trim(),
+        ...scope,
       });
       onCreated(session.id);
     } catch (e) {
@@ -116,6 +128,17 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
               className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 w-full"
             />
           </div>
+
+          <ExperimentScopeFields
+            startDate={scope.date_range_start}
+            endDate={scope.date_range_end}
+            initialCash={scope.initial_cash}
+            costProfile={scope.cost_profile}
+            benchmarkSymbol={scope.benchmark_symbol ?? ""}
+            benchmarkSource={scope.benchmark_source ?? ""}
+            onChange={setScope}
+            onValidityChange={setScopeValid}
+          />
 
           <ExperimentConfigEditor
             baseConfig={config.base_config}
