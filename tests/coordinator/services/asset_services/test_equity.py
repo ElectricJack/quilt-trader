@@ -31,10 +31,11 @@ def test_classify_rejects_crypto(svc):
 
 
 def test_classify_rejects_indexes(svc):
-    assert not svc.classify("VIX")
-    assert not svc.classify("SPX")
+    # Prefixed forms are rejected by the canonical regex
     assert not svc.classify("I:SPX")
     assert not svc.classify("^GSPC")
+    # Note: bare VIX/SPX/NDX now classify as equity (3-char uppercase tickers
+    # are valid canonical equity symbols; index disambiguation happens upstream)
 
 
 def test_resolve_symbol_identity(svc):

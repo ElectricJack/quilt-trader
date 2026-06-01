@@ -67,3 +67,69 @@ class TestCryptoCanonical:
     def test_round_trip(self, crypto, canonical, provider):
         provider_form = crypto.resolve_symbol(canonical, provider)
         assert crypto.canonicalize(provider_form, provider) == canonical
+
+
+from coordinator.services.asset_services.equity import EquityAssetService
+
+
+@pytest.fixture
+def equity():
+    return EquityAssetService()
+
+
+class TestEquityCanonical:
+    def test_classify_accepts_canonical(self, equity):
+        assert equity.classify("AAPL") is True
+        assert equity.classify("SPY") is True
+        assert equity.classify("QQQ") is True
+        assert equity.classify("BRK.B") is True
+        assert equity.classify("BF.B") is True
+        assert equity.classify("F") is True             # 1-char (Ford)
+        assert equity.classify("BRKB") is True          # 4 chars no dot
+
+    def test_classify_rejects_non_canonical(self, equity):
+        assert equity.classify("") is False
+        assert equity.classify("BRK-B") is False        # dash not dot
+        assert equity.classify("aapl") is False         # lowercase
+        assert equity.classify("AAPL.US") is False      # multi-letter suffix
+        assert equity.classify("^GSPC") is False        # yfinance prefix
+        assert equity.classify("I:SPX") is False        # polygon prefix
+
+    def test_classify_excludes_bare_crypto(self, equity):
+        # Well-known crypto bare-tickers fall through to validate() raising
+        # with the multi-class hint pointing the user at BTCUSD.
+        for s in ("BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "LTC", "BCH", "XRP", "ADA", "ETC"):
+            assert equity.classify(s) is False, f"{s} should not classify as equity"
+
+    @pytest.mark.parametrize("canonical,provider,expected", [
+        ("AAPL", "polygon", "AAPL"),
+        ("AAPL", "yfinance", "AAPL"),
+        ("BRK.B", "yfinance", "BRK-B"),
+        ("BRK.A", "yfinance", "BRK-A"),
+        ("BF.B", "yfinance", "BF-B"),
+        ("BRK.B", "polygon", "BRK.B"),
+        ("SPY", "alpaca", "SPY"),
+    ])
+    def test_resolve_symbol(self, equity, canonical, provider, expected):
+        assert equity.resolve_symbol(canonical, provider) == expected
+
+    def test_resolve_symbol_raises_on_non_canonical(self, equity):
+        with pytest.raises(ValueError, match="not a canonical equity"):
+            equity.resolve_symbol("BRK-B", "polygon")
+        with pytest.raises(ValueError, match="not a canonical equity"):
+            equity.resolve_symbol("BTC", "polygon")
+
+    @pytest.mark.parametrize("provider_form,provider,expected", [
+        ("AAPL", "polygon", "AAPL"),
+        ("AAPL", "yfinance", "AAPL"),
+        ("BRK-B", "yfinance", "BRK.B"),
+        ("BRK-A", "yfinance", "BRK.A"),
+        ("BF-B", "yfinance", "BF.B"),
+        ("BRK.B", "polygon", "BRK.B"),
+    ])
+    def test_canonicalize(self, equity, provider_form, provider, expected):
+        assert equity.canonicalize(provider_form, provider) == expected
+
+    def test_canonicalize_rejects_unknown(self, equity):
+        with pytest.raises(ValueError, match="not a recognized equity"):
+            equity.canonicalize("BTC", "polygon")  # bare crypto, not equity
