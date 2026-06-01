@@ -248,9 +248,9 @@ def _make_mock_data_service_with_chains():
     }
     class MockDS:
         def load_market_data(self, src, sym, tf): return None
-        def load_option_chain(self, provider, symbol, expiration):
+        def build_chain(self, provider, symbol, expiration, as_of=None):
             return chains.get((provider, symbol, expiration))
-        def list_option_chain_expirations(self, provider, symbol):
+        def list_option_expirations(self, provider, symbol):
             return [exp for (p, s, exp) in chains if p == provider and s == symbol]
     return MockDS()
 
@@ -275,8 +275,8 @@ def test_option_chain_returns_populated_chain():
 def test_option_chain_returns_empty_when_no_data():
     mock_ds = type("DS", (), {
         "load_market_data": lambda self, s, sym, tf: None,
-        "load_option_chain": lambda self, p, s, e: None,
-        "list_option_chain_expirations": lambda self, p, s: [],
+        "build_chain": lambda self, p, s, e, as_of=None: None,
+        "list_option_expirations": lambda self, p, s: [],
     })()
     ctx = BacktestTickContext(
         bars={}, positions={}, cash=100_000.0,
@@ -301,11 +301,11 @@ def test_option_chain_finds_nearest_expiration():
 
     class MockDS:
         def load_market_data(self, s, sym, tf): return None
-        def load_option_chain(self, p, s, e):
+        def build_chain(self, p, s, e, as_of=None):
             if e == date(2026, 1, 17):
                 return chain_df
             return None
-        def list_option_chain_expirations(self, p, s):
+        def list_option_expirations(self, p, s):
             return [date(2026, 1, 17)]
 
     ctx = BacktestTickContext(

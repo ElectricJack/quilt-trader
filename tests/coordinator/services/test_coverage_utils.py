@@ -26,6 +26,7 @@ def _make_coverage_index(*date_ranges: tuple[date, date]) -> CoverageIndex:
 def _make_download_manager(download_id: str = "dl-001") -> AsyncMock:
     mgr = MagicMock()
     mgr.create_download = AsyncMock(return_value={"id": download_id})
+    mgr._providers = {"polygon": MagicMock(), "theta": MagicMock()}
     return mgr
 
 
@@ -103,6 +104,7 @@ async def test_multiple_gaps_multiple_downloads():
         {"id": "dl-leading"},
         {"id": "dl-trailing"},
     ])
+    mgr._providers = {"polygon": MagicMock()}
 
     ids = await ensure_coverage(
         "polygon", "SPY",

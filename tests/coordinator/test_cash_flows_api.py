@@ -6,7 +6,7 @@ import pytest_asyncio
 async def seed_account(client):
     resp = await client.post("/api/accounts", json={
         "name": "CF Acct", "broker_type": "alpaca",
-        "credentials": {"k": "v"}, "supported_asset_types": ["equities"], "pdt_mode": "off",
+        "credentials": {"api_key": "k", "secret_key": "v"}, "supported_asset_types": ["equities"], "pdt_mode": "off",
     })
     return resp.json()["id"]
 

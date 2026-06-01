@@ -35,8 +35,7 @@ def test_cli_sweep_polls_until_completed(monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(research_mod.research_group, [
-        "sweep", "--session-id", "1", "--manifest", "x.yaml",
-        "--base-config", '{"start":"2024-01-01","end":"2024-02-01"}',
+        "sweep", "--session-id", "1",
     ])
     assert result.exit_code == 0, result.output
     assert "j1" in result.output
@@ -60,9 +59,7 @@ def test_cli_sweep_no_wait_exits_immediately(monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(research_mod.research_group, [
-        "sweep", "--session-id", "1", "--manifest", "x.yaml",
-        "--base-config", '{"start":"2024-01-01","end":"2024-02-01"}',
-        "--no-wait",
+        "sweep", "--session-id", "1", "--no-wait",
     ])
     assert result.exit_code == 0
     assert "j-fast" in result.output
@@ -89,8 +86,7 @@ def test_cli_walk_forward_polls_until_completed(monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(research_mod.research_group, [
-        "walk-forward", "--session-id", "2", "--manifest", "x.yaml",
-        "--base-config", '{"start":"2018-01-01","end":"2024-01-01"}',
+        "walk-forward", "--session-id", "2",
     ])
     assert result.exit_code == 0, result.output
     assert "wf-1" in result.output
@@ -117,8 +113,7 @@ def test_cli_sweep_failed_status(monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(research_mod.research_group, [
-        "sweep", "--session-id", "1", "--manifest", "x.yaml",
-        "--base-config", '{"start":"2024-01-01","end":"2024-02-01"}',
+        "sweep", "--session-id", "1",
     ])
     assert result.exit_code == 0
     assert "j-bad" in result.output

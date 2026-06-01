@@ -13,7 +13,7 @@ async def _seed_algorithm(session_factory, *, id="test-algo-fixture") -> str:
     from coordinator.database.models import Algorithm
     async with session_factory() as s:
         # Use merge so repeated calls within the same DB don't violate PK uniqueness.
-        s.add(Algorithm(id=id, name=id, repo_url=f"https://github.com/test/{id}"))
+        s.add(Algorithm(id=id, name=id, repo_url=f"https://github.com/test/{id}", source_path="packages/test-algo"))
         try:
             await s.commit()
         except Exception:
@@ -60,7 +60,7 @@ async def test_post_sweep_returns_202_with_job_id(test_app, monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as ac:
         r = await ac.post(
             f"/api/research/sessions/{session_id}/sweep",
-            json={"manifest_path": "x.yaml", "base_config": {}, "search": "grid"},
+            json={"search": "grid"},
         )
     assert r.status_code == 202, r.text
     body = r.json()
@@ -94,8 +94,7 @@ async def test_post_walk_forward_returns_202(test_app, monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as ac:
         r = await ac.post(
             f"/api/research/sessions/{session_id}/walk-forward",
-            json={"manifest_path": "x.yaml", "base_config": {}, "train_years": 4.0,
-                  "test_years": 1.0, "step_months": 6.0, "objective": "sharpe"},
+            json={"train_years": 4.0, "test_years": 1.0, "step_months": 6.0, "objective": "sharpe"},
         )
     assert r.status_code == 202, r.text
     assert r.json()["job_id"] == "wf-9"
@@ -114,7 +113,7 @@ async def test_post_sweep_unknown_session_returns_404(test_app, monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as ac:
         r = await ac.post(
             "/api/research/sessions/99/sweep",
-            json={"manifest_path": "x.yaml", "base_config": {}},
+            json={},
         )
     # NOTE: session lookup happens BEFORE the manager call (to resolve
     # parameter_space fallback), so the 404 comes from the existence check,

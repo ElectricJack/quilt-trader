@@ -18,6 +18,19 @@ def _resp(json_body, status=200):
     return r
 
 
+# Minimal deployment list used by resolve_deployment_id to resolve "d1" by exact ID.
+_DEPLOYMENT_LIST = [{"id": "d1", "algorithm_name": "TestAlgo", "status": "stopped"}]
+
+
+def _resp_get_sequence(*payloads):
+    """Return an AsyncMock whose side_effect cycles through multiple responses.
+
+    Used when a single test triggers multiple GET calls (first is the resolve
+    lookup, subsequent ones are the actual command data fetches).
+    """
+    return AsyncMock(side_effect=[_resp(p) for p in payloads])
+
+
 def test_deployment_list_renders():
     runner = CliRunner()
     rows = [{
@@ -32,7 +45,9 @@ def test_deployment_list_renders():
 
 def test_deployment_start():
     runner = CliRunner()
-    with patch("httpx.AsyncClient.post",
+    with patch("httpx.AsyncClient.get",
+               new=AsyncMock(return_value=_resp(_DEPLOYMENT_LIST))), \
+         patch("httpx.AsyncClient.post",
                new=AsyncMock(return_value=_resp({"ok": True, "active_run_id": "r1"}))):
         result = runner.invoke(quilt, ["deployment", "start", "d1"])
     assert result.exit_code == 0, result.output
@@ -71,7 +86,9 @@ def test_deployment_activity_follow_attempts_websocket_connection():
     fake_cm = MagicMock()
     fake_cm.__aenter__ = AsyncMock(side_effect=KeyboardInterrupt())
     fake_cm.__aexit__ = AsyncMock(return_value=False)
-    with patch("websockets.connect", return_value=fake_cm):
+    with patch("httpx.AsyncClient.get",
+               new=AsyncMock(return_value=_resp(_DEPLOYMENT_LIST))), \
+         patch("websockets.connect", return_value=fake_cm):
         result = runner.invoke(quilt, ["deployment", "activity", "d1", "--follow", "--no-history"])
     # Either exits 0 (KeyboardInterrupt is treated as clean exit) or 3 (reconnect failure).
     assert result.exit_code in (0, 3)
@@ -84,7 +101,8 @@ def test_deployment_show_renders_kv():
         "worker_name": "Pi-1", "status": "stopped", "active_run_id": None,
         "config_values": {}, "created_at": "2026-01-01T00:00:00Z",
     }
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_resp(payload))):
+    with patch("httpx.AsyncClient.get",
+               new=_resp_get_sequence(_DEPLOYMENT_LIST, payload)):
         result = runner.invoke(quilt, ["deployment", "show", "d1"])
     assert result.exit_code == 0, result.output
     assert "MyAlgo" in result.output
@@ -92,7 +110,9 @@ def test_deployment_show_renders_kv():
 
 def test_deployment_stop():
     runner = CliRunner()
-    with patch("httpx.AsyncClient.post",
+    with patch("httpx.AsyncClient.get",
+               new=AsyncMock(return_value=_resp(_DEPLOYMENT_LIST))), \
+         patch("httpx.AsyncClient.post",
                new=AsyncMock(return_value=_resp({"ok": True}))):
         result = runner.invoke(quilt, ["deployment", "stop", "d1"])
     assert result.exit_code == 0, result.output
@@ -106,7 +126,9 @@ def test_deployment_delete_with_yes():
     no_content.headers = {"content-type": ""}
     no_content.content = b""
     no_content.json.return_value = {}
-    with patch("httpx.AsyncClient.delete", new=AsyncMock(return_value=no_content)):
+    with patch("httpx.AsyncClient.get",
+               new=AsyncMock(return_value=_resp(_DEPLOYMENT_LIST))), \
+         patch("httpx.AsyncClient.delete", new=AsyncMock(return_value=no_content)):
         result = runner.invoke(quilt, ["deployment", "delete", "d1", "--yes"])
     assert result.exit_code == 0, result.output
     assert "deleted" in result.output
@@ -119,7 +141,8 @@ def test_deployment_runs_renders():
         "started_at": "2026-01-01T00:00:00Z", "stopped_at": "2026-01-01T01:00:00Z",
         "net_pnl": 42.0, "trade_count": 5,
     }]
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_resp(rows))):
+    with patch("httpx.AsyncClient.get",
+               new=_resp_get_sequence(_DEPLOYMENT_LIST, rows)):
         result = runner.invoke(quilt, ["deployment", "runs", "d1"])
     assert result.exit_code == 0, result.output
     assert "1" in result.output
@@ -144,7 +167,8 @@ def test_deployment_report_renders():
         "generated_at": "2026-05-17T00:00:00Z",
         "key_metrics": {"strategy": {"cagr": 0.15, "sharpe_ratio": 1.2}},
     }
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_resp(payload))):
+    with patch("httpx.AsyncClient.get",
+               new=_resp_get_sequence(_DEPLOYMENT_LIST, payload)):
         result = runner.invoke(quilt, ["deployment", "report", "d1"])
     assert result.exit_code == 0, result.output
     assert "d1" in result.output
@@ -157,7 +181,8 @@ def test_deployment_trades_renders():
         "timestamp": "2026-01-02T10:00:00Z", "symbol": "AAPL",
         "side": "buy", "quantity": 10, "fill_price": 150.0,
     }]}
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_resp(payload))):
+    with patch("httpx.AsyncClient.get",
+               new=_resp_get_sequence(_DEPLOYMENT_LIST, payload)):
         result = runner.invoke(quilt, ["deployment", "trades", "d1"])
     assert result.exit_code == 0, result.output
     assert "AAPL" in result.output
@@ -170,7 +195,8 @@ def test_deployment_activity_renders():
         "kind": "log", "event_type": None,
         "logger_name": "algo", "message": "tick processed",
     }]}
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_resp(payload))):
+    with patch("httpx.AsyncClient.get",
+               new=_resp_get_sequence(_DEPLOYMENT_LIST, payload)):
         result = runner.invoke(quilt, ["deployment", "activity", "d1"])
     assert result.exit_code == 0, result.output
     assert "tick processed" in result.output

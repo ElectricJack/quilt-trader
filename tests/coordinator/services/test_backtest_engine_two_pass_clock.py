@@ -209,7 +209,7 @@ def test_lookup_symbol_close_returns_symbols_own_close_not_clock_bar():
 
     btc_bar = bars[("yfinance", "BTC-USD", "1day")].iloc[1]
     price = eng._lookup_symbol_close(
-        sym="ETH/USD",
+        sym="ETHUSD",
         sim_time=btc_bar["timestamp"].to_pydatetime(),
         ctx=ctx,
         fallback_bar=btc_bar,  # the CLOCK bar — used to be the bug source
@@ -245,7 +245,7 @@ def test_lookup_symbol_close_returns_zero_for_unknown_symbol():
 
     btc_bar = bars[("yfinance", "BTC-USD", "1day")].iloc[0]
     price = eng._lookup_symbol_close(
-        sym="ETH/USD",  # not in cache
+        sym="ETHUSD",  # not in cache
         sim_time=btc_bar["timestamp"].to_pydatetime(),
         ctx=ctx,
         fallback_bar=btc_bar,
@@ -269,15 +269,15 @@ def test_fill_bar_resolution_uses_symbol_bar_not_clock_bar():
             # Reference both symbols in pass-1 so the union clock has both
             # symbols' timestamps.
             try:
-                ctx.market_data("BTC/USD", n=1)
-                ctx.market_data("ETH/USD", n=1)
+                ctx.market_data("BTCUSD", n=1)
+                ctx.market_data("ETHUSD", n=1)
             except Exception:
                 pass
             if self._fired:
                 return []
             self._fired = True
             return [Signal(legs=[SignalLeg(
-                symbol="ETH/USD",
+                symbol="ETHUSD",
                 signal_type=SignalType.BUY,
                 quantity=1.0,
                 asset_type="crypto",
@@ -344,8 +344,8 @@ def test_two_asset_backtest_does_not_inflate_equity():
 
         def on_tick(self, ctx):
             try:
-                ctx.market_data("BTC/USD", n=1)
-                ctx.market_data("ETH/USD", n=1)
+                ctx.market_data("BTCUSD", n=1)
+                ctx.market_data("ETHUSD", n=1)
             except Exception:
                 pass
             if self._sent:
@@ -353,12 +353,12 @@ def test_two_asset_backtest_does_not_inflate_equity():
             self._sent = True
             return [
                 Signal(legs=[SignalLeg(
-                    symbol="BTC/USD", signal_type=SignalType.BUY,
+                    symbol="BTCUSD", signal_type=SignalType.BUY,
                     quantity=0.01, asset_type="crypto",
                     order_type=OrderType.MARKET,
                 )]),
                 Signal(legs=[SignalLeg(
-                    symbol="ETH/USD", signal_type=SignalType.BUY,
+                    symbol="ETHUSD", signal_type=SignalType.BUY,
                     quantity=0.1, asset_type="crypto",
                     order_type=OrderType.MARKET,
                 )]),
@@ -398,13 +398,13 @@ def test_two_asset_backtest_does_not_inflate_equity():
     # Sanity: two fills happened, one BTC and one ETH.
     fills = [e[1][0] for e in obs.events if e[0] == "fill"]
     fill_symbols = {f.symbol for f in fills}
-    assert fill_symbols == {"BTC/USD", "ETH/USD"}, (
+    assert fill_symbols == {"BTCUSD", "ETHUSD"}, (
         f"expected one BTC + one ETH fill, got {fill_symbols}"
     )
 
     # Each fill priced at its own bar (~42000 for BTC, ~2500 for ETH).
-    btc_fill = next(f for f in fills if f.symbol == "BTC/USD")
-    eth_fill = next(f for f in fills if f.symbol == "ETH/USD")
+    btc_fill = next(f for f in fills if f.symbol == "BTCUSD")
+    eth_fill = next(f for f in fills if f.symbol == "ETHUSD")
     assert 40_000 < btc_fill.fill_price < 45_000
     assert 2_400 < eth_fill.fill_price < 2_700
 

@@ -19,8 +19,8 @@ def test_check_signal_crypto_exempt():
     result = monitor.check_signal(
         pdt_mode="block",
         existing_day_trades=[{"day_trade_date": date(2025, 3, 13)}, {"day_trade_date": date(2025, 3, 14)}, {"day_trade_date": date(2025, 3, 15)}],
-        signal_legs=[{"symbol": "BTC/USD", "asset_type": "crypto", "side": "sell"}],
-        open_positions={"BTC/USD": {"opened_today": True}}, today=date(2025, 3, 15))
+        signal_legs=[{"symbol": "BTCUSD", "asset_type": "crypto", "side": "sell"}],
+        open_positions={"BTCUSD": {"opened_today": True}}, today=date(2025, 3, 15))
     assert result.approved is True
     assert result.would_be_day_trade is False
 

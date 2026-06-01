@@ -16,12 +16,12 @@ requirements:
     - equities
   options_level: 1
 assets:
-  - symbol: SPY
+  - symbol: SPY240119C00450000
     asset_class: options
     timeframe: 1day
 """)
     assert len(manifest.assets) == 1
     assert manifest.assets[0]["asset_class"] == "options"
-    assert manifest.assets[0]["symbol"] == "SPY"
+    assert manifest.assets[0]["symbol"] == "SPY240119C00450000"
     assert manifest.requirements.options_level == 1
     assert "options" in manifest.requirements.asset_types

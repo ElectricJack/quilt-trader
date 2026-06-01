@@ -97,14 +97,14 @@ async def test_list_accounts(client):
     await client.post("/api/accounts", json={
         "name": "Account 1",
         "broker_type": "alpaca",
-        "credentials": {"api_key": "k1"},
+        "credentials": {"api_key": "k1", "secret_key": "s1"},
         "supported_asset_types": ["equities"],
         "pdt_mode": "off",
     })
     await client.post("/api/accounts", json={
         "name": "Account 2",
         "broker_type": "tradier",
-        "credentials": {"api_key": "k2"},
+        "credentials": {"access_token": "tok2", "account_id": "acc2"},
         "supported_asset_types": ["equities", "options"],
         "pdt_mode": "block",
     })
@@ -285,30 +285,37 @@ async def test_delete_account_with_dependents(client, db_session):
 
 @pytest.mark.asyncio
 async def test_accounts_snapshots_latest(client, db_session):
-    from datetime import datetime, timedelta, timezone
-    from coordinator.database.models import Account, AccountSnapshot
+    from datetime import date as date_type, datetime, timedelta, timezone
+    from unittest.mock import patch
+    from coordinator.database.models import AccountEquityDaily
 
-    acct = Account(
-        name="Alpaca Main", broker_type="alpaca",
-        supported_asset_types=["equities"], pdt_mode="off",
-        credentials="{}",
-    )
-    db_session.add(acct)
-    await db_session.flush()
-    now = datetime.now(timezone.utc)
-    db_session.add(AccountSnapshot(
-        account_id=acct.id, timestamp=now - timedelta(hours=25),
+    # Create account via API so credentials are properly encrypted.
+    resp = await client.post("/api/accounts", json={
+        "name": "Alpaca Main", "broker_type": "alpaca",
+        "credentials": {"api_key": "k", "secret_key": "s"},
+        "supported_asset_types": ["equities"], "pdt_mode": "off",
+    })
+    account_id = resp.json()["id"]
+
+    # Seed a prior daily equity row for day % change calculation.
+    yesterday = date_type.today() - timedelta(days=1)
+    db_session.add(AccountEquityDaily(
+        account_id=account_id,
+        date=yesterday,
         total_value=10000.0, cash=4000.0, positions_value=6000.0,
-        source="seed",
-    ))
-    db_session.add(AccountSnapshot(
-        account_id=acct.id, timestamp=now,
-        total_value=10500.0, cash=4000.0, positions_value=6500.0,
-        source="seed",
     ))
     await db_session.commit()
 
-    response = await client.get("/api/accounts/snapshots/latest")
+    # Mock the broker adapter to return a live portfolio value of 10500.
+    class _MockAdapter:
+        def get_account_info(self):
+            return {"portfolio_value": 10500.0, "cash": 4000.0}
+        def close(self):
+            pass
+
+    with patch("worker.adapter_factory.make_broker_adapter", return_value=_MockAdapter()):
+        response = await client.get("/api/accounts/snapshots/latest")
+
     assert response.status_code == 200
     body = response.json()
     assert len(body["items"]) == 1
