@@ -35,10 +35,16 @@ describe("Research", () => {
     (api.listResearchSessions as any).mockResolvedValue([
       { id: 1, name: "S1", hypothesis: "H1", status: "open", notes: "",
         created_at: "2026-05-30", completed_at: null, parameter_space: {},
-        pre_registered_criteria: {}, n_runs: 0, algorithm_id: "algo-abc", base_config: {} },
+        pre_registered_criteria: {}, n_runs: 0, algorithm_id: "algo-abc", base_config: {},
+        date_range_start: "2023-01-01", date_range_end: "2024-12-31",
+        initial_cash: 10000, cost_profile: "default",
+        benchmark_symbol: null, benchmark_source: null },
       { id: 2, name: "S2", hypothesis: "H2", status: "running", notes: "",
         created_at: "2026-05-30", completed_at: null, parameter_space: {},
-        pre_registered_criteria: {}, n_runs: 3, algorithm_id: "algo-def", base_config: {} },
+        pre_registered_criteria: {}, n_runs: 3, algorithm_id: "algo-def", base_config: {},
+        date_range_start: "2023-01-01", date_range_end: "2024-12-31",
+        initial_cash: 10000, cost_profile: "default",
+        benchmark_symbol: null, benchmark_source: null },
     ]);
     render(wrap(<Research />));
     await waitFor(() => {
@@ -63,11 +69,35 @@ describe("Research", () => {
       { id: 1, name: "S1", hypothesis: "H1", status: "open", notes: "",
         created_at: "2026-05-30", completed_at: null,
         algorithm_id: "algo-abc", base_config: {},
-        parameter_space: {}, pre_registered_criteria: {}, n_runs: 0 },
+        parameter_space: {}, pre_registered_criteria: {}, n_runs: 0,
+        date_range_start: "2023-01-01", date_range_end: "2024-12-31",
+        initial_cash: 10000, cost_profile: "default",
+        benchmark_symbol: null, benchmark_source: null },
     ]);
     render(wrap(<Research />));
     await waitFor(() => {
       expect(screen.getByText(/algo-abc/)).toBeInTheDocument();
+    });
+  });
+
+  it("renders Date range column", async () => {
+    const { api } = await import("../api/client");
+    (api.listResearchSessions as any).mockResolvedValue([
+      { id: 1, name: "S1", hypothesis: "H1", status: "open", notes: "",
+        created_at: "2026-05-31", completed_at: null,
+        algorithm_id: "algo-abc", base_config: {},
+        parameter_space: {}, pre_registered_criteria: {}, n_runs: 0,
+        date_range_start: "2023-01-01",
+        date_range_end: "2024-12-31",
+        initial_cash: 10000,
+        cost_profile: "default",
+        benchmark_symbol: null,
+        benchmark_source: null,
+      },
+    ]);
+    render(wrap(<Research />));
+    await waitFor(() => {
+      expect(screen.getByText(/2023-01-01.*2024-12-31/)).toBeInTheDocument();
     });
   });
 });

@@ -46,6 +46,7 @@ export function Research() {
               <tr>
                 <th className="px-4 py-2 text-left">Name</th>
                 <th className="px-4 py-2 text-left">Algorithm</th>
+                <th className="px-4 py-2 text-left">Date range</th>
                 <th className="px-4 py-2 text-left">Status</th>
                 <th className="px-4 py-2 text-left">Hypothesis</th>
                 <th className="px-4 py-2 text-right">Runs</th>
@@ -61,6 +62,9 @@ export function Research() {
                 >
                   <td className="px-4 py-2 font-medium">{s.name}</td>
                   <td className="px-4 py-2 text-gray-400 font-mono text-xs">{s.algorithm_id}</td>
+                  <td className="px-4 py-2 text-gray-400 font-mono text-xs whitespace-nowrap">
+                    {s.date_range_start} → {s.date_range_end}
+                  </td>
                   <td className="px-4 py-2">{s.status}</td>
                   <td className="px-4 py-2 text-gray-400 truncate max-w-md" title={s.hypothesis}>
                     {s.hypothesis.length > 80 ? s.hypothesis.slice(0, 80) + "…" : s.hypothesis}
