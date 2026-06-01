@@ -52,9 +52,9 @@ Conflict cases:
 
 ```python
 _KNOWN_INDEXES = frozenset({
-    # US equity broad-market (16)
+    # US equity broad-market (15)
     "SPX", "OEX", "MID", "SML",
-    "NDX", "NDXT", "COMP",
+    "NDX", "COMP",
     "DJI", "DJT", "DJU",
     "RUT", "RUI", "RUA",
     "NYA", "XAX", "VLG",
