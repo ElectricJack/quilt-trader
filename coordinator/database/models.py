@@ -468,6 +468,19 @@ class OptimizationSession(Base):
         nullable=False,
     )
     base_config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    # Experiment scope (this spec)
+    date_range_start: Mapped[date] = mapped_column(Date, nullable=False)
+    date_range_end: Mapped[date] = mapped_column(Date, nullable=False)
+    initial_cash: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="10000.0",
+    )
+    cost_profile: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="default",
+    )
+    benchmark_symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    benchmark_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     parameter_space: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     pre_registered_criteria: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
     status: Mapped[str] = mapped_column(String, nullable=False, default="open")  # open | running | completed | failed
