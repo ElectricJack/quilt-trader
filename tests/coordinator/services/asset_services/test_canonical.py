@@ -133,3 +133,73 @@ class TestEquityCanonical:
     def test_canonicalize_rejects_unknown(self, equity):
         with pytest.raises(ValueError, match="not a recognized equity"):
             equity.canonicalize("BTC", "polygon")  # bare crypto, not equity
+
+
+from coordinator.services.asset_services.index import IndexAssetService, _KNOWN_INDEXES
+
+
+@pytest.fixture
+def index():
+    return IndexAssetService()
+
+
+class TestIndexCanonical:
+    def test_known_indexes_has_37_entries(self):
+        assert len(_KNOWN_INDEXES) == 37
+        # spot-check a few from each category
+        assert {"SPX", "OEX", "MID", "NDX", "COMP", "DJI", "RUT", "VLG"} <= _KNOWN_INDEXES
+        assert {"VIX", "VIX1D", "VIX3M", "VVIX", "SKEW"} <= _KNOWN_INDEXES
+        assert {"VXN", "RVX", "VXD", "GVZ", "OVX"} <= _KNOWN_INDEXES
+        assert {"IRX", "FVX", "TNX", "TYX"} <= _KNOWN_INDEXES
+        assert {"SOX", "XAU", "HGX", "OSX", "DXY"} <= _KNOWN_INDEXES
+
+    def test_known_indexes_excludes_yfinance_aliases(self):
+        # GSPC and IXIC are yfinance-specific aliases for SPX and COMP, not canonicals.
+        assert "GSPC" not in _KNOWN_INDEXES
+        assert "IXIC" not in _KNOWN_INDEXES
+
+    def test_classify(self, index):
+        assert index.classify("VIX") is True
+        assert index.classify("SPX") is True
+        assert index.classify("COMP") is True       # was IXIC
+        assert index.classify("VIX1D") is True
+        assert index.classify("AAPL") is False      # equity, not in set
+        assert index.classify("GSPC") is False      # yfinance alias, not canonical
+        assert index.classify("^VIX") is False      # has prefix
+        assert index.classify("I:SPX") is False     # has prefix
+
+    @pytest.mark.parametrize("canonical,provider,expected", [
+        ("VIX", "polygon", "I:VIX"),
+        ("SPX", "polygon", "I:SPX"),
+        ("VIX1D", "polygon", "I:VIX1D"),
+        ("SOX", "polygon", "I:SOX"),
+        ("VIX", "yfinance", "^VIX"),
+        ("SPX", "yfinance", "^GSPC"),          # explicit override
+        ("COMP", "yfinance", "^IXIC"),         # explicit override
+        ("DJI", "yfinance", "^DJI"),
+        ("VIX3M", "yfinance", "^VIX3M"),       # default rule applies
+    ])
+    def test_resolve_symbol(self, index, canonical, provider, expected):
+        assert index.resolve_symbol(canonical, provider) == expected
+
+    def test_resolve_symbol_raises_on_non_canonical(self, index):
+        with pytest.raises(ValueError, match="not a canonical index"):
+            index.resolve_symbol("GSPC", "yfinance")    # yfinance alias, not canonical
+        with pytest.raises(ValueError, match="not a canonical index"):
+            index.resolve_symbol("^VIX", "polygon")
+
+    @pytest.mark.parametrize("provider_form,provider,expected", [
+        ("I:VIX", "polygon", "VIX"),
+        ("I:SPX", "polygon", "SPX"),
+        ("VIX", "polygon", "VIX"),             # already canonical
+        ("^VIX", "yfinance", "VIX"),
+        ("^GSPC", "yfinance", "SPX"),
+        ("^IXIC", "yfinance", "COMP"),
+        ("VIX", "yfinance", "VIX"),            # already canonical
+    ])
+    def test_canonicalize(self, index, provider_form, provider, expected):
+        assert index.canonicalize(provider_form, provider) == expected
+
+    def test_canonicalize_rejects_unknown(self, index):
+        with pytest.raises(ValueError, match="not a recognized index"):
+            index.canonicalize("AAPL", "polygon")
