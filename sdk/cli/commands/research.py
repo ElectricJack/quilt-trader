@@ -173,6 +173,11 @@ def session_show(ctx, session_id):
         click.echo(f"Status:       {body['status']}")
         click.echo(f"Algorithm:    {body['algorithm_id']}")
         click.echo(f"Base config:  {json.dumps(body['base_config'])}")
+        click.echo(f"Date range:   {body['date_range_start']} → {body['date_range_end']}")
+        click.echo(f"Initial cash: ${body['initial_cash']:,.2f}")
+        click.echo(f"Cost profile: {body['cost_profile']}")
+        if body.get("benchmark_symbol"):
+            click.echo(f"Benchmark:    {body['benchmark_symbol']} ({body['benchmark_source']})")
         click.echo(f"Hypothesis:   {body['hypothesis']}")
         click.echo(f"Created:      {body['created_at']}")
 
