@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from sqlalchemy import select
@@ -162,6 +162,13 @@ class ResearchJobManager:
                 db, self._runner_factory,
                 session_id=session_id,
                 manifest_path=payload["manifest_path"],
+                algorithm_id=payload["algorithm_id"],
+                date_range_start=date.fromisoformat(payload["date_range_start"]),
+                date_range_end=date.fromisoformat(payload["date_range_end"]),
+                initial_cash=payload["initial_cash"],
+                cost_profile=payload["cost_profile"],
+                benchmark_symbol=payload.get("benchmark_symbol"),
+                benchmark_source=payload.get("benchmark_source"),
                 base_config=payload["base_config"],
                 parameter_space=payload.get("parameter_space"),
                 search=payload.get("search", "grid"),
@@ -180,6 +187,13 @@ class ResearchJobManager:
                 db, self._runner_factory,
                 session_id=session_id,
                 manifest_path=payload["manifest_path"],
+                algorithm_id=payload["algorithm_id"],
+                date_range_start=date.fromisoformat(payload["date_range_start"]),
+                date_range_end=date.fromisoformat(payload["date_range_end"]),
+                initial_cash=payload["initial_cash"],
+                cost_profile=payload["cost_profile"],
+                benchmark_symbol=payload.get("benchmark_symbol"),
+                benchmark_source=payload.get("benchmark_source"),
                 base_config=payload["base_config"],
                 parameter_space=payload.get("parameter_space"),
                 train_years=payload.get("train_years", 4.0),

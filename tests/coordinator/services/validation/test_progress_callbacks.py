@@ -1,4 +1,5 @@
 """Verify run_sweep + run_walk_forward invoke progress_callback per trial/fold."""
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
@@ -26,8 +27,14 @@ async def test_sweep_invokes_progress_callback_per_trial(monkeypatch):
         AsyncMock(),
         session_id=1,
         manifest_path="x.yaml",
-        base_config={"start": "2024-01-01", "end": "2024-02-01",
-                     "algorithm_id": "a", "initial_cash": 10000.0},
+        algorithm_id="a",
+        date_range_start=date(2024, 1, 1),
+        date_range_end=date(2024, 2, 1),
+        initial_cash=10000.0,
+        cost_profile="default",
+        benchmark_symbol=None,
+        benchmark_source=None,
+        base_config={},
         parameter_space={"vol_target": [0.1, 0.15, 0.2]},
         search="grid", max_trials=3, parallelism=1, seed=0,
         progress_callback=cb,
@@ -55,8 +62,14 @@ async def test_sweep_no_callback_works(monkeypatch):
     result = await sweep_mod.run_sweep(
         MagicMock(), AsyncMock(),
         session_id=1, manifest_path="x.yaml",
-        base_config={"start": "2024-01-01", "end": "2024-02-01",
-                     "algorithm_id": "a", "initial_cash": 10000.0},
+        algorithm_id="a",
+        date_range_start=date(2024, 1, 1),
+        date_range_end=date(2024, 2, 1),
+        initial_cash=10000.0,
+        cost_profile="default",
+        benchmark_symbol=None,
+        benchmark_source=None,
+        base_config={},
         parameter_space={"vol_target": [0.1]},
         search="grid", max_trials=1, parallelism=1, seed=0,
         # progress_callback intentionally omitted
@@ -99,8 +112,14 @@ async def test_walk_forward_invokes_progress_callback_per_fold(monkeypatch):
     result = await wf_mod.run_walk_forward(
         MagicMock(), AsyncMock(),
         session_id=1, manifest_path="x.yaml",
-        base_config={"start": "2018-01-01", "end": "2024-01-01",
-                     "algorithm_id": "a", "initial_cash": 10000.0},
+        algorithm_id="a",
+        date_range_start=date(2018, 1, 1),
+        date_range_end=date(2024, 1, 1),
+        initial_cash=10000.0,
+        cost_profile="default",
+        benchmark_symbol=None,
+        benchmark_source=None,
+        base_config={},
         parameter_space={"vol_target": [0.1, 0.15]},
         train_years=4.0, test_years=1.0, step_months=12.0,
         objective="sharpe", parallelism=1,

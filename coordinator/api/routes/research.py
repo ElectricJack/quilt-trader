@@ -306,17 +306,16 @@ async def sweep_endpoint(
         db, algorithm_id=sess.algorithm_id,
     )
 
-    # Inject session-bound algorithm_id into base_config so the sweep/wf
-    # callable (validation/sweep.py:_run_one_backtest) can write it onto
-    # the BacktestRun row. TODO: refactor _run_one_backtest to take
-    # algorithm_id as a separate arg rather than mining it out of merged config.
-    base_config_with_algo = {
-        **sess.base_config,
-        "algorithm_id": sess.algorithm_id,
-    }
     request_payload = {
         "manifest_path": manifest_path,
-        "base_config": base_config_with_algo,
+        "algorithm_id": sess.algorithm_id,
+        "date_range_start": sess.date_range_start.isoformat(),
+        "date_range_end": sess.date_range_end.isoformat(),
+        "initial_cash": sess.initial_cash,
+        "cost_profile": sess.cost_profile,
+        "benchmark_symbol": sess.benchmark_symbol,
+        "benchmark_source": sess.benchmark_source,
+        "base_config": sess.base_config,    # algorithm config only
         "parameter_space": json.loads(sess.parameter_space),
         "search": payload.search,
         "max_trials": payload.max_trials,
@@ -359,13 +358,16 @@ async def walk_forward_endpoint(
         db, algorithm_id=sess.algorithm_id,
     )
 
-    base_config_with_algo = {
-        **sess.base_config,
-        "algorithm_id": sess.algorithm_id,
-    }
     request_payload = {
         "manifest_path": manifest_path,
-        "base_config": base_config_with_algo,
+        "algorithm_id": sess.algorithm_id,
+        "date_range_start": sess.date_range_start.isoformat(),
+        "date_range_end": sess.date_range_end.isoformat(),
+        "initial_cash": sess.initial_cash,
+        "cost_profile": sess.cost_profile,
+        "benchmark_symbol": sess.benchmark_symbol,
+        "benchmark_source": sess.benchmark_source,
+        "base_config": sess.base_config,    # algorithm config only
         "parameter_space": json.loads(sess.parameter_space),
         "train_years": payload.train_years,
         "test_years": payload.test_years,

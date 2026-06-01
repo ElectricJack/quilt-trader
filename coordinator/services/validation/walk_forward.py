@@ -65,12 +65,8 @@ class WalkForwardResult:
 async def _pick_best_train_config(
     db: Session, run_ids: list[str], objective: str
 ) -> dict[str, Any]:
-    """Pick the in-sample winner based on the objective metric.
-
-    Returns ONLY the sweep-over parameters (strategy hyperparameters), not the
-    base-config keys (start, end, algorithm_id, initial_cash, etc.). If we
-    returned the full config, the train-window dates would overwrite the
-    OOS-window dates when the caller merges with the OOS base_config.
+    """Pick the in-sample winner by objective. Returns ONLY the sweep parameters
+    (the algorithm hyperparameters varied per trial), not internal markers.
     """
     from coordinator.database.models import BacktestRun
 
@@ -83,12 +79,11 @@ async def _pick_best_train_config(
     rows.sort(key=lambda r: getattr(r, metric_col, 0.0) or 0.0, reverse=True)
     best = rows[0]
     full = best.config_overrides or {}
-    # Strip base-config keys — only the sweep parameters should be returned.
-    _BASE_KEYS = {
-        "algorithm_id", "start", "end", "initial_cash", "symbols",
-        "data_source", "cost_profile", "_fold_index", "_oos",
-    }
-    return {k: v for k, v in full.items() if k not in _BASE_KEYS}
+    # config_overrides is now {**base_config, **trial} where base_config is
+    # algorithm config only. Strip only the internal markers added by
+    # _run_oos_backtest for fold tracking.
+    _INTERNAL_KEYS = {"_fold_index", "_oos"}
+    return {k: v for k, v in full.items() if k not in _INTERNAL_KEYS}
 
 
 async def _run_oos_backtest(
@@ -96,31 +91,35 @@ async def _run_oos_backtest(
     runner_factory: RunnerFactory,
     *,
     session_id: int,
+    # Session-scoped fields
+    algorithm_id: str,
+    initial_cash: float,
+    cost_profile: str,
+    benchmark_symbol: str | None,
+    benchmark_source: str | None,
+    # OOS-specific (walk-forward uses test-window dates, not session range)
+    oos_start: date,
+    oos_end: date,
+    # algorithm config only
     base_config: dict[str, Any],
     config: dict[str, Any],
     fold_index: int,
 ) -> int:
     """Run a single OOS backtest with the winning config on the test window.
     Returns the BacktestRun.id."""
-    from datetime import date, datetime
-
     from coordinator.database.models import BacktestRun
     from coordinator.services.validation.sweep import config_hash
 
     merged = {**base_config, **config, "_fold_index": fold_index, "_oos": True}
 
-    def _as_date(v):
-        if v is None or isinstance(v, (date, datetime)):
-            return v
-        if isinstance(v, str):
-            return date.fromisoformat(v)
-        raise TypeError(f"Cannot coerce {v!r} to date")
-
     run_row = BacktestRun(
-        algorithm_id=merged.get("algorithm_id", ""),
-        date_range_start=_as_date(merged.get("start")),
-        date_range_end=_as_date(merged.get("end")),
-        initial_cash=float(merged.get("initial_cash", 1000.0)),
+        algorithm_id=algorithm_id,
+        date_range_start=oos_start,
+        date_range_end=oos_end,
+        initial_cash=initial_cash,
+        cost_profile=cost_profile,
+        benchmark_symbol=benchmark_symbol,
+        benchmark_source=benchmark_source,
         config_overrides=merged,
         config_hash=config_hash(config),
         optimization_session_id=session_id,
@@ -144,6 +143,15 @@ async def run_walk_forward(
     *,
     session_id: int,
     manifest_path: str,
+    # Session-scoped fields
+    algorithm_id: str,
+    date_range_start: date,           # bounds the WF universe
+    date_range_end: date,             # bounds the WF universe
+    initial_cash: float,
+    cost_profile: str,
+    benchmark_symbol: str | None,
+    benchmark_source: str | None,
+    # algorithm config only
     base_config: dict[str, Any],
     parameter_space: dict[str, Any],
     train_years: float,
@@ -163,10 +171,8 @@ async def run_walk_forward(
     Returns a result object with OOS run IDs (one per fold) for downstream
     concatenation and metric computation.
     """
-    start = date.fromisoformat(base_config["start"])
-    end = date.fromisoformat(base_config["end"])
     folds = compute_folds(
-        start=start, end=end,
+        start=date_range_start, end=date_range_end,
         train_years=train_years, test_years=test_years, step_months=step_months,
     )
 
@@ -174,17 +180,19 @@ async def run_walk_forward(
     train_run_ids: list[list[str]] = []
 
     for fold in folds:
-        train_cfg = {
-            **base_config,
-            "start": fold.train_start.isoformat(),
-            "end": fold.train_end.isoformat(),
-        }
         sweep_result = await run_sweep(
             db,
             runner_factory,
             session_id=session_id,
             manifest_path=manifest_path,
-            base_config=train_cfg,
+            algorithm_id=algorithm_id,
+            date_range_start=fold.train_start,        # fold's train window
+            date_range_end=fold.train_end,
+            initial_cash=initial_cash,
+            cost_profile=cost_profile,
+            benchmark_symbol=benchmark_symbol,
+            benchmark_source=benchmark_source,
+            base_config=base_config,
             parameter_space=parameter_space,
             search="grid",
             max_trials=10_000,
@@ -193,16 +201,18 @@ async def run_walk_forward(
         train_run_ids.append(sweep_result.run_ids)
 
         winner = await _pick_best_train_config(db, sweep_result.run_ids, objective)
-        oos_cfg = {
-            **base_config,
-            "start": fold.test_start.isoformat(),
-            "end": fold.test_end.isoformat(),
-        }
         oos_id = await _run_oos_backtest(
             db,
             runner_factory,
             session_id=session_id,
-            base_config=oos_cfg,
+            algorithm_id=algorithm_id,
+            initial_cash=initial_cash,
+            cost_profile=cost_profile,
+            benchmark_symbol=benchmark_symbol,
+            benchmark_source=benchmark_source,
+            oos_start=fold.test_start,
+            oos_end=fold.test_end,
+            base_config=base_config,
             config=winner,
             fold_index=fold.index,
         )

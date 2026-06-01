@@ -1,5 +1,6 @@
 """Unit tests for ResearchJobManager — DB-level state-machine semantics."""
 import asyncio
+from datetime import date
 from unittest.mock import AsyncMock
 import pytest
 
@@ -27,6 +28,8 @@ async def _seed_session(container) -> int:
             name="t", hypothesis="h",
             parameter_space="{}", pre_registered_criteria="{}",
             algorithm_id=algo_id, base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
         )
         s.add(sess)
         await s.commit()
@@ -50,7 +53,17 @@ async def test_create_sweep_job_inserts_queued_row(test_app):
     )
     job_id = await mgr.create_sweep_job(
         session_id=session_id,
-        request_payload={"manifest_path": "x", "base_config": {}, "search": "grid"},
+        request_payload={
+            "manifest_path": "x",
+            "algorithm_id": "test-algo-fixture",
+            "date_range_start": "2023-01-01",
+            "date_range_end": "2023-12-31",
+            "initial_cash": 10000,
+            "cost_profile": "default",
+            "base_config": {},
+            "parameter_space": {},
+            "search": "grid",
+        },
     )
     # Cancel immediately so the background task (which calls sweep_fn with no
     # sync_session_factory) doesn't blow up the test.
@@ -157,6 +170,8 @@ async def _seed_session_sf(db_session_factory) -> int:
             parameter_space='{"x": [1]}',
             pre_registered_criteria='{"min_sharpe": 0.0}',
             algorithm_id=aid, base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
         )
         s.add(row)
         await s.commit()
