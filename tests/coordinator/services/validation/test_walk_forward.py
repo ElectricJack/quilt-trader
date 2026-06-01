@@ -157,6 +157,39 @@ async def test_pick_best_train_config_reads_real_schema(db_session):
     assert winner == {"x": 2}  # r2 has the higher sharpe
 
 
+@pytest.mark.asyncio
+async def test_pick_best_train_config_strips_only_internal_markers(db_session):
+    """_pick_best_train_config strips ONLY {_fold_index, _oos} from the
+    winner — sweep hyperparameters and base_config keys must pass through."""
+    from coordinator.database.models import Algorithm, BacktestRun
+    from coordinator.services.validation.walk_forward import _pick_best_train_config
+
+    algo = Algorithm(name="strip-test-algo", repo_url="https://example.com/algo")
+    db_session.add(algo)
+    db_session.flush()
+
+    from datetime import datetime, timezone
+    _now = datetime.now(timezone.utc)
+    row = BacktestRun(
+        algorithm_id=algo.id,
+        sharpe_ratio=2.0,
+        config_overrides={
+            "vol_target": 0.10,        # base_config key — must pass through
+            "lookback": 20,             # trial parameter — must pass through
+            "_fold_index": 3,           # internal marker — must be stripped
+            "_oos": True,               # internal marker — must be stripped
+        },
+        status="completed",
+        date_range_start=_now,
+        date_range_end=_now,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    winner = await _pick_best_train_config(db_session, [row.id], "sharpe")
+    assert winner == {"vol_target": 0.10, "lookback": 20}
+
+
 def test_concatenate_oos_curves(tmp_path):
     """Concatenate OOS equity curves from N folds into one continuous series.
 

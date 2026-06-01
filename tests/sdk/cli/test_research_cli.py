@@ -137,3 +137,21 @@ def test_session_create_rejects_unpaired_benchmark():
     ])
     assert result.exit_code != 0
     assert "benchmark" in result.output.lower()
+
+
+def test_session_create_rejects_missing_start():
+    """`session create` without --start must fail with a clear missing-option error."""
+    runner = CliRunner()
+    result = runner.invoke(research_group, [
+        "session", "create",
+        "--name", "t",
+        "--hypothesis", "h",
+        "--algorithm-id", "algo-x",
+        "--base-config", "{}",
+        "--parameter-space", '{"x":[1]}',
+        "--criteria", '{"min_sharpe":1.0}',
+        "--end", "2024-12-31",
+        # --start omitted
+    ])
+    assert result.exit_code != 0
+    assert "--start" in result.output
