@@ -1,6 +1,7 @@
 """Crypto asset service — BTC, ETH, etc. 24/7 markets, no expiry, GTC orders."""
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from coordinator.services.asset_services.base import (
@@ -43,26 +44,40 @@ def _to_dash(symbol: str) -> str:
 
 class CryptoAssetService:
     asset_type = AssetType.CRYPTO
+    CANONICAL_RE = re.compile(r"^[A-Z]{2,5}(USD|USDT)$")
 
     def classify(self, symbol: str) -> bool:
-        if not symbol:
-            return False
-        normalized = symbol.replace("/", "").replace("-", "")
-        if normalized in _KNOWN_CRYPTO:
-            return True
-        return normalized.endswith("USD") or normalized.endswith("USDT")
+        return bool(symbol and self.CANONICAL_RE.match(symbol))
 
-    def resolve_symbol(self, symbol: str, provider: str) -> str:
-        canon = _to_canonical(symbol)
+    def resolve_symbol(self, canonical: str, provider: str) -> str:
+        if not self.CANONICAL_RE.match(canonical):
+            raise ValueError(
+                f"{canonical!r} is not a canonical crypto symbol "
+                f"(expected e.g. 'BTCUSD')"
+            )
         if provider == "yfinance":
-            return _YFINANCE_MAP.get(canon, _to_dash(canon))
-        if provider == "alpaca_stream":
-            return _to_slash(canon)
-        if provider == "alpaca":
-            return _to_slash(canon)  # Alpaca spot crypto uses slash form
+            return _YFINANCE_MAP.get(canonical, _to_dash(canonical))
+        if provider in ("alpaca", "alpaca_stream"):
+            return _to_slash(canonical)
         if provider == "coinbase":
-            return _to_dash(canon)
-        return symbol  # unknown provider — pass through
+            return _to_dash(canonical)
+        if provider == "polygon":
+            return f"X:{canonical}"
+        return canonical
+
+    def canonicalize(self, provider_form: str, provider: str) -> str:
+        """Parse a provider-native crypto form back to canonical (BTCUSD).
+        Raises ValueError if the input is ambiguous (e.g. bare 'BTC')."""
+        s = provider_form
+        if provider == "polygon" and s.startswith("X:"):
+            s = s[2:]
+        # Normalize separators
+        s = s.replace("/", "").replace("-", "").upper()
+        if not self.CANONICAL_RE.match(s):
+            raise ValueError(
+                f"{provider_form!r} is ambiguous or not a recognized crypto form"
+            )
+        return s
 
     def compose_order_symbol(self, leg: Any) -> str:
         return leg.symbol

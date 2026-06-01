@@ -21,8 +21,11 @@ def test_classify_crypto(svc):
 
 
 def test_classify_with_slash(svc):
-    assert svc.classify("BTC/USD")
-    assert svc.classify("ETH/USD")
+    # Non-canonical forms are rejected; canonical forms are accepted
+    assert not svc.classify("BTC/USD")
+    assert not svc.classify("ETH/USD")
+    assert svc.classify("BTCUSD")
+    assert svc.classify("ETHUSD")
 
 
 def test_classify_rejects_equities(svc):
@@ -45,7 +48,7 @@ def test_resolve_symbol_yfinance(svc):
 
 
 def test_resolve_symbol_polygon(svc):
-    assert svc.resolve_symbol("BTCUSD", "polygon") == "BTCUSD"
+    assert svc.resolve_symbol("BTCUSD", "polygon") == "X:BTCUSD"
 
 
 def test_resolve_symbol_alpaca_stream_uses_slash(svc):
