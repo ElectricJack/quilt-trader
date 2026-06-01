@@ -29,6 +29,12 @@ const SESSION = {
   base_config: { vol: 0.10 },
   parameter_space: { x: [1, 2] }, pre_registered_criteria: { min_sharpe: 1 },
   n_runs: 0,
+  date_range_start: "2023-01-01",
+  date_range_end: "2024-12-31",
+  initial_cash: 25000,
+  cost_profile: "default",
+  benchmark_symbol: "SPY",
+  benchmark_source: "polygon",
 };
 
 function wrap(ui: React.ReactNode) {
@@ -120,6 +126,19 @@ describe("ResearchSessionDetail", () => {
     render(wrap(<ResearchSessionDetail />));
     await waitFor(() => {
       expect(screen.getByText(/algo:.*test-algo-a/i)).toBeInTheDocument();
+    });
+  });
+
+  it("summary card renders inline scope line with dates, cash, cost, benchmark", async () => {
+    const { api } = await import("../api/client");
+    (api.getResearchSession as any).mockResolvedValue(SESSION);
+    (api.listResearchJobs as any).mockResolvedValue([]);
+    render(wrap(<ResearchSessionDetail />));
+    await waitFor(() => {
+      expect(screen.getByText(/2023-01-01.*2024-12-31/)).toBeInTheDocument();
+      expect(screen.getByText(/\$25,000/)).toBeInTheDocument();
+      expect(screen.getByText(/cost: default/i)).toBeInTheDocument();
+      expect(screen.getByText(/bench: SPY \(polygon\)/i)).toBeInTheDocument();
     });
   });
 });

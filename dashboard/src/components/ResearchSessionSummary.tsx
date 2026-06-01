@@ -43,6 +43,19 @@ export function ResearchSessionSummary({
           <div className="text-xs text-gray-500 mt-1">
             Created {session.created_at} · {session.n_runs} run{session.n_runs === 1 ? "" : "s"}
           </div>
+          <div className="text-xs text-gray-400 font-mono flex items-center gap-2 flex-wrap mt-1">
+            <span>{session.date_range_start} → {session.date_range_end}</span>
+            <span className="text-gray-600">·</span>
+            <span>${session.initial_cash.toLocaleString()}</span>
+            <span className="text-gray-600">·</span>
+            <span>cost: {session.cost_profile}</span>
+            {session.benchmark_symbol && (
+              <>
+                <span className="text-gray-600">·</span>
+                <span>bench: {session.benchmark_symbol} ({session.benchmark_source})</span>
+              </>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button onClick={onGenerateReport}
