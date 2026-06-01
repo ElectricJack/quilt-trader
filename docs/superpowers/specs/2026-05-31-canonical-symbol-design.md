@@ -29,7 +29,7 @@ Each `AssetService` declares its canonical form as a class-level compiled regex.
 
 | Asset class | Regex | Examples | Notes |
 |---|---|---|---|
-| Equities | `^[A-Z]{1,5}(\.[A-Z])?$` | `AAPL`, `SPY`, `QQQ`, `BRK.B`, `BF.B` | Dot-suffix for share classes |
+| Equities | `^[A-Z]{1,5}(\.[A-Z])?$` AND `symbol ∉ _KNOWN_CRYPTO_BARE` | `AAPL`, `SPY`, `QQQ`, `BRK.B`, `BF.B` | Dot-suffix for share classes; bare crypto names like `BTC`/`ETH`/`SOL` excluded so `validate("BTC")` raises (the multi-class hint guides the user to `BTCUSD`) |
 | Crypto | `^[A-Z]{2,5}(USD\|USDT)$` | `BTCUSD`, `ETHUSD`, `BTCUSDT`, `SOLUSDT` | Quote currency in suffix |
 | Index | `^[A-Z]{2,5}$` AND `symbol ∈ _KNOWN_INDEXES` | `VIX`, `SPX`, `NDX`, `VIX3M`, `SOX` | Closed set (see §2.1) |
 | Options | `^[A-Z]{1,6}\d{6}[CP]\d{8}$` | `AAPL240119C00150000` | OCC, no prefix, no spaces |
@@ -103,7 +103,7 @@ Per-provider mapping table updates:
 | Crypto | `yfinance` | `BTCUSD → BTC-USD` | unchanged |
 | Crypto | `alpaca` / `alpaca_stream` | `BTCUSD → BTC/USD` | unchanged |
 | Crypto | `coinbase` | `BTCUSD → BTC-USD` | unchanged |
-| Equities | all providers | pass-through | pass-through; yfinance map has explicit entries for share-class dotted tickers (`BRK.B → BRK-B`, `BRK.A → BRK-A`, `BF.B → BF-B`); ordinary tickers pass through unchanged |
+| Equities | all providers | pass-through | pass-through; yfinance map has explicit entries for share-class dotted tickers (`BRK.B → BRK-B`, `BRK.A → BRK-A`, `BF.B → BF-B`); ordinary tickers pass through unchanged. Equity `classify()` excludes `_KNOWN_CRYPTO_BARE = {"BTC","ETH","SOL","DOGE","AVAX","LINK","USDT","USD","ETC","XRP","ADA","LTC","BCH"}` so those fall through to `validate()` raising with the multi-class hint |
 | Index | `_KNOWN_INDEXES` | 7 entries incl. `GSPC`, `IXIC` | 37 entries; `GSPC`, `IXIC` removed |
 | Index | `yfinance` map | `VIX → ^VIX`, `SPX → ^GSPC` | add `COMP → ^IXIC`; default rule `X → ^X` for all 37 unless explicit override |
 | Index | `polygon` map | `VIX → I:VIX` | default rule `X → I:X` for all 37 |
