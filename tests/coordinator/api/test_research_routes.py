@@ -1,6 +1,7 @@
 """Integration tests for /api/research/* endpoints."""
 import json
 import uuid
+from datetime import date
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -21,6 +22,8 @@ async def test_create_session_endpoint(test_app, seeded_algorithm):
                 "base_config": {},
                 "parameter_space": {"vol_target": [0.10, 0.15]},
                 "pre_registered_criteria": {"oos_sharpe_lci": 0.5},
+                "date_range_start": "2023-01-01",
+                "date_range_end": "2024-12-31",
             },
         )
     assert resp.status_code == 200, resp.text
@@ -43,6 +46,8 @@ async def test_list_and_get_sessions(test_app, seeded_algorithm):
                 "base_config": {},
                 "parameter_space": {},
                 "pre_registered_criteria": {},
+                "date_range_start": "2023-01-01",
+                "date_range_end": "2024-12-31",
             },
         )
         # List
@@ -75,6 +80,8 @@ async def test_create_session_duplicate_name_rejected(test_app, seeded_algorithm
             "base_config": {},
             "parameter_space": {},
             "pre_registered_criteria": {},
+            "date_range_start": "2023-01-01",
+            "date_range_end": "2024-12-31",
         }
         r1 = await client.post("/api/research/sessions", json=payload)
         assert r1.status_code == 200
@@ -113,6 +120,8 @@ async def seeded_session(db_session_factory, seeded_algorithm):
             parameter_space=json.dumps({"lookback": [20, 50]}),
             pre_registered_criteria=json.dumps({"min_sharpe": 0.0}),
             status="open",
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2024, 12, 31),
         )
         s.add(sess)
         await s.commit()
@@ -264,6 +273,8 @@ async def test_create_session_rejects_unknown_algorithm_id(test_client):
         "base_config": {},
         "parameter_space": {"x": [1]},
         "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
     })
     assert resp.status_code == 404
 
@@ -291,6 +302,8 @@ async def test_create_session_rejects_algorithm_with_null_source_path(
         "base_config": {},
         "parameter_space": {"x": [1]},
         "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
     })
     assert resp.status_code == 400
 
@@ -304,6 +317,8 @@ async def test_create_session_accepts_empty_base_config(test_client, seeded_algo
         "base_config": {},
         "parameter_space": {"x": [1]},
         "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
     })
     assert resp.status_code == 200
     body = resp.json()
@@ -321,6 +336,8 @@ async def test_session_response_includes_algorithm_id_and_base_config(
         "base_config": {"vol": 0.10, "k": "v"},
         "parameter_space": {"x": [1]},
         "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
     })
     assert create_resp.status_code == 200
     sid = create_resp.json()["id"]
@@ -329,3 +346,120 @@ async def test_session_response_includes_algorithm_id_and_base_config(
     body = get_resp.json()
     assert body["algorithm_id"] == seeded_algorithm.id
     assert body["base_config"] == {"vol": 0.10, "k": "v"}
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (scope) — CreateSessionRequest + SessionResponse new fields
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_session_requires_date_range_start(test_client, seeded_algorithm):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-no-start",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_end": "2024-12-31",
+        # date_range_start omitted
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_session_requires_date_range_end(test_client, seeded_algorithm):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-no-end",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_end_before_start(test_client, seeded_algorithm):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-bad-range",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2024-12-31",
+        "date_range_end": "2023-01-01",
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_unpaired_benchmark(test_client, seeded_algorithm):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-unpaired",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        "benchmark_symbol": "SPY",
+        # benchmark_source omitted
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_session_accepts_default_initial_cash_and_cost_profile(
+    test_client, seeded_algorithm,
+):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-defaults",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        # initial_cash + cost_profile omitted — server applies defaults
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["initial_cash"] == 10000.0
+    assert body["cost_profile"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_session_response_includes_all_six_new_fields(
+    test_client, seeded_algorithm,
+):
+    create_resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-roundtrip-scope",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        "initial_cash": 25000.0,
+        "cost_profile": "paid_tier",
+        "benchmark_symbol": "QQQ",
+        "benchmark_source": "yfinance",
+    })
+    assert create_resp.status_code == 200
+    sid = create_resp.json()["id"]
+    get_resp = await test_client.get(f"/api/research/sessions/{sid}")
+    body = get_resp.json()
+    assert body["date_range_start"] == "2023-01-01"
+    assert body["date_range_end"] == "2024-12-31"
+    assert body["initial_cash"] == 25000.0
+    assert body["cost_profile"] == "paid_tier"
+    assert body["benchmark_symbol"] == "QQQ"
+    assert body["benchmark_source"] == "yfinance"

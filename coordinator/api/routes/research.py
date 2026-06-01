@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import date as _date
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +50,28 @@ class CreateSessionRequest(BaseModel):
     pre_registered_criteria: dict
     notes: str = ""
 
+    # NEW (this spec)
+    date_range_start: _date                                # required
+    date_range_end: _date                                  # required
+    initial_cash: float = 10_000.0                         # required, with default
+    cost_profile: str = "default"                          # required, with default
+    benchmark_symbol: str | None = None                    # optional pair
+    benchmark_source: str | None = None
+
+    @model_validator(mode="after")
+    def _benchmark_pair(self):
+        if (self.benchmark_symbol is None) != (self.benchmark_source is None):
+            raise ValueError(
+                "benchmark_symbol and benchmark_source must both be set or both be null"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _date_range_valid(self):
+        if self.date_range_end <= self.date_range_start:
+            raise ValueError("date_range_end must be after date_range_start")
+        return self
+
 
 class SessionResponse(BaseModel):
     id: int
@@ -63,6 +86,13 @@ class SessionResponse(BaseModel):
     parameter_space: dict
     pre_registered_criteria: dict
     n_runs: int
+    # NEW
+    date_range_start: str           # ISO date YYYY-MM-DD
+    date_range_end: str
+    initial_cash: float
+    cost_profile: str
+    benchmark_symbol: str | None = None
+    benchmark_source: str | None = None
 
 
 class SweepRequest(BaseModel):
@@ -115,15 +145,22 @@ def _session_to_response(sess: OptimizationSession, n_runs: int) -> SessionRespo
         id=sess.id,
         name=sess.name,
         hypothesis=sess.hypothesis,
+        algorithm_id=sess.algorithm_id,
+        base_config=sess.base_config if sess.base_config is not None else {},
         status=sess.status,
         notes=sess.notes,
         created_at=sess.created_at.isoformat() if sess.created_at else "",
         completed_at=sess.completed_at.isoformat() if sess.completed_at else None,
-        algorithm_id=sess.algorithm_id,
-        base_config=sess.base_config if sess.base_config is not None else {},
         parameter_space=json.loads(sess.parameter_space),
         pre_registered_criteria=json.loads(sess.pre_registered_criteria),
         n_runs=n_runs,
+        # NEW
+        date_range_start=sess.date_range_start.isoformat(),
+        date_range_end=sess.date_range_end.isoformat(),
+        initial_cash=sess.initial_cash,
+        cost_profile=sess.cost_profile,
+        benchmark_symbol=sess.benchmark_symbol,
+        benchmark_source=sess.benchmark_source,
     )
 
 
@@ -182,6 +219,12 @@ async def create_session_endpoint(payload: CreateSessionRequest) -> SessionRespo
                 parameter_space=payload.parameter_space,
                 pre_registered_criteria=payload.pre_registered_criteria,
                 notes=payload.notes,
+                date_range_start=payload.date_range_start,
+                date_range_end=payload.date_range_end,
+                initial_cash=payload.initial_cash,
+                cost_profile=payload.cost_profile,
+                benchmark_symbol=payload.benchmark_symbol,
+                benchmark_source=payload.benchmark_source,
             )
             db.commit()
             db.refresh(sess)
