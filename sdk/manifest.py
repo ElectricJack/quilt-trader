@@ -148,6 +148,9 @@ class QuiltManifest:
         raw_assets = data.get("assets") or []
         assets: list[dict] = []
         if isinstance(raw_assets, list):
+            # Lazy import to avoid sdk → coordinator dependency at module load
+            from coordinator.services.asset_services.registry import get_default_registry
+            registry = get_default_registry()
             for a in raw_assets:
                 if not isinstance(a, dict):
                     continue
@@ -160,6 +163,22 @@ class QuiltManifest:
                         f"invalid asset_class {asset_class!r} for symbol {symbol!r}; "
                         f"must be one of {sorted(_VALID_ASSET_TYPES)}"
                     )
+
+                # Gate 1: symbol must be canonical for SOME asset class
+                try:
+                    registry.validate(symbol)
+                except ValueError as e:
+                    raise ManifestError(f"asset {symbol!r}: {e}")
+
+                # Gate 2: symbol's natural classification must match declared asset_class
+                inferred = registry.classify(symbol).value
+                if inferred != asset_class:
+                    raise ManifestError(
+                        f"asset {symbol!r} is declared as asset_class={asset_class!r} "
+                        f"but its canonical form classifies as {inferred!r}. "
+                        f"Either fix the symbol or change asset_class."
+                    )
+
                 entry = {
                     "symbol": symbol,
                     "asset_class": asset_class,
