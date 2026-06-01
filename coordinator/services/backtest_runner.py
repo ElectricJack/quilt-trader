@@ -26,6 +26,7 @@ from coordinator.services.backtest_engine_v2 import (
     BacktestEngine, CancelToken, EngineObserver, EngineSummary, FillRecord,
 )
 from coordinator.services.backtest_tick_context import BacktestTickContext, timeframe_to_seconds
+from coordinator.services.asset_services.registry import get_default_registry
 
 logger = logging.getLogger(__name__)
 
@@ -629,7 +630,8 @@ class BacktestRunner:
                     if not contracts:
                         continue
 
-                    symbols = [c["ticker"].removeprefix("O:") for c in contracts]
+                    registry = get_default_registry()
+                    symbols = [registry.canonicalize(c["ticker"], "polygon") for c in contracts]
 
                     async with self._sf() as session:
                         r = (await session.execute(
