@@ -1,3 +1,4 @@
+from datetime import date
 from sqlalchemy.orm import Session
 
 from coordinator.database.session import get_session_factory
@@ -32,6 +33,8 @@ def test_get_session_factory_returns_sync_factory(tmp_path, monkeypatch):
             pre_registered_criteria=json.dumps({}),
             status="open",
             algorithm_id="test-algo-session", base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
         )
         db.add(sess)
         db.commit()

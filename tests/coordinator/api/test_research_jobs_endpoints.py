@@ -1,4 +1,5 @@
 """HTTP-layer tests for the 202-Accepted research job endpoints (B6, I18)."""
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -29,6 +30,8 @@ async def _seed_session(container, *, parameter_space: str = '{"vol_target":[0.1
             parameter_space=parameter_space,
             pre_registered_criteria="{}",
             algorithm_id=algo_id, base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
         )
         s.add(sess)
         await s.commit()
@@ -209,7 +212,9 @@ async def test_get_job_404_when_session_mismatch(test_app):
     async with container.session_factory() as s:
         sess2 = OptimizationSession(name="t2", hypothesis="h",
                                     parameter_space="{}", pre_registered_criteria="{}",
-                                    algorithm_id="test-algo-fixture", base_config={})
+                                    algorithm_id="test-algo-fixture", base_config={},
+                                    date_range_start=date(2023, 1, 1),
+                                    date_range_end=date(2023, 12, 31))
         s.add(sess2)
         await s.flush()
         s2 = sess2.id

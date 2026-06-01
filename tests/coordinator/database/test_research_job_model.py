@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 
 from sqlalchemy import select
 
@@ -23,6 +24,8 @@ async def test_research_job_round_trips(test_app):
             name="t", hypothesis="h",
             parameter_space="{}", pre_registered_criteria="{}",
             algorithm_id="test-algo-rjm", base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
         )
         s.add(sess)
         await s.flush()

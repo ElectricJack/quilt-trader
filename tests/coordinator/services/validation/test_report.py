@@ -1,6 +1,6 @@
 import json
 import pytest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +38,8 @@ def test_build_markdown_report_contains_required_sections(db_session, tmp_path):
         pre_registered_criteria=json.dumps({"oos_sharpe_lci": 0.5}),
         status="completed",
         algorithm_id=algo_id, base_config={},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2023, 12, 31),
     )
     db_session.add(sess)
     db_session.commit()
@@ -98,6 +100,8 @@ def test_build_html_report_embeds_charts(db_session, tmp_path):
         pre_registered_criteria=json.dumps({"oos_sharpe_lci": 0.5}),
         status="completed",
         algorithm_id=algo_id, base_config={},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2023, 12, 31),
     )
     db_session.add(sess)
     db_session.commit()
