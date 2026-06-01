@@ -6,6 +6,7 @@ settlement, contract discovery.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Any, Optional
 
@@ -23,18 +24,34 @@ from coordinator.services.chain_builder import parse_occ_symbol
 
 class OptionsAssetService:
     asset_type = AssetType.OPTIONS
+    CANONICAL_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
 
     def classify(self, symbol: str) -> bool:
-        return parse_occ_symbol(symbol) is not None
+        return bool(symbol and self.CANONICAL_RE.match(symbol))
 
     def parse_symbol(self, symbol: str) -> dict | None:
         return parse_occ_symbol(symbol)
 
-    def resolve_symbol(self, symbol: str, provider: str) -> str:
-        raw = symbol.removeprefix("O:")
+    def resolve_symbol(self, canonical: str, provider: str) -> str:
+        if not self.CANONICAL_RE.match(canonical):
+            raise ValueError(
+                f"{canonical!r} is not a canonical option symbol "
+                f"(expected OCC format e.g. 'AAPL240119C00150000')"
+            )
         if provider == "polygon":
-            return f"O:{raw}"
-        return raw
+            return f"O:{canonical}"
+        return canonical
+
+    def canonicalize(self, provider_form: str, provider: str) -> str:
+        """Strip provider prefix from an option symbol to recover canonical OCC."""
+        candidate = provider_form
+        if provider == "polygon" and candidate.startswith("O:"):
+            candidate = candidate[2:]
+        if self.CANONICAL_RE.match(candidate):
+            return candidate
+        raise ValueError(
+            f"{provider_form!r} is not a recognized option form for provider {provider!r}"
+        )
 
     def compose_order_symbol(self, leg: Any) -> str:
         if not (leg.expiry and leg.strike is not None and leg.right):

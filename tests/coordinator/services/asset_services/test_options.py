@@ -14,7 +14,8 @@ def svc():
 
 
 def test_classify_occ_with_o_prefix(svc):
-    assert svc.classify("O:SPY241029C00586000")
+    # O: prefix is not canonical OCC — classify() rejects it
+    assert not svc.classify("O:SPY241029C00586000")
 
 
 def test_classify_occ_without_prefix(svc):
@@ -57,12 +58,16 @@ def test_resolve_symbol_polygon_adds_prefix(svc):
     assert svc.resolve_symbol("SPY241029C00586000", "polygon") == "O:SPY241029C00586000"
 
 
-def test_resolve_symbol_polygon_idempotent(svc):
-    assert svc.resolve_symbol("O:SPY241029C00586000", "polygon") == "O:SPY241029C00586000"
+def test_resolve_symbol_polygon_already_prefixed_raises(svc):
+    # resolve_symbol() requires canonical (no O: prefix) input
+    with pytest.raises(ValueError, match="not a canonical option"):
+        svc.resolve_symbol("O:SPY241029C00586000", "polygon")
 
 
-def test_resolve_symbol_tradier_strips_prefix(svc):
-    assert svc.resolve_symbol("O:SPY241029C00586000", "tradier") == "SPY241029C00586000"
+def test_resolve_symbol_tradier_strips_prefix_raises(svc):
+    # resolve_symbol() requires canonical input; use canonicalize() to strip O: first
+    with pytest.raises(ValueError, match="not a canonical option"):
+        svc.resolve_symbol("O:SPY241029C00586000", "tradier")
 
 
 def test_resolve_symbol_tradier_no_prefix_passthrough(svc):

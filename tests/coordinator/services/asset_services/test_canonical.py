@@ -203,3 +203,48 @@ class TestIndexCanonical:
     def test_canonicalize_rejects_unknown(self, index):
         with pytest.raises(ValueError, match="not a recognized index"):
             index.canonicalize("AAPL", "polygon")
+
+
+from coordinator.services.asset_services.options import OptionsAssetService
+
+
+@pytest.fixture
+def options():
+    return OptionsAssetService()
+
+
+class TestOptionsCanonical:
+    def test_classify(self, options):
+        assert options.classify("AAPL240119C00150000") is True
+        assert options.classify("SPY240731P00340000") is True
+        assert options.classify("BRK240119C00100000") is True  # 3-char underlying
+        assert options.classify("AAPL") is False               # not OCC
+        assert options.classify("BTCUSD") is False             # not OCC
+        assert options.classify("") is False
+        assert options.classify("O:AAPL240119C00150000") is False  # has prefix
+
+    @pytest.mark.parametrize("canonical,provider,expected", [
+        ("AAPL240119C00150000", "polygon", "O:AAPL240119C00150000"),
+        ("SPY240731P00340000", "polygon", "O:SPY240731P00340000"),
+        ("AAPL240119C00150000", "alpaca", "AAPL240119C00150000"),
+    ])
+    def test_resolve_symbol(self, options, canonical, provider, expected):
+        assert options.resolve_symbol(canonical, provider) == expected
+
+    def test_resolve_symbol_raises_on_non_canonical(self, options):
+        with pytest.raises(ValueError, match="not a canonical option"):
+            options.resolve_symbol("O:AAPL240119C00150000", "polygon")  # prefix present
+        with pytest.raises(ValueError, match="not a canonical option"):
+            options.resolve_symbol("AAPL", "polygon")
+
+    @pytest.mark.parametrize("provider_form,provider,expected", [
+        ("O:AAPL240119C00150000", "polygon", "AAPL240119C00150000"),
+        ("AAPL240119C00150000", "polygon", "AAPL240119C00150000"),  # already canonical
+        ("AAPL240119C00150000", "alpaca", "AAPL240119C00150000"),
+    ])
+    def test_canonicalize(self, options, provider_form, provider, expected):
+        assert options.canonicalize(provider_form, provider) == expected
+
+    def test_canonicalize_rejects_unknown(self, options):
+        with pytest.raises(ValueError, match="not a recognized option"):
+            options.canonicalize("AAPL", "polygon")
