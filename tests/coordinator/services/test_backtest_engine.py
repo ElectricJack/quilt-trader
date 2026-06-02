@@ -558,3 +558,48 @@ def test_short_option_expires_itm_loses_money():
     # Short assigned: realized = (premium_received - intrinsic) * 100
     # Premium was ~50, intrinsic is ~50, so roughly break-even
     assert expiries[0].realized_pnl is not None
+
+
+class _ExplodingAlgo:
+    """Algorithm whose on_tick raises immediately — used to verify the engine
+    re-raises rather than silently swallowing the exception."""
+    def on_start(self, config, restored_state): pass
+    def on_tick(self, ctx):
+        raise RuntimeError("algorithm exploded on tick")
+    def on_stop(self): return {}
+    def save_state(self): return {}
+
+
+def test_engine_run_reraises_when_algorithm_throws():
+    """Bug fix: BacktestEngine.run used to log the exception, call
+    observer.on_error, then return normally. That hid algorithm failures
+    behind a 'completed' run status. The engine must re-raise so the runner
+    marks the BacktestRun as failed."""
+    clock = _bars("2024-01-01", 3)
+    ctx = BacktestTickContext(
+        bars={("polygon", "SPY", "1day"): clock},
+        positions={}, cash=10_000.0,
+    )
+    obs = RecordingObserver()
+    engine = BacktestEngine()
+
+    with pytest.raises(RuntimeError, match="algorithm exploded"):
+        engine.run(
+            algorithm=_ExplodingAlgo(),
+            ctx=ctx,
+            clock_series=clock,
+            clock_timeframe="1day",
+            clock_source="polygon",
+            clock_symbol="SPY",
+            slippage=SlippageModel(market_bps=5.0),
+            buy_fees=[], sell_fees=[],
+            initial_cash=10_000.0,
+            observer=obs,
+            cancel_token=CancelToken(),
+        )
+
+    # Observer still received the on_error notification (useful for downstream
+    # event streams), but the exception was also re-raised.
+    assert obs.error is not None
+    assert isinstance(obs.error, RuntimeError)
+    assert "algorithm exploded" in str(obs.error)
