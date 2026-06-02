@@ -39,11 +39,11 @@ describe("ResearchJobRow", () => {
     expect(screen.queryByRole("button", { name: /cancel/i })).toBeNull();
   });
 
-  it("renders run_ids as links to /backtests/runs/{id}", () => {
+  it("renders run_ids as links to /backtest-runs/{id}", () => {
     render(wrap(<ResearchJobRow job={baseJob} onCancel={() => {}} />));
     fireEvent.click(screen.getByText(/3 runs/i));
     const link = screen.getByRole("link", { name: /r1/ });
-    expect(link).toHaveAttribute("href", "/backtests/runs/r1");
+    expect(link).toHaveAttribute("href", "/backtest-runs/r1");
   });
 
   it("expanded row shows error_message when status=failed", () => {

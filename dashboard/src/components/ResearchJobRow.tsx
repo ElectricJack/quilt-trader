@@ -101,7 +101,7 @@ export function ResearchJobRow({ job, onCancel }: Props) {
                 {job.run_ids.map((rid) => (
                   <Link
                     key={rid}
-                    to={`/backtests/runs/${rid}`}
+                    to={`/backtest-runs/${rid}`}
                     className="text-indigo-400 hover:text-indigo-300 text-xs px-2 py-0.5 border border-indigo-900 rounded"
                   >
                     {rid}
