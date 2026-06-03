@@ -174,6 +174,11 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
   - **Manifest + algorithm.py fixes (3):** crypto-custom-etf (default portfolio string), crypto-double-ema-4h + crypto-double-ema-trending (default symbols string), options-condor-martingale (2 pandas resample bugs at lines 704+716 — fed RangeIndex where DatetimeIndex was required)
 - **One-time data fix:** `data/market/yfinance/VIX/1day.parquet` was regenerated locally to fix mixed-tz string timestamps that crashed `pd.to_datetime`. This data lives outside any repo but the same fix logic should land in the yfinance download path (see `Tick context pd.to_datetime` backlog item under Backtesting).
 
+### Equity curve doesn't reflect MTM during long-running positions
+- **Surfaced by:** 2026-06-03 options-ema-spreads diagnosis. A backtest that lost $10.67M on a single expiry showed `portfolio_value = $50,000` flat for the entire 6-month window in `equity_curve`, then jumped to `-$10,516,024` only on the last bar. Equity snapshots only book realized cash; open positions are not marked to market.
+- **Why deferred:** the framework's margin-check fix (commit `33b140e`) blocks the underlying overexposure path going forward, so the misleading equity curve no longer hides catastrophic drawdowns in practice. Still worth fixing for diagnostic visibility on legitimate strategies.
+- **What's needed:** add `position_mv` (sum of `position.market_value` across open positions) to each equity-snapshot record. The engine already computes `account_value = cash + positions_market_value` inline for the tick context — surface that into the snapshot. Existing chart code can fall back to `cash` if `position_mv` absent.
+
 ### Three algorithms produce zero trades despite clean pipeline runs
 - **Surfaced by:** algorithm portfolio audit (2026-06-01). All three install cleanly under the canonical-symbol contract and run end-to-end without errors, but their algorithm logic never signals under tested parameters. These are algorithm-internal issues, not framework issues.
 - **Why deferred:** the canonical-symbol refactor's contract is intact; these are pre-existing algorithm bugs/strategy choices unrelated to the refactor. Worth treating as one-off algorithm fixes when the user wants those specific strategies to trade.
