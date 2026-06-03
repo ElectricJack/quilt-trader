@@ -97,14 +97,22 @@ class CoverageIndex:
     # ----------------------------------------------------------------- private
 
     def _scan(self, provider: str, symbol: str) -> list[tuple[date, date]]:
-        """Load the 1-min parquet (or fallback timeframe), return contiguous ranges."""
-        df = self._ds.load_market_data(provider, symbol, "1min")
+        """Load the 1-min parquet (or fallback timeframe), return contiguous ranges.
 
-        if df is None or df.empty:
-            for tf in ("1day", "5min", "15min", "1hour"):
-                df = self._ds.load_market_data(provider, symbol, tf)
-                if df is not None and not df.empty:
-                    break
+        Treats orphan non-canonical symbol directories (left over from the
+        canonical-symbol migration) as un-coverable rather than aborting the
+        whole coverage endpoint with the ValueError raised by data_service's
+        validation gate.
+        """
+        try:
+            df = self._ds.load_market_data(provider, symbol, "1min")
+            if df is None or df.empty:
+                for tf in ("1day", "5min", "15min", "1hour"):
+                    df = self._ds.load_market_data(provider, symbol, tf)
+                    if df is not None and not df.empty:
+                        break
+        except ValueError:
+            return []
 
         if df is None or df.empty:
             return []

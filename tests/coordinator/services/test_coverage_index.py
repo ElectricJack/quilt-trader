@@ -158,3 +158,18 @@ def test_invalidate_other_key_unaffected():
     call_count_before = ds.load_market_data.call_count
     idx.get_ranges("polygon", "QQQ")
     assert ds.load_market_data.call_count == call_count_before
+
+
+def test_ranges_returns_empty_when_load_raises_validation_error():
+    """Orphan non-canonical symbol directories (left over from the canonical-symbol
+    migration) cause data_service.load_market_data to raise ValueError on validation.
+    CoverageIndex must skip those entries instead of aborting the whole scan."""
+    ds = MagicMock()
+    ds.load_market_data.side_effect = ValueError(
+        "'ETH' is not a canonical symbol. Crypto canonical form is e.g. 'BTCUSD'."
+    )
+    idx = CoverageIndex(ds)
+    assert idx.get_ranges("polygon", "ETH") == []
+    assert idx.get_gaps("polygon", "ETH", date(2026, 1, 1), date(2026, 1, 31)) == [
+        (date(2026, 1, 1), date(2026, 1, 31))
+    ]
