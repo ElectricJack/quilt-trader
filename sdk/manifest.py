@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from zoneinfo import available_timezones
 
 import yaml
 
@@ -16,6 +17,21 @@ _VALID_ASSET_TYPES = frozenset({"equities", "options", "crypto", "index"})
 
 class ManifestError(Exception):
     pass
+
+
+def _default_market_timezone(asset_types: list[str]) -> str:
+    """Return the most-restrictive default market timezone for a set of asset types.
+
+    - Equities or options (alone or mixed with crypto) → America/New_York
+    - Crypto only → UTC
+    - Other / unknown → UTC fallback
+    """
+    types = set(asset_types or [])
+    if types & {"equities", "options"}:
+        return "America/New_York"
+    if types == {"crypto"}:
+        return "UTC"
+    return "UTC"
 
 
 def _validate_asset_type_list(values: list[str], field_name: str) -> list[str]:
@@ -56,6 +72,7 @@ class QuiltManifest:
     jitter_seconds: Optional[int] = None
     trigger: str = "bar:1min"
     data: list[dict] = field(default_factory=list)
+    market_timezone: str = "UTC"
 
     @staticmethod
     def from_file(path: Path) -> QuiltManifest:
@@ -206,22 +223,17 @@ class QuiltManifest:
                     )
                 data_deps.append({"source": source, "type": dtype})
 
-        raw_data = data.get("data") or []
-        data_deps: list[dict] = []
-        valid_data_types = {"scraper", "csv", "json", "parquet"}
-        if isinstance(raw_data, list):
-            for d in raw_data:
-                if not isinstance(d, dict):
-                    continue
-                source = d.get("source")
-                if not source:
-                    continue
-                dtype = d.get("type", "csv")
-                if dtype not in valid_data_types:
-                    raise ManifestError(
-                        f"data entry type must be one of {valid_data_types}, got {dtype!r}"
-                    )
-                data_deps.append({"source": source, "type": dtype})
+        # Parse market_timezone — explicit field with smart default per asset_types
+        explicit_tz = data.get("market_timezone")
+        if explicit_tz is not None:
+            if not isinstance(explicit_tz, str) or explicit_tz not in available_timezones():
+                raise ManifestError(
+                    f"invalid market_timezone {explicit_tz!r}; "
+                    f"must be a valid IANA timezone name (e.g. America/New_York)"
+                )
+            market_timezone = explicit_tz
+        else:
+            market_timezone = _default_market_timezone(asset_types)
 
         return QuiltManifest(
             name=data["name"],
@@ -238,4 +250,5 @@ class QuiltManifest:
             jitter_seconds=jitter_seconds,
             trigger=trigger,
             data=data_deps,
+            market_timezone=market_timezone,
         )

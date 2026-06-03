@@ -412,3 +412,49 @@ class TestManifestCanonicalValidation:
         m = _make_manifest([{"symbol": "AAPL", "asset_class": "crypto"}])
         with pytest.raises(ManifestError, match="AAPL"):
             QuiltManifest._parse(m)
+
+
+class TestMarketTimezone:
+    def _make(self, asset_types, market_timezone=None):
+        data = {
+            "name": "test-algo",
+            "type": "algorithm",
+            "entry_point": "algorithm.py",
+            "class_name": "TestAlgo",
+            "requirements": {"asset_types": asset_types},
+            "assets": [{"symbol": "BTCUSD" if asset_types == ["crypto"] else "AAPL",
+                        "asset_class": asset_types[0]}],
+        }
+        if market_timezone is not None:
+            data["market_timezone"] = market_timezone
+        return data
+
+    def test_market_timezone_explicit_field_honored(self):
+        m = QuiltManifest._parse(self._make(["equities"], market_timezone="Europe/London"))
+        assert m.market_timezone == "Europe/London"
+
+    def test_market_timezone_default_for_equities(self):
+        m = QuiltManifest._parse(self._make(["equities"]))
+        assert m.market_timezone == "America/New_York"
+
+    def test_market_timezone_default_for_crypto(self):
+        m = QuiltManifest._parse(self._make(["crypto"]))
+        assert m.market_timezone == "UTC"
+
+    def test_market_timezone_default_for_mixed(self):
+        # Mixed crypto + equities → most restrictive (ET) wins
+        data = {
+            "name": "test-algo", "type": "algorithm",
+            "entry_point": "algorithm.py", "class_name": "TestAlgo",
+            "requirements": {"asset_types": ["crypto", "equities"]},
+            "assets": [
+                {"symbol": "BTCUSD", "asset_class": "crypto"},
+                {"symbol": "AAPL", "asset_class": "equities"},
+            ],
+        }
+        m = QuiltManifest._parse(data)
+        assert m.market_timezone == "America/New_York"
+
+    def test_market_timezone_rejects_invalid_string(self):
+        with pytest.raises(ManifestError, match="invalid market_timezone"):
+            QuiltManifest._parse(self._make(["equities"], market_timezone="Not/A/Real/Zone"))
