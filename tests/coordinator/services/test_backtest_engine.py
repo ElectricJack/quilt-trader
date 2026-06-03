@@ -603,3 +603,56 @@ def test_engine_run_reraises_when_algorithm_throws():
     assert obs.error is not None
     assert isinstance(obs.error, RuntimeError)
     assert "algorithm exploded" in str(obs.error)
+
+
+def test_sell_to_open_option_rejected_when_margin_exceeds_cash():
+    """Sell-to-open uncovered options must require cash to cover assignment.
+
+    A short call at strike $586 × 100 contracts × multiplier(100) = $5.86M
+    of assignment exposure. With only $50k cash that's 117x leverage —
+    engine must reject (was the root cause of the options-ema-spreads
+    backtest showing -21,132% return on 2026-06-03)."""
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType
+
+    class SellTooManyAlgo:
+        def __init__(self): self._fired = False
+        def on_start(self, c, s): self._fired = False
+        def on_tick(self, ctx):
+            if self._fired: return []
+            self._fired = True
+            return [Signal(legs=[SignalLeg(
+                symbol="SPY250110C00586000",   # SPY $586 call
+                signal_type=SignalType.SELL, quantity=100,
+                asset_type="options", order_type=OrderType.MARKET,
+            )])]
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    clock = _bars("2025-01-06", 5, closes=[500.0]*5)
+    chain_df = pd.DataFrame([
+        {"symbol": "SPY250110C00586000", "strike": 586.0, "option_type": "call",
+         "bid": 0.50, "ask": 0.60, "last": 0.55,
+         "volume": 1000, "open_interest": 0, "implied_volatility": 0.25},
+    ])
+    ctx = BacktestTickContext(
+        bars={("polygon", "SPY", "1day"): clock},
+        positions={}, cash=50_000.0,
+    )
+    ctx._option_chain_cache[("polygon", "SPY", None)] = chain_df
+    obs = RecordingObserver()
+    BacktestEngine().run(
+        algorithm=SellTooManyAlgo(), ctx=ctx, clock_series=clock,
+        clock_timeframe="1day", clock_source="polygon", clock_symbol="SPY",
+        slippage=SlippageModel(market_bps=0), buy_fees=[], sell_fees=[],
+        initial_cash=50_000.0, observer=obs, cancel_token=CancelToken(),
+    )
+    assert obs.error is None
+    # Zero fills — the sell-to-open was rejected
+    assert len(obs.fills) == 0
+    # Exactly one rejection, with insufficient_buying_power reason that
+    # mentions the strike × multiplier × qty margin requirement
+    assert len(obs.rejected) == 1
+    _, _, reason = obs.rejected[0]
+    assert "insufficient_buying_power" in reason
+    # margin = 586 × 100 × 100 = $5,860,000 — must appear in the message
+    assert "5,860,000" in reason or "5860000" in reason

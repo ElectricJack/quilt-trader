@@ -323,37 +323,88 @@ class BacktestEngine:
                     ctx=ctx,
                 )
                 if fill is not None:
-                    # Buying-power check for buys: paper equities/crypto have no
-                    # margin, so a buy that would push cash negative is rejected.
-                    # Sells / shorts on existing positions are allowed; opening a
-                    # short with no position is also rejected (no margin in v1).
+                    # Buying-power check. v1 is strict-cash mode:
+                    #  - BUY: full notional + fees must fit in cash.
+                    #  - SELL of equities/crypto: must hold the position (no shorting).
+                    #  - SELL of options: closing is free; opening or growing a short
+                    #    requires cash to cover assignment (strike × multiplier × qty).
+                    # Rejections are logged via logger.warning for diagnostics in
+                    # addition to the observer.on_signal_rejected hook.
                     if fill.side == "buy":
                         bp_multiplier = self._asset_registry.get_multiplier(fill.symbol)
                         notional_plus_fees = fill.fill_price * fill.quantity * bp_multiplier + fill.fees
                         if notional_plus_fees > cash + 1e-6:
-                            observer.on_signal_rejected(
-                                sim_time,
-                                Signal(legs=[po.leg]),
+                            reason = (
                                 f"insufficient_buying_power: order needs "
-                                f"${notional_plus_fees:,.2f} but cash is ${cash:,.2f}",
+                                f"${notional_plus_fees:,.2f} but cash is ${cash:,.2f}"
+                            )
+                            logger.warning(
+                                "Order rejected at %s for %s: %s",
+                                sim_time, fill.symbol, reason,
+                            )
+                            observer.on_signal_rejected(
+                                sim_time, Signal(legs=[po.leg]), reason,
                             )
                             continue
                     elif fill.side == "sell":
-                        # Block accidental short for equities/crypto (can't sell what you don't own).
-                        # Options can be sold to open (writing), so allow short sells for options.
                         svc = self._asset_registry.get_service(fill.symbol)
+                        key = (fill.symbol,)
+                        held = positions.get(key)
+                        held_qty = held.quantity if held else 0.0
                         if svc.asset_type != AssetType.OPTIONS:
-                            key = (fill.symbol,)
-                            held = positions.get(key)
-                            held_qty = held.quantity if held else 0.0
+                            # Equities/crypto: can't sell what you don't own.
                             if fill.quantity > held_qty + 1e-9:
-                                observer.on_signal_rejected(
-                                    sim_time,
-                                    Signal(legs=[po.leg]),
+                                reason = (
                                     f"insufficient_position: sell {fill.quantity} but "
-                                    f"holding {held_qty}",
+                                    f"holding {held_qty}"
+                                )
+                                logger.warning(
+                                    "Order rejected at %s for %s: %s",
+                                    sim_time, fill.symbol, reason,
+                                )
+                                observer.on_signal_rejected(
+                                    sim_time, Signal(legs=[po.leg]), reason,
                                 )
                                 continue
+                        else:
+                            # Options: closing reduces risk and is allowed.
+                            # Opening or growing a short requires assignment-cost margin.
+                            short_qty = fill.quantity - max(held_qty, 0.0)
+                            if short_qty > 1e-9:
+                                parsed = svc.parse_symbol(fill.symbol) if hasattr(svc, "parse_symbol") else None
+                                strike = parsed.get("strike") if parsed else None
+                                if strike is None:
+                                    reason = (
+                                        f"option_strike_unparseable_for_margin_check: "
+                                        f"{fill.symbol}"
+                                    )
+                                    logger.warning(
+                                        "Order rejected at %s for %s: %s",
+                                        sim_time, fill.symbol, reason,
+                                    )
+                                    observer.on_signal_rejected(
+                                        sim_time, Signal(legs=[po.leg]), reason,
+                                    )
+                                    continue
+                                mult = self._asset_registry.get_multiplier(fill.symbol)
+                                margin_required = strike * mult * short_qty
+                                proceeds = fill.fill_price * fill.quantity * mult - fill.fees
+                                available = cash + proceeds
+                                if margin_required > available + 1e-6:
+                                    reason = (
+                                        f"insufficient_buying_power: short {short_qty:.0f} "
+                                        f"{fill.symbol} requires ${margin_required:,.2f} "
+                                        f"margin (strike × multiplier × qty) but available "
+                                        f"is ${available:,.2f}"
+                                    )
+                                    logger.warning(
+                                        "Order rejected at %s for %s: %s",
+                                        sim_time, fill.symbol, reason,
+                                    )
+                                    observer.on_signal_rejected(
+                                        sim_time, Signal(legs=[po.leg]), reason,
+                                    )
+                                    continue
                     cash = self._apply_fill(cash, positions, fill)
                     all_fills.append(fill)
                     observer.on_fill(fill)
