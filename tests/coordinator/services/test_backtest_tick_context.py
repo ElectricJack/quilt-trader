@@ -369,3 +369,37 @@ def test_option_chain_finds_nearest_expiration():
     chain = ctx.option_chain("SPY", expiration=date(2026, 1, 20))
     assert len(chain.calls) == 1
     assert chain.expiration == date(2026, 1, 17)
+
+
+def test_market_data_loads_mixed_tz_string_timestamps_without_crash():
+    """yfinance parquet output sometimes stores `timestamp` as ISO strings
+    with mixed UTC offsets (DST transitions). pd.to_datetime without utc=True
+    raises ValueError on that input. The tick context must coerce through UTC."""
+    import pandas as pd
+    disk_df = pd.DataFrame({
+        "timestamp": [
+            "2024-01-15T09:30:00-05:00",  # EST
+            "2024-06-15T09:30:00-04:00",  # EDT — different offset, same column
+        ],
+        "open": [100.0, 105.0],
+        "high": [101.0, 106.0],
+        "low": [99.0, 104.0],
+        "close": [100.5, 105.5],
+        "volume": [1000, 2000],
+    })
+
+    mock_ds = type("DS", (), {
+        "load_market_data": lambda self, src, sym, tf: disk_df.copy(),
+    })()
+
+    ctx = BacktestTickContext(bars={}, positions={}, cash=0, data_service=mock_ds)
+    ctx.set_sim_time(datetime(2024, 7, 1, tzinfo=timezone.utc))
+
+    # Should NOT raise ValueError on mixed-tz input
+    out = ctx.market_data("AAPL", "1day", 10, source="polygon")
+    # And the output should be tz-naive (UTC-normalized)
+    if not out.empty and "timestamp" in out.columns:
+        # cached bars get stored under self._bars; verify the cached form is naive
+        key = ("polygon", "AAPL", "1day")
+        cached = ctx._bars[key]
+        assert cached["timestamp"].dt.tz is None, "expected naive datetime after UTC normalization"

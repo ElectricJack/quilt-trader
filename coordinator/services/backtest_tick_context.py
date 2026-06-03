@@ -162,7 +162,11 @@ class BacktestTickContext(TickContext):
             if disk_df is not None and not disk_df.empty:
                 if "timestamp" in disk_df.columns:
                     disk_df = disk_df.copy()
-                    disk_df["timestamp"] = pd.to_datetime(disk_df["timestamp"]).dt.tz_localize(None)
+                    disk_df["timestamp"] = (
+                        pd.to_datetime(disk_df["timestamp"], utc=True)
+                        .dt.tz_convert("UTC")
+                        .dt.tz_localize(None)
+                    )
                 self._bars[key] = disk_df
                 df = disk_df
 
@@ -177,7 +181,11 @@ class BacktestTickContext(TickContext):
                 if fetched is not None and not fetched.empty:
                     if "timestamp" in fetched.columns:
                         fetched = fetched.copy()
-                        fetched["timestamp"] = pd.to_datetime(fetched["timestamp"]).dt.tz_localize(None)
+                        fetched["timestamp"] = (
+                            pd.to_datetime(fetched["timestamp"], utc=True)
+                            .dt.tz_convert("UTC")
+                            .dt.tz_localize(None)
+                        )
                     self._bars[key] = fetched
                     df = fetched
             except Exception:
