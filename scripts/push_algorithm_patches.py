@@ -15,6 +15,10 @@ from pathlib import Path
 
 
 ALLOWED_FILES = {"quilt.yaml", "algorithm.py"}
+# Paths to filter out of the change list before scope-checking. These are
+# build/runtime artifacts that may be left behind by previous installs and
+# shouldn't block the PR — they're not patches we want to push either.
+IGNORED_PATH_PARTS = {"__pycache__", ".pytest_cache", ".venv"}
 BRANCH = "fix/canonical-symbols-and-market-time"
 PR_TITLE = "fix: canonical symbols + ctx.market_time() compatibility"
 
@@ -83,12 +87,18 @@ def _process_repo(repo: Path, quilt_sha: str, dry_run: bool) -> tuple[str, str]:
     if not status.strip():
         return ("SKIP_CLEAN", "no local changes")
 
-    # 2. Sanity-check: every changed file is in ALLOWED_FILES
-    changed = []
+    # 2. Parse changed paths, dropping ignored runtime/build artifacts
+    all_paths = []
     for line in status.splitlines():
         # Porcelain v1: "XY path" — strip the 2-char status + space
-        path = line[3:].strip()
-        changed.append(path)
+        all_paths.append(line[3:].strip())
+    changed = [p for p in all_paths
+               if not any(part in IGNORED_PATH_PARTS for part in Path(p).parts)]
+
+    if not changed:
+        return ("SKIP_CLEAN", f"only ignored artifacts modified ({all_paths})")
+
+    # 3. Sanity-check: every remaining changed file is in ALLOWED_FILES
     out_of_scope = [p for p in changed if Path(p).name not in ALLOWED_FILES]
     if out_of_scope:
         return ("REFUSED_OUT_OF_SCOPE", f"unexpected files: {out_of_scope}")
