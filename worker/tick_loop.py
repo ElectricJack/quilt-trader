@@ -34,7 +34,10 @@ class TickProcessor:
                  idle_threshold_seconds: int = 60,
                  live_observer: Optional["LiveObserver"] = None,
                  buffer: Any = None,
-                 data_deps: Optional[list[dict]] = None) -> None:
+                 data_deps: Optional[list[dict]] = None,
+                 *,
+                 market_timezone: str = "UTC",
+                 asset_types: Optional[list[str]] = None) -> None:
         self._runner = runner
         self._broker = broker
         self._data_client = data_client
@@ -43,6 +46,8 @@ class TickProcessor:
         self._live_observer = live_observer
         self._buffer = buffer
         self._data_deps = data_deps or []
+        self._market_timezone = market_timezone
+        self._asset_types = asset_types or []
         self._silent_tick_count: int = 0
         self._last_active_tick_ts: Optional[datetime] = None
         self._last_idle_tick_emitted_ts: Optional[datetime] = None
@@ -69,6 +74,8 @@ class TickProcessor:
             timestamp=timestamp, mode="live", broker=self._broker,
             data_client=self._data_client, buffer=self._buffer,
             custom_data=custom_data,
+            market_timezone=self._market_timezone,
+            asset_types=self._asset_types,
         )
         signals = self._runner.tick(ctx)
         result = TickResult(timestamp=timestamp, signals_produced=len(signals))

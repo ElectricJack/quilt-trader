@@ -114,6 +114,11 @@ class LiveInstanceRuntime:
             instance_id=instance_id, run_id=run_id,
         )
         # 7. Build the TickProcessor with the live_observer wired in.
+        from sdk.manifest import _default_market_timezone
+        mkt_tz = manifest.get("market_timezone") or _default_market_timezone(
+            (manifest.get("requirements") or {}).get("asset_types") or []
+        )
+        asset_types_list = (manifest.get("requirements") or {}).get("asset_types") or []
         tick_processor = TickProcessor(
             runner=runner,
             broker=broker,
@@ -122,6 +127,8 @@ class LiveInstanceRuntime:
             live_observer=observer,
             buffer=buffer,
             data_deps=data_deps,
+            market_timezone=mkt_tz,
+            asset_types=asset_types_list,
         )
         return cls(
             instance_id=instance_id, run_id=run_id,

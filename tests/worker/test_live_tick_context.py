@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 from unittest.mock import MagicMock, AsyncMock
 from datetime import datetime, timezone
 
@@ -66,3 +67,45 @@ def test_market_data_returns_none_when_buffer_is_none_no_positions():
     )
     result = ctx.market_data("AAPL", "1min", 5)
     assert result is None
+
+
+def test_live_market_time_returns_et_aware():
+    from worker.context import LiveTickContext
+    ctx = LiveTickContext(
+        timestamp=datetime(2024, 6, 15, 13, 30, tzinfo=timezone.utc),
+        mode="live",
+        broker=MagicMock(),
+        data_client=MagicMock(),
+        market_timezone="America/New_York",
+        asset_types=["equities"],
+    )
+    mt = ctx.market_time()
+    assert mt.tzinfo is not None
+    assert mt.utcoffset().total_seconds() == -4 * 3600
+    assert mt.hour == 9 and mt.minute == 30
+
+
+def test_live_is_market_open_crypto_always_true():
+    from worker.context import LiveTickContext
+    ctx = LiveTickContext(
+        timestamp=datetime(2024, 6, 15, 14, 0, tzinfo=timezone.utc),  # Saturday
+        mode="live",
+        broker=MagicMock(),
+        data_client=MagicMock(),
+        market_timezone="UTC",
+        asset_types=["crypto"],
+    )
+    assert ctx.is_market_open() is True
+
+
+def test_live_is_market_open_equities_weekend():
+    from worker.context import LiveTickContext
+    ctx = LiveTickContext(
+        timestamp=datetime(2024, 6, 15, 14, 0, tzinfo=timezone.utc),  # Saturday
+        mode="live",
+        broker=MagicMock(),
+        data_client=MagicMock(),
+        market_timezone="America/New_York",
+        asset_types=["equities"],
+    )
+    assert ctx.is_market_open() is False

@@ -1,12 +1,18 @@
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 import logging
 import pandas as pd
 from sdk.context import TickContext
 from sdk.models import OptionChain, Position
 from worker.broker_adapter import BrokerAdapter
 from worker.data_client import DataClient
+from coordinator.services.backtest_tick_context import (
+    _get_calendar_cached,
+    _needs_market_calendar,
+    _calendar_name_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +26,9 @@ class LiveTickContext(TickContext):
         data_client: DataClient,
         buffer: Any = None,
         custom_data: Optional[dict[str, pd.DataFrame]] = None,
+        *,
+        market_timezone: str = "UTC",
+        asset_types: Optional[list[str]] = None,
     ) -> None:
         self._timestamp = timestamp
         self._mode = mode
@@ -32,6 +41,10 @@ class LiveTickContext(TickContext):
         # Entries are refreshed when the TTL expires (default 60 s).
         self._dataset_cache: dict[tuple, tuple[float, pd.DataFrame]] = {}
         self._dataset_cache_ttl_s: float = 60.0
+        self._market_timezone = market_timezone
+        self._asset_types = asset_types or []
+        self._needs_calendar = _needs_market_calendar(self._asset_types)
+        self._calendar_name = _calendar_name_for(self._asset_types)
 
     @property
     def timestamp(self) -> datetime:
@@ -66,6 +79,28 @@ class LiveTickContext(TickContext):
     @property
     def buying_power(self) -> float:
         return self._broker.get_account_info()["buying_power"]
+
+    def market_time(self) -> datetime:
+        tz = ZoneInfo(self._market_timezone)
+        ts = self._timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(tz)
+
+    def is_market_open(self) -> bool:
+        if not self._needs_calendar:
+            return True
+        cal = _get_calendar_cached(self._calendar_name)
+        now_market = self.market_time()
+        schedule = cal.schedule(
+            start_date=now_market.date(),
+            end_date=now_market.date(),
+        )
+        if schedule.empty:
+            return False
+        open_ts = schedule.iloc[0]["market_open"].tz_convert(now_market.tzinfo)
+        close_ts = schedule.iloc[0]["market_close"].tz_convert(now_market.tzinfo)
+        return open_ts <= now_market < close_ts
 
     def market_data(self, symbol: str, timeframe: str = "1min", bars: int = 100):
         if self._buffer is not None and self._buffer.has(symbol, timeframe):
