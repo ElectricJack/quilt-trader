@@ -166,6 +166,22 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** `data/packages/quilt-trader-test-algo/quilt.yaml` was updated locally to the new `assets:` format, but `data/packages/` is gitignored. A re-install from the upstream GitHub repo will revert to the old format.
 - **What's needed:** open a PR on the upstream `quilt-trader-test-algo` repo updating `quilt.yaml` to include the `assets:` block in the new schema.
 
+### Push canonical-symbol manifest+algorithm fixes to ~17 upstream algorithm repos
+- **Surfaced by:** algorithm portfolio audit (2026-06-01). The canonical-symbol refactor (commits `51f74eb` through `134fbae`) made the framework reject non-canonical symbols at install + runtime. Every installed algorithm with bare crypto names (`BTC`, `ETH`, etc.) or provider-prefixed indexes (`^VIX`, `I:SPX`) or `O:`-prefixed OCC strings fails to install on a fresh checkout.
+- **Why deferred:** the audit patched 17 manifests + 3 Python files locally in `data/packages/<algo>/` (gitignored) and mirrored to `/tmp/quilt-algos/<algo>/` (external upstream repos). Without upstream PRs, a re-install reverts to the broken state.
+- **What's needed:** open one PR per algorithm against its upstream repo with the canonical-symbol fix. Touched repos:
+  - **Manifest-only fixes (14):** crypto-bbands-v2, diversified-leverage, options-butterfly-condor, options-condor-martingale, options-ema-spreads, options-ema-spreads-v2, options-ml-news-trading, options-rolling-calls, options-spreads-martingale, options-spreads-martingale-v2, options-straddle, stock-breakout, stock-ema-crossover, stock-multi-ema-spreads, stock-swing-trading, stock-top-etf-picker
+  - **Manifest + algorithm.py fixes (3):** crypto-custom-etf (default portfolio string), crypto-double-ema-4h + crypto-double-ema-trending (default symbols string), options-condor-martingale (2 pandas resample bugs at lines 704+716 — fed RangeIndex where DatetimeIndex was required)
+- **One-time data fix:** `data/market/yfinance/VIX/1day.parquet` was regenerated locally to fix mixed-tz string timestamps that crashed `pd.to_datetime`. This data lives outside any repo but the same fix logic should land in the yfinance download path (see `Tick context pd.to_datetime` backlog item under Backtesting).
+
+### Three algorithms produce zero trades despite clean pipeline runs
+- **Surfaced by:** algorithm portfolio audit (2026-06-01). All three install cleanly under the canonical-symbol contract and run end-to-end without errors, but their algorithm logic never signals under tested parameters. These are algorithm-internal issues, not framework issues.
+- **Why deferred:** the canonical-symbol refactor's contract is intact; these are pre-existing algorithm bugs/strategy choices unrelated to the refactor. Worth treating as one-off algorithm fixes when the user wants those specific strategies to trade.
+- **What's needed (per algo):**
+  - **`options-ema-spreads-v2`:** entry filter chain (EMA + delta-match + bid<ask all-must-pass) rejects every candidate in tested windows. Investigate whether the filter chain is over-restrictive or whether parameter ranges weren't tested wide enough. Could be a genuine "no opportunities in test window" or a bug.
+  - **`options-rolling-calls`:** algorithm hardcodes ET-naive `9:44 ≤ hour ≤ 15:30` window but compares against `ctx.timestamp` (UTC). Fires only in the UTC slice that happens to overlap (roughly UTC 14:44–20:30 when DST is active), which often misses NY trading hours entirely. Fix: convert `ctx.timestamp` to ET before comparing, OR adopt the `ctx.market_time()` SDK helper proposed in the Backtesting backlog item above.
+  - **`options-condor-martingale`:** default `martingale_quantities="0,2,5,15,45"` starts with quantity 0 (skip first cycle). Combined with strict ADX/IV/bid-ask/gamma pre-trade filters, no entries fire in the tested 1-year window. Either the default config needs revision, the filters need relaxation, or the algo needs a longer historical window. Worth a strategy review.
+
 ---
 
 ## Validation Lab
