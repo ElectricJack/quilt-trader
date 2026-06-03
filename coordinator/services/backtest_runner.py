@@ -411,6 +411,8 @@ class BacktestRunner:
                 default_source=default_src,
                 data_service=self._ds,
                 on_miss=on_miss,
+                market_timezone=manifest.market_timezone,
+                asset_types=(manifest.requirements.asset_types or []),
             )
 
             # Warm option chain cache for options algorithms

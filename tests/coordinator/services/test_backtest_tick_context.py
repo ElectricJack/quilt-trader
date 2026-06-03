@@ -403,3 +403,86 @@ def test_market_data_loads_mixed_tz_string_timestamps_without_crash():
         key = ("polygon", "AAPL", "1day")
         cached = ctx._bars[key]
         assert cached["timestamp"].dt.tz is None, "expected naive datetime after UTC normalization"
+
+
+def test_market_time_returns_et_aware_during_edt():
+    """During EDT (April-October), market_time should return UTC-4."""
+    from zoneinfo import ZoneInfo
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        market_timezone="America/New_York",
+        asset_types=["equities"],
+    )
+    ctx.set_sim_time(datetime(2024, 6, 15, 13, 30, tzinfo=timezone.utc))
+    mt = ctx.market_time()
+    assert mt.tzinfo is not None
+    assert mt.utcoffset().total_seconds() == -4 * 3600  # EDT = UTC-4
+    assert mt.hour == 9 and mt.minute == 30
+
+
+def test_market_time_returns_et_aware_during_est():
+    """During EST (November-March), market_time should return UTC-5."""
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        market_timezone="America/New_York",
+        asset_types=["equities"],
+    )
+    ctx.set_sim_time(datetime(2024, 1, 15, 14, 30, tzinfo=timezone.utc))
+    mt = ctx.market_time()
+    assert mt.utcoffset().total_seconds() == -5 * 3600  # EST = UTC-5
+    assert mt.hour == 9 and mt.minute == 30
+
+
+def test_is_market_open_equities_during_session():
+    """Tue 2024-06-18 14:00 UTC = 10:00 EDT = middle of session → True."""
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        market_timezone="America/New_York",
+        asset_types=["equities"],
+    )
+    ctx.set_sim_time(datetime(2024, 6, 18, 14, 0, tzinfo=timezone.utc))
+    assert ctx.is_market_open() is True
+
+
+def test_is_market_open_equities_weekend():
+    """Sat 2024-06-15 14:00 UTC → False."""
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        market_timezone="America/New_York",
+        asset_types=["equities"],
+    )
+    ctx.set_sim_time(datetime(2024, 6, 15, 14, 0, tzinfo=timezone.utc))
+    assert ctx.is_market_open() is False
+
+
+def test_is_market_open_equities_pre_open():
+    """Tue 2024-06-18 13:00 UTC = 09:00 EDT (30 min before open) → False."""
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        market_timezone="America/New_York",
+        asset_types=["equities"],
+    )
+    ctx.set_sim_time(datetime(2024, 6, 18, 13, 0, tzinfo=timezone.utc))
+    assert ctx.is_market_open() is False
+
+
+def test_is_market_open_equities_holiday():
+    """Mon 2024-01-01 (NY Day) 14:30 UTC = 09:30 EST → False (holiday)."""
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        market_timezone="America/New_York",
+        asset_types=["equities"],
+    )
+    ctx.set_sim_time(datetime(2024, 1, 1, 14, 30, tzinfo=timezone.utc))
+    assert ctx.is_market_open() is False
+
+
+def test_is_market_open_crypto_always_true():
+    """Sat 2024-06-15 14:00 UTC with crypto-only manifest → True (24/7)."""
+    ctx = BacktestTickContext(
+        bars={}, positions={}, cash=0,
+        market_timezone="UTC",
+        asset_types=["crypto"],
+    )
+    ctx.set_sim_time(datetime(2024, 6, 15, 14, 0, tzinfo=timezone.utc))
+    assert ctx.is_market_open() is True

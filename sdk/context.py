@@ -51,6 +51,28 @@ class TickContext(ABC):
         ...
 
     @abstractmethod
+    def market_time(self) -> datetime:
+        """Current sim time in the manifest's `market_timezone` (tz-aware datetime).
+
+        For naive timestamps (the convention for `self.timestamp`), the value
+        is localized to UTC first then converted to the market timezone.
+        DST transitions are handled correctly via zoneinfo.
+        """
+        ...
+
+    @abstractmethod
+    def is_market_open(self) -> bool:
+        """True if the current sim time is during the regular trading session
+        for the manifest's asset_types.
+
+        Equities/options manifests use the NYSE calendar (`XNYS`) via
+        `pandas_market_calendars` — checks weekday + 09:30-16:00 ET window +
+        excludes US trading holidays. Crypto-only manifests always return
+        True. Mixed manifests use the most restrictive (equities calendar).
+        """
+        ...
+
+    @abstractmethod
     def data(self, source_name: str) -> pd.DataFrame:
         ...
 

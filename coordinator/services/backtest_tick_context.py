@@ -10,8 +10,9 @@ options backtesting is a follow-up spec (Spec D §12).
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -35,6 +36,32 @@ def timeframe_to_seconds(tf: str) -> int:
     return _TIMEFRAME_TO_SECONDS[tf]
 
 
+_CALENDAR_CACHE: dict[str, object] = {}
+
+
+def _get_calendar_cached(name: str) -> object:
+    """Lazy-load and cache a pandas_market_calendars instance by name."""
+    if name not in _CALENDAR_CACHE:
+        import pandas_market_calendars as mcal
+        _CALENDAR_CACHE[name] = mcal.get_calendar(name)
+    return _CALENDAR_CACHE[name]
+
+
+def _needs_market_calendar(asset_types: list[str]) -> bool:
+    """True if any of the manifest's asset_types requires market-hours gating.
+    Crypto-only manifests are 24/7 and never need a calendar."""
+    types = set(asset_types or [])
+    return bool(types & {"equities", "options"})
+
+
+def _calendar_name_for(asset_types: list[str]) -> str:
+    """Return the pandas_market_calendars name for the most-restrictive asset
+    type. Defaults to XNYS for equities/options. Crypto-only / unknown gets
+    XNYS as a placeholder — not consulted because _needs_market_calendar
+    returns False in those cases."""
+    return "XNYS"  # NYSE = US equities + listed options
+
+
 class BacktestTickContext(TickContext):
     """Backtest-time TickContext.
 
@@ -53,6 +80,8 @@ class BacktestTickContext(TickContext):
         default_source: Optional[str] = None,
         data_service: Optional[Any] = None,
         on_miss: Optional[Any] = None,  # sync callable(symbol, timeframe, source) -> Optional[pd.DataFrame]
+        market_timezone: str = "UTC",
+        asset_types: Optional[list[str]] = None,
     ) -> None:
         self._bars = bars
         self._positions = positions
@@ -63,6 +92,10 @@ class BacktestTickContext(TickContext):
         self._default_source = default_source
         self._data_service = data_service
         self._on_miss = on_miss
+        self._market_timezone = market_timezone
+        self._asset_types = asset_types or []
+        self._needs_calendar = _needs_market_calendar(self._asset_types)
+        self._calendar_name = _calendar_name_for(self._asset_types)
         self._sim_time_now: Optional[datetime] = None
         self._custom_data_cache: Optional[dict[str, pd.DataFrame]] = None
         self._cancel_orders_requested = False
@@ -220,6 +253,30 @@ class BacktestTickContext(TickContext):
         end_idx = int(np.searchsorted(ns, cutoff_ns, side="right"))
         start_idx = max(0, end_idx - bars)
         return df.iloc[start_idx:end_idx].reset_index(drop=True)
+
+    def market_time(self) -> datetime:
+        if self._sim_time_now is None:
+            raise RuntimeError("set_sim_time must be called before market_time")
+        tz = ZoneInfo(self._market_timezone)
+        ts = self._sim_time_now
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(tz)
+
+    def is_market_open(self) -> bool:
+        if not self._needs_calendar:
+            return True
+        cal = _get_calendar_cached(self._calendar_name)
+        now_market = self.market_time()
+        schedule = cal.schedule(
+            start_date=now_market.date(),
+            end_date=now_market.date(),
+        )
+        if schedule.empty:
+            return False
+        open_ts = schedule.iloc[0]["market_open"].tz_convert(now_market.tzinfo)
+        close_ts = schedule.iloc[0]["market_close"].tz_convert(now_market.tzinfo)
+        return open_ts <= now_market < close_ts
 
     def data(self, source_name: str) -> pd.DataFrame:
         """Load custom data (scraper output, CSV, etc.) from disk."""
