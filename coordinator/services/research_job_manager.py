@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from sqlalchemy import select
@@ -36,12 +36,14 @@ class ResearchJobManager:
         walk_forward_fn: WalkForwardFn,
         runner_factory: RunnerFactory,
         sync_session_factory: Optional[Callable[[], Any]] = None,
+        on_job_update: Callable[[dict], Awaitable[None]] | None = None,
     ):
         self._sf = session_factory
         self._sweep_fn = sweep_fn
         self._wf_fn = walk_forward_fn
         self._runner_factory = runner_factory
         self._sync_sf = sync_session_factory
+        self._on_job_update = on_job_update
         self._active_tasks: dict[str, asyncio.Task] = {}
         self._cancel_flags: dict[str, asyncio.Event] = {}
 
@@ -136,7 +138,7 @@ class ResearchJobManager:
                        payload: dict, cancel_flag: asyncio.Event) -> None:
         try:
             await self._mark_running(job_id)
-            progress_cb = _make_progress_callback(self._sf, job_id, cancel_flag)
+            progress_cb = self._make_progress_callback(job_id, cancel_flag)
             if kind == "sweep":
                 await self._dispatch_sweep(session_id, payload, progress_cb)
             else:
@@ -160,6 +162,13 @@ class ResearchJobManager:
                 db, self._runner_factory,
                 session_id=session_id,
                 manifest_path=payload["manifest_path"],
+                algorithm_id=payload["algorithm_id"],
+                date_range_start=date.fromisoformat(payload["date_range_start"]),
+                date_range_end=date.fromisoformat(payload["date_range_end"]),
+                initial_cash=payload["initial_cash"],
+                cost_profile=payload["cost_profile"],
+                benchmark_symbol=payload.get("benchmark_symbol"),
+                benchmark_source=payload.get("benchmark_source"),
                 base_config=payload["base_config"],
                 parameter_space=payload.get("parameter_space"),
                 search=payload.get("search", "grid"),
@@ -178,6 +187,13 @@ class ResearchJobManager:
                 db, self._runner_factory,
                 session_id=session_id,
                 manifest_path=payload["manifest_path"],
+                algorithm_id=payload["algorithm_id"],
+                date_range_start=date.fromisoformat(payload["date_range_start"]),
+                date_range_end=date.fromisoformat(payload["date_range_end"]),
+                initial_cash=payload["initial_cash"],
+                cost_profile=payload["cost_profile"],
+                benchmark_symbol=payload.get("benchmark_symbol"),
+                benchmark_source=payload.get("benchmark_source"),
                 base_config=payload["base_config"],
                 parameter_space=payload.get("parameter_space"),
                 train_years=payload.get("train_years", 4.0),
@@ -189,6 +205,24 @@ class ResearchJobManager:
             )
             db.commit()
 
+    async def _publish_update(self, job_id: str) -> None:
+        """Load the row's current state and invoke the broadcaster, if any.
+        Exceptions in the broadcaster are logged but never re-raised — the
+        DB row is the source of truth; the broadcast is a courtesy."""
+        if self._on_job_update is None:
+            return
+        async with self._sf() as s:
+            row = (await s.execute(
+                select(ResearchJob).where(ResearchJob.id == job_id)
+            )).scalar_one_or_none()
+            if row is None:
+                return
+            payload = _row_to_dict(row)
+        try:
+            await self._on_job_update(payload)
+        except Exception:
+            logger.exception("ws broadcaster raised for research_job %s", job_id)
+
     async def _mark_running(self, job_id: str) -> None:
         async with self._sf() as s:
             row = (await s.execute(select(ResearchJob).where(ResearchJob.id == job_id))).scalar_one()
@@ -197,6 +231,7 @@ class ResearchJobManager:
             row.status = "running"
             row.started_at = datetime.now(timezone.utc)
             await s.commit()
+        await self._publish_update(job_id)
 
     async def _mark_terminal(self, job_id: str, status: str, *, error: str | None = None) -> None:
         async with self._sf() as s:
@@ -212,6 +247,27 @@ class ResearchJobManager:
             if error is not None:
                 row.error_message = error
             await s.commit()
+        await self._publish_update(job_id)
+
+    def _make_progress_callback(self, job_id: str, cancel_flag: asyncio.Event):
+        """Returns a callable invoked after each completed trial / fold.
+        Signature: (pct: float, message: str, run_ids: list[str])."""
+        async def cb(pct: float, message: str, run_ids: list[str]) -> None:
+            if cancel_flag.is_set():
+                raise asyncio.CancelledError()
+            async with self._sf() as s:
+                row = (await s.execute(
+                    select(ResearchJob).where(ResearchJob.id == job_id)
+                )).scalar_one_or_none()
+                if row is None:
+                    return
+                row.progress_pct = pct
+                row.progress_message = message
+                if run_ids:
+                    row.run_ids = list(run_ids)
+                await s.commit()
+            await self._publish_update(job_id)
+        return cb
 
 
 def _row_to_dict(row: ResearchJob) -> dict:
@@ -230,22 +286,3 @@ def _row_to_dict(row: ResearchJob) -> dict:
     }
 
 
-def _make_progress_callback(session_factory, job_id: str, cancel_flag: asyncio.Event):
-    """Return a callable the sweep/walk-forward orchestrator invokes after each
-    completed trial / fold. Signature: (pct: float, message: str, run_ids: list[str]).
-
-    The callback raises asyncio.CancelledError if the cancel flag has been
-    set, providing a cooperative cancellation point between trials.
-    """
-    async def cb(pct: float, message: str, run_ids: list[str]) -> None:
-        if cancel_flag.is_set():
-            raise asyncio.CancelledError()
-        async with session_factory() as s:
-            row = (await s.execute(select(ResearchJob).where(ResearchJob.id == job_id))).scalar_one_or_none()
-            if row is None:
-                return
-            row.progress_pct = float(pct)
-            row.progress_message = message
-            row.run_ids = list(run_ids)
-            await s.commit()
-    return cb

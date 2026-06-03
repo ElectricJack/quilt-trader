@@ -30,6 +30,14 @@ def _make_no_content_resp():
     return resp
 
 
+def _get_sequence(*payloads):
+    """AsyncMock whose side_effect cycles through multiple GET responses.
+
+    Commands that call resolve_id first do a list GET, then the actual GET.
+    """
+    return AsyncMock(side_effect=[_make_json_resp(p) for p in payloads])
+
+
 # ---------------------------------------------------------------------------
 # algorithm
 # ---------------------------------------------------------------------------
@@ -70,7 +78,9 @@ def test_algorithm_uninstall_requires_yes():
 
 def test_algorithm_uninstall_with_yes():
     runner = CliRunner()
-    with patch("httpx.AsyncClient.delete", new=AsyncMock(return_value=_make_no_content_resp())):
+    algo_list = [{"id": "abc", "name": "TestAlgo", "install_status": "installed"}]
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_make_json_resp(algo_list))), \
+         patch("httpx.AsyncClient.delete", new=AsyncMock(return_value=_make_no_content_resp())):
         result = runner.invoke(quilt, ["algorithm", "uninstall", "abc", "--yes"])
     assert result.exit_code == 0, result.output
     assert "uninstalled" in result.output
@@ -78,8 +88,9 @@ def test_algorithm_uninstall_with_yes():
 
 def test_algorithm_show_renders_kv():
     runner = CliRunner()
+    algo_list = [{"id": "a", "name": "MyAlgo", "version": "2"}]
     payload = {"id": "a", "name": "MyAlgo", "version": "2"}
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_make_json_resp(payload))):
+    with patch("httpx.AsyncClient.get", new=_get_sequence(algo_list, payload)):
         result = runner.invoke(quilt, ["algorithm", "show", "a"])
     assert result.exit_code == 0, result.output
     assert "MyAlgo" in result.output
@@ -120,8 +131,10 @@ def test_worker_add_renders_id():
 
 def test_worker_regenerate_token():
     runner = CliRunner()
+    worker_list = [{"id": "w1", "name": "Pi-1", "status": "online"}]
     payload = {"id": "w1", "name": "Pi-1", "install_token": "newtok", "install_status": "pending"}
-    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=_make_json_resp(payload))):
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_make_json_resp(worker_list))), \
+         patch("httpx.AsyncClient.post", new=AsyncMock(return_value=_make_json_resp(payload))):
         result = runner.invoke(quilt, ["worker", "regenerate-token", "w1"])
     assert result.exit_code == 0, result.output
     assert "newtok" in result.output
@@ -161,7 +174,9 @@ def test_account_delete_requires_yes():
 
 def test_account_delete_with_yes():
     runner = CliRunner()
-    with patch("httpx.AsyncClient.delete", new=AsyncMock(return_value=_make_no_content_resp())):
+    account_list = [{"id": "acct1", "name": "Paper Alpaca", "broker_type": "alpaca", "environment": "paper"}]
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=_make_json_resp(account_list))), \
+         patch("httpx.AsyncClient.delete", new=AsyncMock(return_value=_make_no_content_resp())):
         result = runner.invoke(quilt, ["account", "delete", "acct1", "--yes"])
     assert result.exit_code == 0, result.output
     assert "deleted" in result.output

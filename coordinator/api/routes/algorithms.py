@@ -149,6 +149,10 @@ def _algo_to_response(algo: Algorithm) -> dict:
         "id": algo.id,
         "repo_url": algo.repo_url,
         "source_path": algo.source_path,
+        "manifest_path": (
+            f"{algo.source_path}/quilt.yaml"
+            if algo.source_path else None
+        ),
         "name": algo.name,
         "description": algo.description,
         "version": algo.version,

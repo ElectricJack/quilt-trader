@@ -91,6 +91,36 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** existing backtests still work; cost modeling is purely additive.
 - **RESOLVED** (2026-05-27, commit `16f3a1b`): `BacktestRunner.run()` now defaults `cost_profile` to `"default"` when the column is `NULL`, rather than falling through to legacy empty fee lists. Users who want zero-fee modeling can ship a custom YAML profile and reference it explicitly.
 
+### Tick context `pd.to_datetime` crashes on mixed-tz string timestamps
+- **Surfaced by:** algorithm portfolio audit 2026-06-01. `data/market/yfinance/VIX/1day.parquet` was originally stored with ISO-string timestamps in local time with mixed offsets (`-05:00` in summer, `-06:00` in winter — DST transitions). `backtest_tick_context.py:165` does `pd.to_datetime(disk_df["timestamp"]).dt.tz_localize(None)` which raises `ValueError: Mixed timezones detected`.
+- **Why deferred:** worked around by regenerating the offending parquet with naive UTC timestamps. Same pattern will recur for any downloaded data stored with similar formatting.
+- **What's needed:** in `backtest_tick_context.py` and similar load paths, use `pd.to_datetime(col, utc=True).dt.tz_convert("UTC").dt.tz_localize(None)` to coerce mixed-tz inputs through UTC first. Add a unit test that feeds a mixed-tz DataFrame through the load path.
+
+### `ctx.market_data` source fallback ignores bars cache when default_source is set
+- **Surfaced by:** algorithm portfolio audit 2026-06-01. Manifest declares `VIX source:yfinance` so bars cache key is `(yfinance, VIX, 1day)`. Algorithm calls `ctx.market_data("VIX", "1day", 1)` without `source=` kwarg. Tick context defaults to `_default_source` (the manifest's first asset's source, e.g. `polygon`) and tries to load polygon VIX, missing the yfinance entry in the cache.
+- **Why deferred:** algorithms can work around by passing `source=` explicitly.
+- **What's needed:** in `BacktestTickContext.market_data`, if `(default_source, symbol, tf)` is not in `self._bars`, search by `(symbol, tf)` for any source before falling through to disk. This matches the manifest declarative intent: "if I asked for VIX, find VIX wherever it's cached."
+
+### Option-chain pre-download is unbounded and uncancellable
+- **Surfaced by:** algorithm portfolio audit 2026-06-01. `_download_option_contracts` iterates every monthly 3rd-Friday expiration in the date range and downloads each contract found by polygon's discovery endpoint (~13s/contract). A single backtest can trigger 100+ contract downloads. Cancelling the job marks it cancelled in DB but does not abort the inflight download loop.
+- **Why deferred:** workable for now if test windows are picked carefully (must hit already-cached expirations).
+- **What's needed:** (a) pass the cancel-token into `_download_option_contracts` and check between contracts; (b) consider bounding contract discovery to N-deltas-from-ATM rather than the whole chain; (c) defer contract download until the algorithm actually requests bars for the contract (lazy load) rather than pre-downloading the whole monthly chain.
+
+### Algorithm SDK should expose ET wall-clock helpers
+- **Surfaced by:** algorithm portfolio audit 2026-06-01. Multiple algorithms hardcode ET trading-hour windows against `ctx.timestamp.hour` directly (`options-rolling-calls` EARLIEST_ENTRY=9:44 / CLOSE_BEFORE_EOD=15:30; `options-ema-spreads` `time_to_start` parameter; `if ts.hour >= 15 and ts.minute >= 30`). `ctx.timestamp` is UTC, so these windows fire in a UTC-time slice that often misses NY trading hours entirely. Caused several audit runs to produce zero trades.
+- **Why deferred:** algorithm-side bug; not a framework bug per se.
+- **What's needed:** SDK helper `ctx.market_time()` returning ET-localized timestamp, and a `ctx.is_market_hours()` predicate. Document the convention in `sdk/context.py` and migrate offending algorithms.
+
+### Separate `downloads:` block from `assets:` in manifest
+- **Surfaced by:** algorithm portfolio audit 2026-06-01. The `assets:` block currently does triple duty: declares what to pre-download, what to pre-warm in the bars cache, and what the `default_source` should resolve to. Algorithms with dynamic universes (options chain underlyings, multi-symbol momentum) have to choose between (a) listing every symbol to control downloads but ballooning the manifest, or (b) listing fewer and relying on on-demand `ctx.market_data` to lazy-load.
+- **Why deferred:** workable today by listing all required symbols.
+- **What's needed:** new manifest block `downloads:` (or rename `assets:` → `downloads:` and add `cache_warm:` separately). Migrate existing algorithms. Algorithm SDK docs updated to explain the distinction.
+
+### SQLite write contention on parallel sweep trials
+- **Surfaced by:** algorithm portfolio audit 2026-06-01. Even `parallelism: 1` sweeps occasionally produced "database is locked" errors on the second trial because the BacktestRunner shares the SQLite connection pool with ApScheduler polling jobs (Alpaca/Tradier activity sync). The first trial always completed; the second sometimes lost the race.
+- **Why deferred:** the lock is transient and a retry would resolve it; workaround was to use `parallelism: 1` and retry the sweep.
+- **What's needed:** either (a) configure SQLite with `PRAGMA busy_timeout = 30000` and a longer-tolerance write lock, (b) move write-heavy sweep trial inserts to a dedicated connection with retry-on-busy, or (c) bite the bullet and migrate to Postgres for any deployment running parallel sweeps.
+
 ### Trade-aggregate metrics not persisted to BacktestRun
 - **Surfaced by:** crypto-tsmom backtest API responses on 2026-05-27. `win_rate`, `profit_factor`, `avg_win`, `avg_loss`, `expectancy`, `longest_winning_streak`, `longest_losing_streak`, `total_fees_paid`, `total_slippage_dollars` all return `None` even though they're trivially computable from `trades.parquet` (verified: win rate 55.7%, profit factor 1.50, total slippage $324.79 for run `5c249922`).
 - **Why deferred:** the UI works around it by computing from the trades endpoint on demand; the data isn't lost, just not persisted.
@@ -135,6 +165,22 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Surfaced by:** unified-live-subscriptions feature (2026-05-18).
 - **Why deferred:** `data/packages/quilt-trader-test-algo/quilt.yaml` was updated locally to the new `assets:` format, but `data/packages/` is gitignored. A re-install from the upstream GitHub repo will revert to the old format.
 - **What's needed:** open a PR on the upstream `quilt-trader-test-algo` repo updating `quilt.yaml` to include the `assets:` block in the new schema.
+
+### Push canonical-symbol manifest+algorithm fixes to ~17 upstream algorithm repos
+- **Surfaced by:** algorithm portfolio audit (2026-06-01). The canonical-symbol refactor (commits `51f74eb` through `134fbae`) made the framework reject non-canonical symbols at install + runtime. Every installed algorithm with bare crypto names (`BTC`, `ETH`, etc.) or provider-prefixed indexes (`^VIX`, `I:SPX`) or `O:`-prefixed OCC strings fails to install on a fresh checkout.
+- **Why deferred:** the audit patched 17 manifests + 3 Python files locally in `data/packages/<algo>/` (gitignored) and mirrored to `/tmp/quilt-algos/<algo>/` (external upstream repos). Without upstream PRs, a re-install reverts to the broken state.
+- **What's needed:** open one PR per algorithm against its upstream repo with the canonical-symbol fix. Touched repos:
+  - **Manifest-only fixes (14):** crypto-bbands-v2, diversified-leverage, options-butterfly-condor, options-condor-martingale, options-ema-spreads, options-ema-spreads-v2, options-ml-news-trading, options-rolling-calls, options-spreads-martingale, options-spreads-martingale-v2, options-straddle, stock-breakout, stock-ema-crossover, stock-multi-ema-spreads, stock-swing-trading, stock-top-etf-picker
+  - **Manifest + algorithm.py fixes (3):** crypto-custom-etf (default portfolio string), crypto-double-ema-4h + crypto-double-ema-trending (default symbols string), options-condor-martingale (2 pandas resample bugs at lines 704+716 — fed RangeIndex where DatetimeIndex was required)
+- **One-time data fix:** `data/market/yfinance/VIX/1day.parquet` was regenerated locally to fix mixed-tz string timestamps that crashed `pd.to_datetime`. This data lives outside any repo but the same fix logic should land in the yfinance download path (see `Tick context pd.to_datetime` backlog item under Backtesting).
+
+### Three algorithms produce zero trades despite clean pipeline runs
+- **Surfaced by:** algorithm portfolio audit (2026-06-01). All three install cleanly under the canonical-symbol contract and run end-to-end without errors, but their algorithm logic never signals under tested parameters. These are algorithm-internal issues, not framework issues.
+- **Why deferred:** the canonical-symbol refactor's contract is intact; these are pre-existing algorithm bugs/strategy choices unrelated to the refactor. Worth treating as one-off algorithm fixes when the user wants those specific strategies to trade.
+- **What's needed (per algo):**
+  - **`options-ema-spreads-v2`:** entry filter chain (EMA + delta-match + bid<ask all-must-pass) rejects every candidate in tested windows. Investigate whether the filter chain is over-restrictive or whether parameter ranges weren't tested wide enough. Could be a genuine "no opportunities in test window" or a bug.
+  - **`options-rolling-calls`:** algorithm hardcodes ET-naive `9:44 ≤ hour ≤ 15:30` window but compares against `ctx.timestamp` (UTC). Fires only in the UTC slice that happens to overlap (roughly UTC 14:44–20:30 when DST is active), which often misses NY trading hours entirely. Fix: convert `ctx.timestamp` to ET before comparing, OR adopt the `ctx.market_time()` SDK helper proposed in the Backtesting backlog item above.
+  - **`options-condor-martingale`:** default `martingale_quantities="0,2,5,15,45"` starts with quantity 0 (skip first cycle). Combined with strict ADX/IV/bid-ask/gamma pre-trade filters, no entries fire in the tested 1-year window. Either the default config needs revision, the filters need relaxation, or the algo needs a longer historical window. Worth a strategy review.
 
 ---
 
@@ -303,7 +349,8 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 ### Manifest-derived structured form for JSON config fields
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
 - **Why deferred:** v1 uses `JsonTextField` (textarea + JSON parse validation) for `base_config`, `parameter_space`, and `pre_registered_criteria`. A structured form derived from each algorithm's `config_schema` would render typed inputs — sliders for numeric ranges, dropdowns for enums, multi-select for arrays — eliminating the JSON typing entirely for `base_config`. Significant product work; only partially applicable to `parameter_space` (which references config keys but values are search ranges, not config values).
-- **What's needed:** `config_schema → JSON-schema` mapper (or use the schema directly if it's already JSON Schema), a form renderer that handles the supported types, and a fall-through to JSON for fields the schema doesn't cover.
+- **Swap-in target locked:** [2026-05-30-session-experiment-binding-design.md](specs/2026-05-30-session-experiment-binding-design.md) introduces `<ExperimentConfigEditor>` — a wrapper that today renders three `<JsonTextField>`s side-by-side (base_config | parameter_space | criteria). The follow-up work replaces ONLY this component's internals with per-field rows (each row has a fix-vs-sweep toggle, schema-typed input for the fix mode, range/list editor for the sweep mode). The session modal, the hooks, the API payload, and the entire backend are unchanged. JSON-textarea fallback remains for algorithms whose `config_schema` is unpopulated.
+- **What's needed:** `config_schema → JSON-schema` mapper (or use the schema directly if it's already JSON Schema), per-type input components (number/select/multi-select/bool/string), the fix-vs-sweep toggle UX, range/list editors, validation that every required schema field appears in either base_config or parameter_space.
 
 ### Session deletion / archive
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)

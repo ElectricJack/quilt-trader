@@ -64,6 +64,12 @@ def session_group() -> None:
 @session_group.command("create")
 @click.option("--name", required=True, help="Unique session name.")
 @click.option("--hypothesis", required=True, help="Pre-registered hypothesis text.")
+@click.option("--algorithm-id", required=True, help="Installed algorithm id to bind to this session.")
+@click.option(
+    "--base-config",
+    required=True,
+    help="Non-swept config — JSON inline, .json/.yaml path, or '{}'",
+)
 @click.option(
     "--parameter-space",
     required=True,
@@ -75,15 +81,47 @@ def session_group() -> None:
     help='JSON pre-registered criteria, e.g., \'{"oos_sharpe_lci": 0.5}\'.',
 )
 @click.option("--notes", default="", help="Free-form notes.")
+@click.option("--start", "date_range_start",
+              type=click.DateTime(formats=["%Y-%m-%d"]),
+              required=True, help="Start date (YYYY-MM-DD)")
+@click.option("--end", "date_range_end",
+              type=click.DateTime(formats=["%Y-%m-%d"]),
+              required=True, help="End date (YYYY-MM-DD)")
+@click.option("--initial-cash", type=float, default=10000.0,
+              help="Initial cash (default 10000)")
+@click.option("--cost-profile", default="default",
+              help="Cost model (default 'default')")
+@click.option("--benchmark-symbol", default=None,
+              help="Benchmark symbol (paired with --benchmark-source)")
+@click.option("--benchmark-source", default=None,
+              help="Benchmark data source (paired with --benchmark-symbol)")
 @click.pass_context
-def session_create(ctx, name, hypothesis, parameter_space, criteria, notes):
+def session_create(ctx, name, hypothesis, algorithm_id, base_config,
+                   parameter_space, criteria, notes,
+                   date_range_start, date_range_end, initial_cash,
+                   cost_profile, benchmark_symbol, benchmark_source):
     """Create a new OptimizationSession (pre-registration step)."""
+    if (benchmark_symbol is None) != (benchmark_source is None):
+        click.echo(
+            "error: --benchmark-symbol and --benchmark-source must both be set "
+            "or both be omitted",
+            err=True,
+        )
+        ctx.exit(2)
     payload = {
         "name": name,
         "hypothesis": hypothesis,
+        "algorithm_id": algorithm_id,
+        "base_config": _parse_json_or_yaml_or_file(base_config),
         "parameter_space": _parse_json_or_yaml_or_file(parameter_space),
         "pre_registered_criteria": _parse_json_or_yaml_or_file(criteria),
         "notes": notes,
+        "date_range_start": date_range_start.strftime("%Y-%m-%d"),
+        "date_range_end": date_range_end.strftime("%Y-%m-%d"),
+        "initial_cash": initial_cash,
+        "cost_profile": cost_profile,
+        "benchmark_symbol": benchmark_symbol,
+        "benchmark_source": benchmark_source,
     }
     async def go():
         c = _client(ctx)
@@ -131,32 +169,35 @@ def session_show(ctx, session_id):
     if ctx.obj.get("json_mode"):
         print_json(body)
     else:
-        click.echo(json.dumps(body, indent=2))
+        click.echo(f"Session #{body['id']}: {body['name']}")
+        click.echo(f"Status:       {body['status']}")
+        click.echo(f"Algorithm:    {body['algorithm_id']}")
+        click.echo(f"Base config:  {json.dumps(body['base_config'])}")
+        click.echo(f"Date range:   {body['date_range_start']} → {body['date_range_end']}")
+        click.echo(f"Initial cash: ${body['initial_cash']:,.2f}")
+        click.echo(f"Cost profile: {body['cost_profile']}")
+        if body.get("benchmark_symbol"):
+            click.echo(f"Benchmark:    {body['benchmark_symbol']} ({body['benchmark_source']})")
+        click.echo(f"Hypothesis:   {body['hypothesis']}")
+        click.echo(f"Created:      {body['created_at']}")
 
 
 @research_group.command("sweep")
 @click.option("--session-id", type=int, required=True)
-@click.option("--manifest", required=True, help="Path to the strategy's quilt.yaml (server-resolvable).")
-@click.option("--base-config", required=True, help="Path to JSON file with base BacktestConfig (or inline JSON).")
-@click.option("--parameter-space", default=None, help='Optional override of the session\'s parameter_space (inline JSON or file path).')
 @click.option("--search", type=click.Choice(["grid", "random", "latin", "tpe"]), default="grid")
 @click.option("--max-trials", type=int, default=50)
 @click.option("--parallelism", type=int, default=1)
 @click.option("--seed", type=int, default=0)
 @click.option("--no-wait", is_flag=True, default=False, help="Print job_id and exit without polling.")
 @click.pass_context
-def cmd_sweep(ctx, session_id, manifest, base_config, parameter_space, search, max_trials, parallelism, seed, no_wait):
+def cmd_sweep(ctx, session_id, search, max_trials, parallelism, seed, no_wait):
     """Queue a hyperparameter sweep under an existing session."""
     payload = {
-        "manifest_path": manifest,
-        "base_config": _parse_json_or_yaml_or_file(base_config),
         "search": search,
         "max_trials": max_trials,
         "parallelism": parallelism,
         "seed": seed,
     }
-    if parameter_space:
-        payload["parameter_space"] = _parse_json_or_yaml_or_file(parameter_space)
 
     async def go():
         c = _client(ctx)
@@ -187,9 +228,6 @@ def cmd_sweep(ctx, session_id, manifest, base_config, parameter_space, search, m
 
 @research_group.command("walk-forward")
 @click.option("--session-id", type=int, required=True)
-@click.option("--manifest", required=True)
-@click.option("--base-config", required=True)
-@click.option("--parameter-space", default=None)
 @click.option("--train-years", type=float, default=4.0)
 @click.option("--test-years", type=float, default=1.0)
 @click.option("--step-months", type=float, default=6.0)
@@ -197,19 +235,15 @@ def cmd_sweep(ctx, session_id, manifest, base_config, parameter_space, search, m
 @click.option("--parallelism", type=int, default=1)
 @click.option("--no-wait", is_flag=True, default=False)
 @click.pass_context
-def cmd_walk_forward(ctx, session_id, manifest, base_config, parameter_space, train_years, test_years, step_months, objective, parallelism, no_wait):
+def cmd_walk_forward(ctx, session_id, train_years, test_years, step_months, objective, parallelism, no_wait):
     """Queue a walk-forward optimization under an existing session."""
     payload = {
-        "manifest_path": manifest,
-        "base_config": _parse_json_or_yaml_or_file(base_config),
         "train_years": train_years,
         "test_years": test_years,
         "step_months": step_months,
         "objective": objective,
         "parallelism": parallelism,
     }
-    if parameter_space:
-        payload["parameter_space"] = _parse_json_or_yaml_or_file(parameter_space)
 
     async def go():
         c = _client(ctx)

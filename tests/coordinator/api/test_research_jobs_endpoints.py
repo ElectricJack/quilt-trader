@@ -1,4 +1,5 @@
 """HTTP-layer tests for the 202-Accepted research job endpoints (B6, I18)."""
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -8,13 +9,29 @@ from sqlalchemy import select
 from coordinator.database.models import OptimizationSession, ResearchJob
 
 
+async def _seed_algorithm(session_factory, *, id="test-algo-fixture") -> str:
+    from coordinator.database.models import Algorithm
+    async with session_factory() as s:
+        # Use merge so repeated calls within the same DB don't violate PK uniqueness.
+        s.add(Algorithm(id=id, name=id, repo_url=f"https://github.com/test/{id}", source_path="packages/test-algo"))
+        try:
+            await s.commit()
+        except Exception:
+            await s.rollback()
+    return id
+
+
 async def _seed_session(container, *, parameter_space: str = '{"vol_target":[0.1,0.15]}') -> int:
     """Insert an OptimizationSession; return its id."""
+    algo_id = await _seed_algorithm(container.session_factory)
     async with container.session_factory() as s:
         sess = OptimizationSession(
             name="t", hypothesis="h",
             parameter_space=parameter_space,
             pre_registered_criteria="{}",
+            algorithm_id=algo_id, base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
         )
         s.add(sess)
         await s.commit()
@@ -43,7 +60,7 @@ async def test_post_sweep_returns_202_with_job_id(test_app, monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as ac:
         r = await ac.post(
             f"/api/research/sessions/{session_id}/sweep",
-            json={"manifest_path": "x.yaml", "base_config": {}, "search": "grid"},
+            json={"search": "grid"},
         )
     assert r.status_code == 202, r.text
     body = r.json()
@@ -77,8 +94,7 @@ async def test_post_walk_forward_returns_202(test_app, monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as ac:
         r = await ac.post(
             f"/api/research/sessions/{session_id}/walk-forward",
-            json={"manifest_path": "x.yaml", "base_config": {}, "train_years": 4.0,
-                  "test_years": 1.0, "step_months": 6.0, "objective": "sharpe"},
+            json={"train_years": 4.0, "test_years": 1.0, "step_months": 6.0, "objective": "sharpe"},
         )
     assert r.status_code == 202, r.text
     assert r.json()["job_id"] == "wf-9"
@@ -97,7 +113,7 @@ async def test_post_sweep_unknown_session_returns_404(test_app, monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as ac:
         r = await ac.post(
             "/api/research/sessions/99/sweep",
-            json={"manifest_path": "x.yaml", "base_config": {}},
+            json={},
         )
     # NOTE: session lookup happens BEFORE the manager call (to resolve
     # parameter_space fallback), so the 404 comes from the existence check,
@@ -194,7 +210,10 @@ async def test_get_job_404_when_session_mismatch(test_app):
     s1 = await _seed_session(container)
     async with container.session_factory() as s:
         sess2 = OptimizationSession(name="t2", hypothesis="h",
-                                    parameter_space="{}", pre_registered_criteria="{}")
+                                    parameter_space="{}", pre_registered_criteria="{}",
+                                    algorithm_id="test-algo-fixture", base_config={},
+                                    date_range_start=date(2023, 1, 1),
+                                    date_range_end=date(2023, 12, 31))
         s.add(sess2)
         await s.flush()
         s2 = sess2.id

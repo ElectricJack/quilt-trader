@@ -45,12 +45,15 @@ from coordinator.services.validation.optimization_session import create_session
 def db_session():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from coordinator.database.models import Base
+    from coordinator.database.models import Base, Algorithm
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     with SessionLocal() as s:
+        algo = Algorithm(id="test-algo", name="test-algo", repo_url="https://example.com/algo")
+        s.add(algo)
+        s.flush()
         yield s
 
 
@@ -60,8 +63,12 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
         db_session,
         name="wf-test-001",
         hypothesis="H",
+        algorithm_id="test-algo",
+        base_config={},
         parameter_space={"vol_target": [0.10, 0.15]},
         pre_registered_criteria={},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
     )
     db_session.commit()
 
@@ -81,7 +88,6 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
     async def fake_factory(run_id: int) -> None:
         return None
 
-    from datetime import date
     with patch("coordinator.services.validation.walk_forward.run_sweep", side_effect=fake_sweep), \
          patch("coordinator.services.validation.walk_forward._pick_best_train_config", side_effect=fake_pick_best), \
          patch("coordinator.services.validation.walk_forward._run_oos_backtest", fake_oos):
@@ -90,7 +96,14 @@ async def test_run_walk_forward_runs_sweep_per_fold(db_session):
             fake_factory,
             session_id=sess.id,
             manifest_path="/dummy/manifest.yaml",
-            base_config={"start": "2015-01-01", "end": "2026-05-01"},
+            algorithm_id="test-algo",
+            date_range_start=date(2015, 1, 1),
+            date_range_end=date(2026, 5, 1),
+            initial_cash=10000,
+            cost_profile="default",
+            benchmark_symbol=None,
+            benchmark_source=None,
+            base_config={},
             parameter_space={"vol_target": [0.10, 0.15]},
             train_years=4.0,
             test_years=1.0,
@@ -142,6 +155,39 @@ async def test_pick_best_train_config_reads_real_schema(db_session):
 
     winner = await _pick_best_train_config(db_session, [r1.id, r2.id], "sharpe")
     assert winner == {"x": 2}  # r2 has the higher sharpe
+
+
+@pytest.mark.asyncio
+async def test_pick_best_train_config_strips_only_internal_markers(db_session):
+    """_pick_best_train_config strips ONLY {_fold_index, _oos} from the
+    winner — sweep hyperparameters and base_config keys must pass through."""
+    from coordinator.database.models import Algorithm, BacktestRun
+    from coordinator.services.validation.walk_forward import _pick_best_train_config
+
+    algo = Algorithm(name="strip-test-algo", repo_url="https://example.com/algo")
+    db_session.add(algo)
+    db_session.flush()
+
+    from datetime import datetime, timezone
+    _now = datetime.now(timezone.utc)
+    row = BacktestRun(
+        algorithm_id=algo.id,
+        sharpe_ratio=2.0,
+        config_overrides={
+            "vol_target": 0.10,        # base_config key — must pass through
+            "lookback": 20,             # trial parameter — must pass through
+            "_fold_index": 3,           # internal marker — must be stripped
+            "_oos": True,               # internal marker — must be stripped
+        },
+        status="completed",
+        date_range_start=_now,
+        date_range_end=_now,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    winner = await _pick_best_train_config(db_session, [row.id], "sharpe")
+    assert winner == {"vol_target": 0.10, "lookback": 20}
 
 
 def test_concatenate_oos_curves(tmp_path):

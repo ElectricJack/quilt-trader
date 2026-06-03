@@ -1,18 +1,32 @@
 import json
 import pytest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from coordinator.database.models import Base, OptimizationSession
+from coordinator.database.models import Algorithm, Base, OptimizationSession
 from coordinator.services.validation.optimization_session import create_session
+
+
+def _seed_algorithm(db, *, id: str = "test-algo-fixture") -> Algorithm:
+    """Insert a minimal Algorithm row so the OptimizationSession FK resolves."""
+    algo = Algorithm(
+        id=id,
+        name=id,
+        repo_url=f"https://github.com/test/{id}",
+    )
+    db.add(algo)
+    db.flush()
+    return algo
 
 
 def test_optimization_session_basic_fields():
     sess = OptimizationSession(
         name="tsmom-2026-05-27",
         hypothesis="Daily ensemble TSMOM on BTC/ETH produces OOS Sharpe lower-CI > 0.5",
+        algorithm_id="test-algo-fixture",
+        base_config={},
         parameter_space=json.dumps({"vol_target": [0.10, 0.15, 0.20]}),
         pre_registered_criteria=json.dumps({"oos_sharpe_lci": 0.5, "max_dd_uci": 0.35}),
         status="open",
@@ -32,12 +46,17 @@ def db_session():
 
 
 def test_create_session_persists(db_session):
+    _seed_algorithm(db_session)
     sess = create_session(
         db_session,
         name="crypto-tsmom-001",
         hypothesis="H1: ensemble TSMOM produces edge",
+        algorithm_id="test-algo-fixture",
+        base_config={},
         parameter_space={"vol_target": [0.10, 0.15, 0.20]},
         pre_registered_criteria={"oos_sharpe_lci": 0.5},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
     )
     db_session.commit()
 
@@ -48,12 +67,17 @@ def test_create_session_persists(db_session):
 
 
 def test_create_session_rejects_duplicate_name(db_session):
+    _seed_algorithm(db_session)
     create_session(
         db_session,
         name="dup",
         hypothesis="H",
+        algorithm_id="test-algo-fixture",
+        base_config={},
         parameter_space={},
         pre_registered_criteria={},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
     )
     db_session.commit()
     with pytest.raises(Exception):  # IntegrityError under the hood
@@ -61,7 +85,110 @@ def test_create_session_rejects_duplicate_name(db_session):
             db_session,
             name="dup",
             hypothesis="H2",
+            algorithm_id="test-algo-fixture",
+            base_config={},
             parameter_space={},
             pre_registered_criteria={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2024, 12, 31),
         )
         db_session.commit()
+
+
+def test_create_session_persists_algorithm_id_and_base_config(db_session):
+    _seed_algorithm(db_session)
+    sess = create_session(
+        db_session,
+        name="t1",
+        hypothesis="h",
+        algorithm_id="test-algo-fixture",
+        base_config={"vol_target": 0.10},
+        parameter_space={"lookback": [20, 50]},
+        pre_registered_criteria={"min_sharpe": 1.0},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
+    )
+    db_session.flush()
+    assert sess.algorithm_id == "test-algo-fixture"
+    assert sess.base_config == {"vol_target": 0.10}
+
+
+def test_create_session_accepts_empty_base_config(db_session):
+    _seed_algorithm(db_session, id="empty-base-fixture")
+    sess = create_session(
+        db_session,
+        name="t2",
+        hypothesis="h",
+        algorithm_id="empty-base-fixture",
+        base_config={},
+        parameter_space={"x": [1]},
+        pre_registered_criteria={"min_sharpe": 0.0},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
+    )
+    assert sess.base_config == {}
+
+
+def test_create_session_persists_date_range_and_cash(db_session):
+    _seed_algorithm(db_session)  # helper from existing tests (Task 2 of prior plan)
+    sess = create_session(
+        db_session,
+        name="t-scope-1",
+        hypothesis="h",
+        algorithm_id="test-algo-fixture",
+        base_config={},
+        parameter_space={"x": [1]},
+        pre_registered_criteria={"min_sharpe": 0.0},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
+        initial_cash=25000.0,
+        cost_profile="paid_tier",
+    )
+    db_session.flush()
+    assert sess.date_range_start == date(2023, 1, 1)
+    assert sess.date_range_end == date(2024, 12, 31)
+    assert sess.initial_cash == 25000.0
+    assert sess.cost_profile == "paid_tier"
+    assert sess.benchmark_symbol is None
+    assert sess.benchmark_source is None
+
+
+def test_create_session_persists_benchmark_pair_set(db_session):
+    _seed_algorithm(db_session, id="bench-set-fixture")
+    sess = create_session(
+        db_session,
+        name="t-scope-2",
+        hypothesis="h",
+        algorithm_id="bench-set-fixture",
+        base_config={},
+        parameter_space={"x": [1]},
+        pre_registered_criteria={"min_sharpe": 0.0},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
+        benchmark_symbol="SPY",
+        benchmark_source="polygon",
+    )
+    db_session.flush()
+    assert sess.benchmark_symbol == "SPY"
+    assert sess.benchmark_source == "polygon"
+
+
+def test_create_session_persists_benchmark_pair_null(db_session):
+    _seed_algorithm(db_session, id="bench-null-fixture")
+    sess = create_session(
+        db_session,
+        name="t-scope-3",
+        hypothesis="h",
+        algorithm_id="bench-null-fixture",
+        base_config={},
+        parameter_space={"x": [1]},
+        pre_registered_criteria={"min_sharpe": 0.0},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
+    )
+    db_session.flush()
+    assert sess.benchmark_symbol is None
+    assert sess.benchmark_source is None
+    # Defaults applied via service-layer defaults:
+    assert sess.initial_cash == 10000.0
+    assert sess.cost_profile == "default"

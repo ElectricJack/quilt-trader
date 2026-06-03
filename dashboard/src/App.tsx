@@ -19,6 +19,8 @@ import { BacktestRunDetail } from "./pages/BacktestRunDetail";
 import { Notifications } from "./pages/Notifications";
 import { Settings } from "./pages/Settings";
 import { Strategies } from "./pages/Strategies";
+import { Research } from "./pages/Research";
+import { ResearchSessionDetail } from "./pages/ResearchSessionDetail";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -65,6 +67,8 @@ export function App() {
             <Route path="/backtests/:id" element={<BacktestDetail />} />
             {/* ── Spec D U2: backtest run detail ── */}
             <Route path="/backtest-runs/:id" element={<BacktestRunDetail />} />
+            <Route path="/research" element={<Research />} />
+            <Route path="/research/sessions/:id" element={<ResearchSessionDetail />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>

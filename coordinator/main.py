@@ -474,6 +474,7 @@ def create_app(
         from coordinator.services.validation.sweep import run_sweep as _run_sweep_fn
         from coordinator.services.validation.walk_forward import run_walk_forward as _run_walk_forward_fn
         from coordinator.database.session import get_session_factory as _get_sync_session_factory
+        from coordinator.api.websocket import manager as _ws_manager
 
         async def _research_runner_factory(run_id: str) -> None:
             runner = getattr(container, "backtest_runner", None)
@@ -481,12 +482,18 @@ def create_app(
                 raise RuntimeError("backtest_runner not initialized")
             await runner.run(run_id)
 
+        async def _broadcast_research_update(payload: dict) -> None:
+            await _ws_manager.broadcast_to_dashboards(
+                {"type": "research_job", **payload}
+            )
+
         container.research_job_manager = ResearchJobManager(
             session_factory=session_factory,
             sweep_fn=_run_sweep_fn,
             walk_forward_fn=_run_walk_forward_fn,
             runner_factory=_research_runner_factory,
             sync_session_factory=_get_sync_session_factory(),
+            on_job_update=_broadcast_research_update,
         )
         n_recovered_jobs = await container.research_job_manager.recover_orphaned_jobs()
         if n_recovered_jobs > 0:

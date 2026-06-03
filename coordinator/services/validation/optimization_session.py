@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -13,25 +14,45 @@ def create_session(
     *,
     name: str,
     hypothesis: str,
+    algorithm_id: str,
+    base_config: dict[str, Any],
     parameter_space: dict[str, Any],
     pre_registered_criteria: dict[str, Any],
     notes: str = "",
+    # NEW (this spec) — required
+    date_range_start: date,
+    date_range_end: date,
+    # NEW — required-with-default
+    initial_cash: float = 10_000.0,
+    cost_profile: str = "default",
+    # NEW — optional pair
+    benchmark_symbol: str | None = None,
+    benchmark_source: str | None = None,
 ) -> OptimizationSession:
     """Create a new OptimizationSession.
 
-    The session must be created *before* any backtest runs are attached to it;
-    this enforces pre-registration of hypothesis and criteria.
+    The session is the complete pre-registered experiment definition:
+    algorithm, base_config, parameter_space, criteria, date range, capital,
+    cost model, and optional benchmark are all immutable post-create.
     """
     sess = OptimizationSession(
         name=name,
         hypothesis=hypothesis,
+        algorithm_id=algorithm_id,
+        base_config=base_config,
         parameter_space=json.dumps(parameter_space),
         pre_registered_criteria=json.dumps(pre_registered_criteria),
         notes=notes,
         status="open",
+        date_range_start=date_range_start,
+        date_range_end=date_range_end,
+        initial_cash=initial_cash,
+        cost_profile=cost_profile,
+        benchmark_symbol=benchmark_symbol,
+        benchmark_source=benchmark_source,
     )
     db.add(sess)
-    db.flush()  # populate sess.id without committing
+    db.flush()
     return sess
 
 

@@ -1,6 +1,6 @@
 import json
 import pytest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -18,9 +18,14 @@ from coordinator.services.validation.report import ReportInputs, build_html_repo
 
 @pytest.fixture
 def db():
+    from coordinator.database.models import Algorithm
+
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with sessionmaker(bind=engine)() as s:
+        algo = Algorithm(id="test-algo", name="test-algo", repo_url="https://example.com/algo")
+        s.add(algo)
+        s.flush()
         yield s
 
 
@@ -30,8 +35,12 @@ def test_lab_pipeline_end_to_end(db, tmp_path):
         db,
         name="e2e-smoke-001",
         hypothesis="Smoke: dummy walk-forward produces a renderable report",
+        algorithm_id="test-algo",
+        base_config={},
         parameter_space={"x": [1, 2]},
         pre_registered_criteria={"oos_sharpe_lci": -10.0, "max_dd_uci": 1.0},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
     )
     db.commit()
 

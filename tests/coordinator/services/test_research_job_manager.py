@@ -1,5 +1,6 @@
 """Unit tests for ResearchJobManager — DB-level state-machine semantics."""
 import asyncio
+from datetime import date
 from unittest.mock import AsyncMock
 import pytest
 
@@ -8,12 +9,27 @@ from sqlalchemy import select
 from coordinator.database.models import ResearchJob, OptimizationSession
 
 
+async def _seed_algorithm(session_factory, *, id="test-algo-fixture") -> str:
+    from coordinator.database.models import Algorithm
+    async with session_factory() as s:
+        s.add(Algorithm(
+            id=id, name=id,
+            repo_url=f"https://github.com/test/{id}",
+        ))
+        await s.commit()
+    return id
+
+
 async def _seed_session(container) -> int:
     """Insert an OptimizationSession; return its id."""
+    algo_id = await _seed_algorithm(container.session_factory)
     async with container.session_factory() as s:
         sess = OptimizationSession(
             name="t", hypothesis="h",
             parameter_space="{}", pre_registered_criteria="{}",
+            algorithm_id=algo_id, base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
         )
         s.add(sess)
         await s.commit()
@@ -37,7 +53,17 @@ async def test_create_sweep_job_inserts_queued_row(test_app):
     )
     job_id = await mgr.create_sweep_job(
         session_id=session_id,
-        request_payload={"manifest_path": "x", "base_config": {}, "search": "grid"},
+        request_payload={
+            "manifest_path": "x",
+            "algorithm_id": "test-algo-fixture",
+            "date_range_start": "2023-01-01",
+            "date_range_end": "2023-12-31",
+            "initial_cash": 10000,
+            "cost_profile": "default",
+            "base_config": {},
+            "parameter_space": {},
+            "search": "grid",
+        },
     )
     # Cancel immediately so the background task (which calls sweep_fn with no
     # sync_session_factory) doesn't blow up the test.
@@ -124,3 +150,183 @@ async def test_cancel_job_flips_status_to_cancelled(test_app):
     async with container.session_factory() as s:
         row = (await s.execute(select(ResearchJob).where(ResearchJob.id == "job-x"))).scalar_one()
         assert row.status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for on_job_update tests (use db_session_factory fixture directly)
+# ---------------------------------------------------------------------------
+
+async def _seed_session_sf(db_session_factory) -> int:
+    from coordinator.database.models import OptimizationSession, Algorithm
+    import uuid as _uuid
+    aid = f"test-algo-{_uuid.uuid4().hex[:6]}"
+    async with db_session_factory() as s:
+        s.add(Algorithm(id=aid, name=aid, repo_url=f"https://github.com/test/{aid}"))
+        await s.commit()
+    async with db_session_factory() as s:
+        row = OptimizationSession(
+            name=f"smoke-{_uuid.uuid4().hex[:6]}",
+            hypothesis="ws update smoke",
+            parameter_space='{"x": [1]}',
+            pre_registered_criteria='{"min_sharpe": 0.0}',
+            algorithm_id=aid, base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
+        )
+        s.add(row)
+        await s.commit()
+        await s.refresh(row)
+        return row.id
+
+
+async def _seed_queued_job(db_session_factory, session_id: int, *, kind: str) -> str:
+    import uuid as _uuid
+    job_id = _uuid.uuid4().hex
+    async with db_session_factory() as s:
+        row = ResearchJob(
+            id=job_id, session_id=session_id, kind=kind,
+            status="queued", request_payload={}, run_ids=[],
+        )
+        s.add(row)
+        await s.commit()
+    return job_id
+
+
+# ---------------------------------------------------------------------------
+# on_job_update tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_on_job_update_called_when_marking_running(db_session_factory):
+    from coordinator.services.research_job_manager import ResearchJobManager
+    on_update = AsyncMock(return_value=None)
+    mgr = ResearchJobManager(
+        session_factory=db_session_factory,
+        sweep_fn=AsyncMock(return_value=None),
+        walk_forward_fn=AsyncMock(return_value=None),
+        runner_factory=AsyncMock(return_value=None),
+        sync_session_factory=None,
+        on_job_update=on_update,
+    )
+    session_id = await _seed_session_sf(db_session_factory)
+    job_id = await _seed_queued_job(db_session_factory, session_id, kind="sweep")
+    await mgr._mark_running(job_id)
+    on_update.assert_awaited()
+    payload = on_update.call_args[0][0]
+    assert payload["job_id"] == job_id
+    assert payload["session_id"] == session_id
+    assert payload["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_on_job_update_called_on_terminal_status(db_session_factory):
+    from coordinator.services.research_job_manager import ResearchJobManager
+    on_update = AsyncMock(return_value=None)
+    mgr = ResearchJobManager(
+        session_factory=db_session_factory,
+        sweep_fn=AsyncMock(), walk_forward_fn=AsyncMock(),
+        runner_factory=AsyncMock(), sync_session_factory=None,
+        on_job_update=on_update,
+    )
+    session_id = await _seed_session_sf(db_session_factory)
+    job_id = await _seed_queued_job(db_session_factory, session_id, kind="sweep")
+    await mgr._mark_terminal(job_id, "completed")
+    on_update.assert_awaited()
+    payload = on_update.call_args[0][0]
+    assert payload["status"] == "completed"
+    assert payload["completed_at"] is not None
+    assert payload["progress_pct"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_on_job_update_called_from_progress_callback(db_session_factory):
+    from coordinator.services.research_job_manager import ResearchJobManager
+    on_update = AsyncMock(return_value=None)
+    mgr = ResearchJobManager(
+        session_factory=db_session_factory,
+        sweep_fn=AsyncMock(), walk_forward_fn=AsyncMock(),
+        runner_factory=AsyncMock(), sync_session_factory=None,
+        on_job_update=on_update,
+    )
+    session_id = await _seed_session_sf(db_session_factory)
+    job_id = await _seed_queued_job(db_session_factory, session_id, kind="sweep")
+    cancel_flag = asyncio.Event()
+    cb = mgr._make_progress_callback(job_id, cancel_flag)
+    await cb(0.5, "trial 5 / 10", ["run-1", "run-2"])
+    on_update.assert_awaited()
+    payload = on_update.call_args[0][0]
+    assert payload["progress_pct"] == 0.5
+    assert payload["progress_message"] == "trial 5 / 10"
+    assert "run-1" in payload["run_ids"]
+
+
+@pytest.mark.asyncio
+async def test_on_job_update_exception_is_logged_not_swallowed(db_session_factory, caplog):
+    """If the broadcaster raises, the commit still succeeds and the error
+    is logged."""
+    from coordinator.services.research_job_manager import ResearchJobManager
+
+    async def broken_on_update(payload):
+        raise RuntimeError("ws broadcaster boom")
+
+    mgr = ResearchJobManager(
+        session_factory=db_session_factory,
+        sweep_fn=AsyncMock(), walk_forward_fn=AsyncMock(),
+        runner_factory=AsyncMock(), sync_session_factory=None,
+        on_job_update=broken_on_update,
+    )
+    session_id = await _seed_session_sf(db_session_factory)
+    job_id = await _seed_queued_job(db_session_factory, session_id, kind="sweep")
+    await mgr._mark_running(job_id)  # must not raise
+    assert "broadcaster" in caplog.text.lower() or "ws" in caplog.text.lower()
+    async with db_session_factory() as s:
+        row = await s.get(ResearchJob, job_id)
+        assert row.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_on_job_update_optional(db_session_factory):
+    """Constructing without on_job_update still works (CLI path)."""
+    from coordinator.services.research_job_manager import ResearchJobManager
+    mgr = ResearchJobManager(
+        session_factory=db_session_factory,
+        sweep_fn=AsyncMock(), walk_forward_fn=AsyncMock(),
+        runner_factory=AsyncMock(), sync_session_factory=None,
+    )
+    session_id = await _seed_session_sf(db_session_factory)
+    job_id = await _seed_queued_job(db_session_factory, session_id, kind="sweep")
+    await mgr._mark_running(job_id)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_progress_callback_run_ids_replace_not_append(db_session_factory):
+    """Callers pass the cumulative run_ids list each tick. The callback must
+    REPLACE the DB column, not append — otherwise the row's run_ids grows
+    O(N^2) with duplicates.
+    """
+    from coordinator.services.research_job_manager import ResearchJobManager
+    on_update = AsyncMock(return_value=None)
+    mgr = ResearchJobManager(
+        session_factory=db_session_factory,
+        sweep_fn=AsyncMock(), walk_forward_fn=AsyncMock(),
+        runner_factory=AsyncMock(), sync_session_factory=None,
+        on_job_update=on_update,
+    )
+    session_id = await _seed_session_sf(db_session_factory)
+    job_id = await _seed_queued_job(db_session_factory, session_id, kind="sweep")
+    cancel_flag = asyncio.Event()
+    cb = mgr._make_progress_callback(job_id, cancel_flag)
+
+    # Simulate three sequential trials with cumulative run_id lists, as the
+    # real sweep_fn does (run_ids.append(...) then pass list(run_ids)).
+    await cb(0.33, "trial 1/3", ["r1"])
+    await cb(0.66, "trial 2/3", ["r1", "r2"])
+    await cb(1.00, "trial 3/3", ["r1", "r2", "r3"])
+
+    from sqlalchemy import select
+    async with db_session_factory() as s:
+        row = await s.get(ResearchJob, job_id)
+        assert row.run_ids == ["r1", "r2", "r3"], (
+            f"Expected exactly 3 unique ids, got {row.run_ids} "
+            f"(len={len(row.run_ids)}; quadratic accumulation bug?)"
+        )

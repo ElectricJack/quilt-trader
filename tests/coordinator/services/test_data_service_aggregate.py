@@ -98,10 +98,10 @@ def test_load_market_data_native_5min_file_preferred():
 
 
 def test_load_market_data_missing_returns_none():
-    """Requesting a symbol that doesn't exist returns None."""
+    """Requesting a canonical symbol with no data on disk returns None."""
     with tempfile.TemporaryDirectory() as tmpdir:
         svc = DataService(market_data_dir=tmpdir, custom_data_dir=tmpdir)
-        assert svc.load_market_data("polygon", "MISSING", "1min") is None
+        assert svc.load_market_data("polygon", "AAPL", "1min") is None
 
 
 def test_load_market_data_1hour_alias_derived():

@@ -38,10 +38,10 @@ def _make_clock(n=5, start="2025-04-01"):
 
 def _make_chain():
     return pd.DataFrame([
-        {"symbol": "O:QQQ250516C00500000", "strike": 500.0, "option_type": "call",
+        {"symbol": "QQQ250516C00500000", "strike": 500.0, "option_type": "call",
          "bid": 8.00, "ask": 8.50, "last": 8.25, "volume": 100,
          "open_interest": 5000, "implied_volatility": 0.20},
-        {"symbol": "O:QQQ250516P00500000", "strike": 500.0, "option_type": "put",
+        {"symbol": "QQQ250516P00500000", "strike": 500.0, "option_type": "put",
          "bid": 7.00, "ask": 7.50, "last": 7.25, "volume": 80,
          "open_interest": 4000, "implied_volatility": 0.22},
     ])
@@ -56,7 +56,7 @@ def test_sell_to_open_creates_short_position():
             if self._fired: return []
             self._fired = True
             return [Signal(legs=[SignalLeg(
-                symbol="O:QQQ250516C00500000",
+                symbol="QQQ250516C00500000",
                 signal_type=SignalType.SELL, quantity=2,
                 asset_type="options", order_type=OrderType.MARKET,
             )])]
@@ -101,13 +101,13 @@ def test_straddle_round_trip():
             self._step += 1
             if self._step == 1:
                 return [Signal(legs=[SignalLeg(
-                    symbol="O:QQQ250516C00500000",
+                    symbol="QQQ250516C00500000",
                     signal_type=SignalType.SELL, quantity=1,
                     asset_type="options", order_type=OrderType.MARKET,
                 )])]
             if self._step == 3:
                 return [Signal(legs=[SignalLeg(
-                    symbol="O:QQQ250516C00500000",
+                    symbol="QQQ250516C00500000",
                     signal_type=SignalType.BUY, quantity=1,
                     asset_type="options", order_type=OrderType.MARKET,
                 )])]
@@ -152,7 +152,7 @@ def test_options_fill_never_uses_equity_price():
             if self._fired: return []
             self._fired = True
             return [Signal(legs=[SignalLeg(
-                symbol="O:QQQ250516C00999000",  # strike 999 — not in chain
+                symbol="QQQ250516C00999000",  # strike 999 — not in chain
                 signal_type=SignalType.BUY, quantity=1,
                 asset_type="options", order_type=OrderType.MARKET,
             )])]
@@ -239,7 +239,7 @@ def test_short_option_mtm_reflects_liability():
             if self._fired: return []
             self._fired = True
             return [Signal(legs=[SignalLeg(
-                symbol="O:QQQ250516C00500000",
+                symbol="QQQ250516C00500000",
                 signal_type=SignalType.SELL, quantity=1,
                 asset_type="options", order_type=OrderType.MARKET,
             )])]

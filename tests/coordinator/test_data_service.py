@@ -35,7 +35,7 @@ def test_save_and_load_market_data(data_service):
     assert loaded.iloc[0]["close"] == 150.5
 
 def test_load_market_data_not_found(data_service):
-    result = data_service.load_market_data("polygon", "MISSING", "1day")
+    result = data_service.load_market_data("polygon", "ZZZT", "1day")
     assert result is None
 
 def test_save_custom_data(data_service):

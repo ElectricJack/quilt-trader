@@ -6,6 +6,7 @@ import itertools
 import json
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
@@ -117,34 +118,39 @@ async def _run_one_backtest(
     runner_factory: RunnerFactory,
     *,
     session_id: int,
+    # Session-scoped fields, passed explicitly
+    algorithm_id: str,
+    date_range_start: date,
+    date_range_end: date,
+    initial_cash: float,
+    cost_profile: str,
+    benchmark_symbol: str | None,
+    benchmark_source: str | None,
+    # base_config is algorithm config only now
     base_config: dict[str, Any],
-    config: dict[str, Any],
+    config: dict[str, Any],          # trial hyperparameters
     config_hash_str: str,
 ) -> dict[str, Any]:
-    """Spawn a single backtest with the given config.
+    """Spawn a single backtest.
 
-    Creates a ``BacktestRun`` row, flushes to obtain its id, then delegates
-    execution to ``runner_factory``.  Returns a dict with at least ``run_id``,
-    ``config_hash``, and ``config``.  This function is the seam mocked in tests.
+    Session-scoped fields (algorithm_id, dates, initial_cash, cost_profile,
+    benchmark pair) are passed explicitly; ``base_config`` holds only
+    algorithm hyperparameters; ``config`` holds the trial's overrides.
+    ``config_overrides`` on the BacktestRun row is the merge of the two
+    (for the runner / finalizer / report).
     """
-    from datetime import date, datetime
-
     from coordinator.database.models import BacktestRun
 
-    merged = {**base_config, **config}
-
-    def _as_date(v):
-        if v is None or isinstance(v, (date, datetime)):
-            return v
-        if isinstance(v, str):
-            return date.fromisoformat(v)
-        raise TypeError(f"Cannot coerce {v!r} to date")
+    merged = {**base_config, **config}   # algo config + trial → config_overrides
 
     run_row = BacktestRun(
-        algorithm_id=merged.get("algorithm_id", ""),
-        date_range_start=_as_date(merged.get("start")),
-        date_range_end=_as_date(merged.get("end")),
-        initial_cash=float(merged.get("initial_cash", 1000.0)),
+        algorithm_id=algorithm_id,
+        date_range_start=date_range_start,
+        date_range_end=date_range_end,
+        initial_cash=initial_cash,
+        cost_profile=cost_profile,
+        benchmark_symbol=benchmark_symbol,
+        benchmark_source=benchmark_source,
         config_overrides=merged,
         config_hash=config_hash_str,
         optimization_session_id=session_id,
@@ -172,6 +178,15 @@ async def run_sweep(
     *,
     session_id: int,
     manifest_path: str | Path,
+    # Session-scoped fields
+    algorithm_id: str,
+    date_range_start: date,
+    date_range_end: date,
+    initial_cash: float,
+    cost_profile: str,
+    benchmark_symbol: str | None,
+    benchmark_source: str | None,
+    # algorithm config only
     base_config: dict[str, Any],
     parameter_space: dict[str, Any],
     search: Literal["grid", "random", "latin", "tpe"] = "grid",
@@ -208,7 +223,15 @@ async def run_sweep(
     if search == "tpe":
         return await _run_sweep_tpe(
             db, runner_factory,
-            session_id=session_id, base_config=base_config,
+            session_id=session_id,
+            algorithm_id=algorithm_id,
+            date_range_start=date_range_start,
+            date_range_end=date_range_end,
+            initial_cash=initial_cash,
+            cost_profile=cost_profile,
+            benchmark_symbol=benchmark_symbol,
+            benchmark_source=benchmark_source,
+            base_config=base_config,
             parameter_space=parameter_space, max_trials=max_trials,
             seed=seed, distributions=distributions or {},
             objective=objective, objective_direction=objective_direction,
@@ -238,6 +261,13 @@ async def run_sweep(
                 db,
                 runner_factory,
                 session_id=session_id,
+                algorithm_id=algorithm_id,
+                date_range_start=date_range_start,
+                date_range_end=date_range_end,
+                initial_cash=initial_cash,
+                cost_profile=cost_profile,
+                benchmark_symbol=benchmark_symbol,
+                benchmark_source=benchmark_source,
                 base_config=base_config,
                 config=cfg,
                 config_hash_str=config_hash(cfg),
@@ -269,6 +299,14 @@ async def _run_sweep_tpe(
     runner_factory: RunnerFactory,
     *,
     session_id: int,
+    # Session-scoped fields
+    algorithm_id: str,
+    date_range_start: date,
+    date_range_end: date,
+    initial_cash: float,
+    cost_profile: str,
+    benchmark_symbol: str | None,
+    benchmark_source: str | None,
     base_config: dict[str, Any],
     parameter_space: dict[str, Any],
     max_trials: int,
@@ -331,6 +369,13 @@ async def _run_sweep_tpe(
             db,
             runner_factory,
             session_id=session_id,
+            algorithm_id=algorithm_id,
+            date_range_start=date_range_start,
+            date_range_end=date_range_end,
+            initial_cash=initial_cash,
+            cost_profile=cost_profile,
+            benchmark_symbol=benchmark_symbol,
+            benchmark_source=benchmark_source,
             base_config=base_config,
             config=cfg,
             config_hash_str=config_hash(cfg),

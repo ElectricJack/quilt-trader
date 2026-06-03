@@ -3,6 +3,8 @@ import os
 from typing import Optional
 import pandas as pd
 
+from coordinator.services.asset_services.registry import get_default_registry
+
 logger = logging.getLogger(__name__)
 
 class DataService:
@@ -11,10 +13,12 @@ class DataService:
         self._custom_dir = custom_data_dir
 
     def market_data_path(self, provider: str, symbol: str, timeframe: str) -> str:
+        get_default_registry().validate(symbol)
         return os.path.join(self._market_dir, provider, symbol, f"{timeframe}.parquet")
 
     def delete_market_data(self, provider: str, symbol: str, timeframe: str) -> bool:
         """Delete a specific parquet file. Returns True if it existed."""
+        get_default_registry().validate(symbol)
         path = self.market_data_path(provider, symbol, timeframe)
         if os.path.exists(path):
             os.remove(path)
@@ -29,6 +33,7 @@ class DataService:
         return os.path.join(self._custom_dir, f"{name}.{fmt}")
 
     def save_market_data(self, provider: str, symbol: str, timeframe: str, df: pd.DataFrame) -> str:
+        get_default_registry().validate(symbol)
         path = self.market_data_path(provider, symbol, timeframe)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if os.path.exists(path):
@@ -69,6 +74,7 @@ class DataService:
         return None
 
     def load_market_data(self, provider: str, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+        get_default_registry().validate(symbol)
         path = self._resolve_provider_path(provider, symbol, timeframe)
         if path:
             return pd.read_parquet(path)
@@ -90,6 +96,7 @@ class DataService:
         self, provider: str, symbol: str, timeframe: str
     ) -> Optional[pd.Timestamp]:
         """Return the max timestamp in the saved parquet, or None if no file/column."""
+        get_default_registry().validate(symbol)
         path = self._resolve_provider_path(provider, symbol, timeframe)
         if not path:
             return None
@@ -107,6 +114,7 @@ class DataService:
         self, provider: str, symbol: str, timeframe: str
     ) -> Optional[pd.Timestamp]:
         """Return the min timestamp in the saved parquet, or None if no file/column."""
+        get_default_registry().validate(symbol)
         path = self._resolve_provider_path(provider, symbol, timeframe)
         if not path:
             return None

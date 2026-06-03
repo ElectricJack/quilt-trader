@@ -1,6 +1,7 @@
 """Index asset service — VIX, SPX, NDX, etc. Read-only (not directly tradeable)."""
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from coordinator.services.asset_services.base import (
@@ -11,41 +12,70 @@ from coordinator.services.asset_services.base import (
 )
 from coordinator.services.asset_services.equity import EquityAssetService
 
-_KNOWN_INDEXES = {"VIX", "SPX", "NDX", "RUT", "DJI", "GSPC", "IXIC"}
+_KNOWN_INDEXES = frozenset({
+    # US equity broad-market (15)
+    "SPX", "OEX", "MID", "SML",
+    "NDX", "COMP",
+    "DJI", "DJT", "DJU",
+    "RUT", "RUI", "RUA",
+    "NYA", "XAX", "VLG",
+    # CBOE VIX family (8)
+    "VIX", "VIX1D", "VIX9D", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "SKEW",
+    # Vol on other underlyings (5)
+    "VXN", "RVX", "VXD", "GVZ", "OVX",
+    # CBOE Treasury yields (4)
+    "IRX", "FVX", "TNX", "TYX",
+    # Sector / specialty (5)
+    "SOX", "XAU", "HGX", "OSX", "DXY",
+})
 
-_POLYGON_MAP = {
-    "SPX": "I:SPX", "NDX": "I:NDX", "RUT": "I:RUT",
-    "VIX": "I:VIX", "DJI": "I:DJI",
+# Explicit canonical → yfinance overrides. Indexes not listed default to ^<CANONICAL>.
+_YFINANCE_OVERRIDES = {
+    "SPX": "^GSPC",
+    "COMP": "^IXIC",
 }
 
-_YFINANCE_MAP = {
-    "VIX": "^VIX", "SPX": "^GSPC", "NDX": "^IXIC",
-    "RUT": "^RUT", "DJI": "^DJI",
-}
+# Explicit canonical → yfinance reverse lookup for canonicalize()
+_YFINANCE_REVERSE = {v: k for k, v in _YFINANCE_OVERRIDES.items()}
 
 
 class IndexAssetService:
     asset_type = AssetType.INDEX
+    CANONICAL_RE = re.compile(r"^[A-Z][A-Z0-9]{1,4}$")  # uppercase letters + digits, 2-5 chars
 
     def classify(self, symbol: str) -> bool:
-        if not symbol:
-            return False
-        if symbol in _KNOWN_INDEXES:
-            return True
-        if symbol.startswith("I:") or symbol.startswith("^"):
-            return True
-        return False
+        return symbol in _KNOWN_INDEXES
 
-    def resolve_symbol(self, symbol: str, provider: str) -> str:
+    def resolve_symbol(self, canonical: str, provider: str) -> str:
+        if not self.classify(canonical):
+            raise ValueError(
+                f"{canonical!r} is not a canonical index symbol "
+                f"(must be in _KNOWN_INDEXES)"
+            )
         if provider == "polygon":
-            if symbol.startswith("I:"):
-                return symbol
-            return _POLYGON_MAP.get(symbol, symbol)
+            return f"I:{canonical}"
         if provider == "yfinance":
-            if symbol.startswith("^"):
-                return symbol
-            return _YFINANCE_MAP.get(symbol, symbol)
-        return symbol
+            return _YFINANCE_OVERRIDES.get(canonical, f"^{canonical}")
+        return canonical
+
+    def canonicalize(self, provider_form: str, provider: str) -> str:
+        """Parse a provider-native index form back to canonical."""
+        if provider == "polygon" and provider_form.startswith("I:"):
+            candidate = provider_form[2:]
+            if candidate in _KNOWN_INDEXES:
+                return candidate
+        if provider == "yfinance":
+            if provider_form in _YFINANCE_REVERSE:
+                return _YFINANCE_REVERSE[provider_form]
+            if provider_form.startswith("^"):
+                candidate = provider_form[1:]
+                if candidate in _KNOWN_INDEXES:
+                    return candidate
+        if provider_form in _KNOWN_INDEXES:
+            return provider_form
+        raise ValueError(
+            f"{provider_form!r} is not a recognized index form for provider {provider!r}"
+        )
 
     def compose_order_symbol(self, leg: Any) -> str:
         return leg.symbol

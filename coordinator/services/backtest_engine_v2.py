@@ -170,6 +170,7 @@ class BacktestEngine:
         except Exception as exc:
             logger.exception("BacktestEngine.run failed")
             observer.on_error(exc)
+            raise
 
     def _discovery_pass(
         self, *, algorithm, ctx, clock_series,

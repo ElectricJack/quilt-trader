@@ -12,9 +12,27 @@ from coordinator.services.asset_services.base import (
     _bar_lookup,
 )
 
-_OCC_RE = re.compile(r"^(?:O:)?[A-Z]{1,6}\d{6}[CP]\d{8}$")
-_CRYPTO_SUFFIXES = ("USD", "USDT")
-_KNOWN_INDEXES = {"VIX", "SPX", "NDX", "RUT", "DJI", "GSPC", "IXIC"}
+_KNOWN_CRYPTO_BARE = frozenset({
+    "BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK",
+    "USDT", "USD",
+    "ETC", "XRP", "ADA", "LTC", "BCH",
+})
+
+# yfinance-specific index aliases that look like equity tickers but are not.
+# These must not classify as equities — they belong to IndexAssetService territory.
+_KNOWN_INDEX_ALIASES = frozenset({
+    "GSPC",   # yfinance alias for SPX (^GSPC); canonical is SPX
+    "IXIC",   # yfinance alias for COMP (^IXIC); canonical is COMP
+})
+
+# Share-class equity tickers that use a dot in canonical form (e.g. BRK.B)
+# but a dash in yfinance form (BRK-B). Add new entries as discovered.
+_YFINANCE_SHARE_CLASS_MAP = {
+    "BRK.B": "BRK-B",
+    "BRK.A": "BRK-A",
+    "BF.B": "BF-B",
+    "BF.A": "BF-A",
+}
 
 
 def _is_dst_us_eastern(ts_utc: datetime) -> bool:
@@ -40,22 +58,39 @@ def _utc_to_et(ts: datetime) -> datetime:
 
 class EquityAssetService:
     asset_type = AssetType.EQUITIES
+    CANONICAL_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
 
     def classify(self, symbol: str) -> bool:
-        if not symbol:
+        if not symbol or not self.CANONICAL_RE.match(symbol):
             return False
-        if _OCC_RE.match(symbol):
+        if symbol in _KNOWN_CRYPTO_BARE:
             return False
-        if symbol in _KNOWN_INDEXES:
-            return False
-        if symbol.startswith("I:") or symbol.startswith("^"):
-            return False
-        if symbol.endswith(_CRYPTO_SUFFIXES) and symbol not in ("USD", "USDT"):
+        if symbol in _KNOWN_INDEX_ALIASES:
             return False
         return True
 
-    def resolve_symbol(self, symbol: str, provider: str) -> str:
-        return symbol
+    def resolve_symbol(self, canonical: str, provider: str) -> str:
+        if not self.classify(canonical):
+            raise ValueError(
+                f"{canonical!r} is not a canonical equity symbol "
+                f"(expected e.g. 'AAPL' or 'BRK.B')"
+            )
+        if provider == "yfinance":
+            return _YFINANCE_SHARE_CLASS_MAP.get(canonical, canonical)
+        return canonical
+
+    def canonicalize(self, provider_form: str, provider: str) -> str:
+        """Parse a provider-native equity form back to canonical."""
+        if provider == "yfinance" and "-" in provider_form:
+            # Map BRK-B back to BRK.B
+            candidate = provider_form.replace("-", ".")
+            if self.classify(candidate):
+                return candidate
+        if self.classify(provider_form):
+            return provider_form
+        raise ValueError(
+            f"{provider_form!r} is not a recognized equity form for provider {provider!r}"
+        )
 
     def compose_order_symbol(self, leg: Any) -> str:
         return leg.symbol

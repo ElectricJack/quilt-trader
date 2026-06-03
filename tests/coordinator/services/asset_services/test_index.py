@@ -19,14 +19,12 @@ def test_classify_known_indexes(svc):
     assert svc.classify("DJI")
 
 
-def test_classify_polygon_prefix(svc):
-    assert svc.classify("I:VIX")
-    assert svc.classify("I:SPX")
-
-
-def test_classify_yfinance_caret(svc):
-    assert svc.classify("^GSPC")
-    assert svc.classify("^VIX")
+def test_classify_rejects_provider_prefixes(svc):
+    # classify() only accepts canonical forms (no provider-native prefixes)
+    assert not svc.classify("I:VIX")
+    assert not svc.classify("I:SPX")
+    assert not svc.classify("^GSPC")
+    assert not svc.classify("^VIX")
 
 
 def test_classify_rejects_equities(svc):
@@ -48,14 +46,16 @@ def test_resolve_symbol_polygon(svc):
     assert svc.resolve_symbol("NDX", "polygon") == "I:NDX"
 
 
-def test_resolve_symbol_polygon_idempotent(svc):
-    assert svc.resolve_symbol("I:VIX", "polygon") == "I:VIX"
+def test_resolve_symbol_raises_on_provider_prefixed(svc):
+    # resolve_symbol() requires canonical input; provider-prefixed forms raise
+    with pytest.raises(ValueError, match="not a canonical index"):
+        svc.resolve_symbol("I:VIX", "polygon")
 
 
 def test_resolve_symbol_yfinance(svc):
     assert svc.resolve_symbol("VIX", "yfinance") == "^VIX"
-    assert svc.resolve_symbol("SPX", "yfinance") == "^GSPC"
-    assert svc.resolve_symbol("NDX", "yfinance") == "^IXIC"
+    assert svc.resolve_symbol("SPX", "yfinance") == "^GSPC"   # explicit override
+    assert svc.resolve_symbol("NDX", "yfinance") == "^NDX"    # default rule
 
 
 def test_resolve_symbol_other_passthrough(svc):

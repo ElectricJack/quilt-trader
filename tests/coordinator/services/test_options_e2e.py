@@ -96,7 +96,7 @@ def test_options_backtest_end_to_end():
     })
     chain_df = pd.DataFrame([
         {
-            "ticker": "O:SPY260117C00550000",
+            "ticker": "SPY260117C00550000",
             "strike": 550.0,
             "option_type": "call",
             "bid": 8.0,
@@ -107,7 +107,7 @@ def test_options_backtest_end_to_end():
             "implied_volatility": 0.20,
         },
         {
-            "ticker": "O:SPY260117P00550000",
+            "ticker": "SPY260117P00550000",
             "strike": 550.0,
             "option_type": "put",
             "bid": 7.0,

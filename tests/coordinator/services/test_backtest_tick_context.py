@@ -153,6 +153,57 @@ def test_market_data_caches_disk_result_in_bars():
     assert call_count[0] == 1, "DataService should be called only once (result is cached in _bars)"
 
 
+def test_market_data_passes_canonical_symbol_to_data_service():
+    """The algorithm calls ctx.market_data('BTCUSD', ...). The tick context
+    must pass the canonical symbol to data_service.load_market_data, NOT a
+    provider-translated form like 'BTC-USD'. On-disk paths and the validation
+    gate in data_service both use canonical."""
+    disk_df = _make_daily_naive("2026-01-01", 10)
+    received_symbols: list[str] = []
+
+    def _load(src, sym, tf):
+        received_symbols.append(sym)
+        return disk_df
+
+    mock_ds = type("DS", (), {"load_market_data": lambda self, s, sym, tf: _load(s, sym, tf)})()
+
+    ctx = BacktestTickContext(bars={}, positions={}, cash=0, data_service=mock_ds)
+    ctx.set_sim_time(datetime(2026, 1, 15, tzinfo=timezone.utc))
+    ctx.market_data("BTCUSD", "1day", 10, source="coinbase")
+
+    assert received_symbols == ["BTCUSD"], (
+        f"Expected canonical 'BTCUSD' passed to data_service; got {received_symbols!r}"
+    )
+
+
+def test_market_data_cache_key_uses_canonical_symbol():
+    """Pre-loaded bars are keyed by (source, canonical_symbol, timeframe).
+    When the algorithm calls ctx.market_data with the canonical symbol, the
+    cache hit must land — otherwise every tick incurs a disk read."""
+    disk_df = _make_daily_naive("2026-01-01", 5)
+    # Bars pre-populated with CANONICAL key (matches what backtest_runner builds)
+    bars = {("coinbase", "BTCUSD", "1day"): disk_df}
+
+    # If the cache key were resolved to provider-form ("BTC-USD"), this lookup
+    # would miss and fall through to data_service. We assert the opposite.
+    sentinel = []
+    mock_ds = type("DS", (), {
+        "load_market_data": lambda self, s, sym, tf: sentinel.append(sym) or None,
+    })()
+
+    ctx = BacktestTickContext(
+        bars=bars, positions={}, cash=0, data_service=mock_ds,
+    )
+    ctx.set_sim_time(datetime(2026, 1, 4, tzinfo=timezone.utc))
+    out = ctx.market_data("BTCUSD", "1day", 10, source="coinbase")
+
+    assert not out.empty, "Expected cache hit on canonical symbol"
+    assert sentinel == [], (
+        f"data_service.load_market_data was called {sentinel!r} — "
+        f"cache key mismatch (likely resolved to provider form)"
+    )
+
+
 def test_market_data_calls_on_miss_when_not_on_disk():
     """When data_service returns None, on_miss is invoked and its result is used."""
     disk_df = _make_daily_naive("2026-01-01", 20)
@@ -248,9 +299,9 @@ def _make_mock_data_service_with_chains():
     }
     class MockDS:
         def load_market_data(self, src, sym, tf): return None
-        def load_option_chain(self, provider, symbol, expiration):
+        def build_chain(self, provider, symbol, expiration, as_of=None):
             return chains.get((provider, symbol, expiration))
-        def list_option_chain_expirations(self, provider, symbol):
+        def list_option_expirations(self, provider, symbol):
             return [exp for (p, s, exp) in chains if p == provider and s == symbol]
     return MockDS()
 
@@ -275,8 +326,8 @@ def test_option_chain_returns_populated_chain():
 def test_option_chain_returns_empty_when_no_data():
     mock_ds = type("DS", (), {
         "load_market_data": lambda self, s, sym, tf: None,
-        "load_option_chain": lambda self, p, s, e: None,
-        "list_option_chain_expirations": lambda self, p, s: [],
+        "build_chain": lambda self, p, s, e, as_of=None: None,
+        "list_option_expirations": lambda self, p, s: [],
     })()
     ctx = BacktestTickContext(
         bars={}, positions={}, cash=100_000.0,
@@ -301,11 +352,11 @@ def test_option_chain_finds_nearest_expiration():
 
     class MockDS:
         def load_market_data(self, s, sym, tf): return None
-        def load_option_chain(self, p, s, e):
+        def build_chain(self, p, s, e, as_of=None):
             if e == date(2026, 1, 17):
                 return chain_df
             return None
-        def list_option_chain_expirations(self, p, s):
+        def list_option_expirations(self, p, s):
             return [date(2026, 1, 17)]
 
     ctx = BacktestTickContext(

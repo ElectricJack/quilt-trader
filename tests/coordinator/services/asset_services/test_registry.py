@@ -21,8 +21,9 @@ def test_classify_equities(registry):
 
 
 def test_classify_options(registry):
+    # Canonical OCC form (no O: prefix — that's polygon-native)
     assert registry.classify("SPY241029C00586000") == AssetType.OPTIONS
-    assert registry.classify("O:QQQ260320C00580000") == AssetType.OPTIONS
+    assert registry.classify("QQQ260320C00580000") == AssetType.OPTIONS
 
 
 def test_classify_crypto(registry):
@@ -31,8 +32,9 @@ def test_classify_crypto(registry):
 
 
 def test_classify_indexes(registry):
+    # Canonical bare form (no I: or ^ prefix — those are provider-native)
     assert registry.classify("VIX") == AssetType.INDEX
-    assert registry.classify("I:SPX") == AssetType.INDEX
+    assert registry.classify("SPX") == AssetType.INDEX
 
 
 def test_classify_unknown_defaults_to_equities(registry):

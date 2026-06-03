@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 
 from coordinator.services.validation.sweep import expand_grid, config_hash
 
@@ -63,12 +64,15 @@ def db_session():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
-    from coordinator.database.models import Base
+    from coordinator.database.models import Base, Algorithm
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     with SessionLocal() as s:
+        algo = Algorithm(id="test-algo", name="test-algo", repo_url="https://example.com/algo")
+        s.add(algo)
+        s.flush()
         yield s
 
 
@@ -78,8 +82,12 @@ async def test_run_sweep_persists_runs(db_session):
         db_session,
         name="sweep-test-001",
         hypothesis="H",
+        algorithm_id="test-algo",
+        base_config={},
         parameter_space={"vol_target": [0.10, 0.15]},
         pre_registered_criteria={},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
     )
     db_session.commit()
 
@@ -94,7 +102,14 @@ async def test_run_sweep_persists_runs(db_session):
             fake_factory,
             session_id=sess.id,
             manifest_path="/dummy/manifest.yaml",
-            base_config={"start": "2024-01-01", "end": "2024-02-01"},
+            algorithm_id="test-algo",
+            date_range_start=date(2024, 1, 1),
+            date_range_end=date(2024, 2, 1),
+            initial_cash=10000,
+            cost_profile="default",
+            benchmark_symbol=None,
+            benchmark_source=None,
+            base_config={},
             parameter_space={"vol_target": [0.10, 0.15]},
             search="grid",
             max_trials=2,
@@ -121,8 +136,12 @@ async def test_tpe_search_dispatches_max_trials(db_session):
         db_session,
         name="tpe-test-001",
         hypothesis="H",
+        algorithm_id="test-algo",
+        base_config={},
         parameter_space={},
         pre_registered_criteria={},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
     )
     db_session.commit()
 
@@ -150,7 +169,14 @@ async def test_tpe_search_dispatches_max_trials(db_session):
         runner_factory=runner_factory,
         session_id=sess.id,
         manifest_path="/dummy/manifest.yaml",
-        base_config={"start": "2024-01-01", "end": "2024-02-01"},
+        algorithm_id="test-algo",
+        date_range_start=date(2024, 1, 1),
+        date_range_end=date(2024, 2, 1),
+        initial_cash=10000,
+        cost_profile="default",
+        benchmark_symbol=None,
+        benchmark_source=None,
+        base_config={},
         parameter_space={"vol_target": [0.05, 0.30]},
         search="tpe",
         max_trials=8,
@@ -178,8 +204,12 @@ async def test_tpe_skips_runs_with_missing_objective(db_session):
         db_session,
         name="tpe-test-002",
         hypothesis="H",
+        algorithm_id="test-algo",
+        base_config={},
         parameter_space={},
         pre_registered_criteria={},
+        date_range_start=date(2023, 1, 1),
+        date_range_end=date(2024, 12, 31),
     )
     db_session.commit()
 
@@ -194,7 +224,14 @@ async def test_tpe_skips_runs_with_missing_objective(db_session):
         runner_factory=runner_factory,
         session_id=sess.id,
         manifest_path="/dummy/manifest.yaml",
-        base_config={"start": "2024-01-01", "end": "2024-02-01"},
+        algorithm_id="test-algo",
+        date_range_start=date(2024, 1, 1),
+        date_range_end=date(2024, 2, 1),
+        initial_cash=10000,
+        cost_profile="default",
+        benchmark_symbol=None,
+        benchmark_source=None,
+        base_config={},
         parameter_space={"vol_target": [0.05, 0.30]},
         search="tpe",
         max_trials=3,

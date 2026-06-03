@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 
 from sqlalchemy import select
 
@@ -11,11 +12,20 @@ async def test_research_job_round_trips(test_app):
     from coordinator.database.models import OptimizationSession, ResearchJob
 
     container = get_container()
+    # Seed an Algorithm first (FK requirement).
+    from coordinator.database.models import Algorithm
+    async with container.session_factory() as s:
+        s.add(Algorithm(id="test-algo-rjm", name="test-algo-rjm",
+                        repo_url="https://github.com/test/test-algo-rjm"))
+        await s.commit()
     # Insert an OptimizationSession + ResearchJob in one transaction.
     async with container.session_factory() as s:
         sess = OptimizationSession(
             name="t", hypothesis="h",
             parameter_space="{}", pre_registered_criteria="{}",
+            algorithm_id="test-algo-rjm", base_config={},
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2023, 12, 31),
         )
         s.add(sess)
         await s.flush()

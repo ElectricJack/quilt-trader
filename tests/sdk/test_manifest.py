@@ -342,3 +342,73 @@ data:
 """
         with pytest.raises(ManifestError, match="type"):
             QuiltManifest.from_string(yaml_str)
+
+
+def _make_manifest(assets_block):
+    """Build a minimal valid algorithm manifest with the given assets block."""
+    return {
+        "name": "test-algo",
+        "type": "algorithm",
+        "entry_point": "algorithm.py",
+        "class_name": "TestAlgo",
+        "requirements": {"asset_types": ["equities"]},
+        "assets": assets_block,
+    }
+
+
+class TestManifestCanonicalValidation:
+    def test_accepts_canonical_crypto(self):
+        m = _make_manifest([{"symbol": "BTCUSD", "asset_class": "crypto"}])
+        QuiltManifest._parse(m)  # no raise
+
+    def test_accepts_canonical_equity(self):
+        m = _make_manifest([{"symbol": "AAPL", "asset_class": "equities"}])
+        QuiltManifest._parse(m)
+
+    def test_accepts_share_class_equity(self):
+        m = _make_manifest([{"symbol": "BRK.B", "asset_class": "equities"}])
+        QuiltManifest._parse(m)
+
+    def test_accepts_canonical_index(self):
+        m = _make_manifest([{"symbol": "VIX", "asset_class": "index"}])
+        QuiltManifest._parse(m)
+
+    def test_rejects_bare_crypto_with_crypto_class(self):
+        """Gate 1: 'BTC' fails validate() with multi-class hint."""
+        m = _make_manifest([{"symbol": "BTC", "asset_class": "crypto"}])
+        with pytest.raises(ManifestError) as exc:
+            QuiltManifest._parse(m)
+        msg = str(exc.value)
+        assert "'BTC'" in msg
+        assert "BTCUSD" in msg
+
+    def test_rejects_dashed_crypto(self):
+        m = _make_manifest([{"symbol": "BTC-USD", "asset_class": "crypto"}])
+        with pytest.raises(ManifestError, match="BTC-USD"):
+            QuiltManifest._parse(m)
+
+    def test_rejects_yfinance_index_prefix(self):
+        m = _make_manifest([{"symbol": "^VIX", "asset_class": "index"}])
+        with pytest.raises(ManifestError, match="\\^VIX"):
+            QuiltManifest._parse(m)
+
+    def test_rejects_yfinance_index_alias(self):
+        """GSPC was previously valid (yfinance alias); now must be SPX."""
+        m = _make_manifest([{"symbol": "GSPC", "asset_class": "index"}])
+        with pytest.raises(ManifestError, match="GSPC"):
+            QuiltManifest._parse(m)
+
+    def test_rejects_class_mismatch(self):
+        """Gate 2: symbol classifies differently than declared."""
+        m = _make_manifest([{"symbol": "BTCUSD", "asset_class": "equities"}])
+        with pytest.raises(ManifestError) as exc:
+            QuiltManifest._parse(m)
+        msg = str(exc.value)
+        assert "BTCUSD" in msg
+        assert "equities" in msg
+        assert "crypto" in msg
+
+    def test_rejects_class_mismatch_aapl_as_crypto(self):
+        m = _make_manifest([{"symbol": "AAPL", "asset_class": "crypto"}])
+        with pytest.raises(ManifestError, match="AAPL"):
+            QuiltManifest._parse(m)

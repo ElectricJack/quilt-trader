@@ -489,3 +489,40 @@ async def test_git_status_bad_url(client):
     resp = await client.get(f"/api/algorithms/{algo_id}/git-status")
     assert resp.status_code == 400
     assert "Unsupported repo URL" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_algorithms_includes_manifest_path(client):
+    """The /api/algorithms response surface includes manifest_path so the
+    dashboard's sweep form can pre-fill it after the user picks an algorithm.
+    """
+    create_resp = await client.post("/api/algorithms", json={
+        "repo_url": "https://github.com/test/algo-with-source",
+        "name": "algo-with-source",
+        "source_path": "/tmp/test-algo",
+    })
+    algo_id = create_resp.json()["id"]
+
+    resp = await client.get("/api/algorithms")
+    assert resp.status_code == 200
+    body = resp.json()
+    algo = next(a for a in body if a["id"] == algo_id)
+    assert "manifest_path" in algo
+    if algo["source_path"]:
+        assert algo["manifest_path"] == f"{algo['source_path']}/quilt.yaml"
+    else:
+        assert algo["manifest_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_manifest_path_is_null_when_source_path_is_null(client):
+    """An algorithm row without a source_path returns manifest_path=null."""
+    create_resp = await client.post("/api/algorithms", json={
+        "repo_url": "https://github.com/test/algo-without-source",
+        "name": "algo-without-source",
+    })
+    algo_id = create_resp.json()["id"]
+
+    resp = await client.get(f"/api/algorithms/{algo_id}")
+    assert resp.status_code == 200
+    assert resp.json()["manifest_path"] is None
