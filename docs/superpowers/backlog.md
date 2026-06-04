@@ -92,9 +92,8 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **RESOLVED** (2026-05-27, commit `16f3a1b`): `BacktestRunner.run()` now defaults `cost_profile` to `"default"` when the column is `NULL`, rather than falling through to legacy empty fee lists. Users who want zero-fee modeling can ship a custom YAML profile and reference it explicitly.
 
 ### Tick context `pd.to_datetime` crashes on mixed-tz string timestamps
-- **Surfaced by:** algorithm portfolio audit 2026-06-01. `data/market/yfinance/VIX/1day.parquet` was originally stored with ISO-string timestamps in local time with mixed offsets (`-05:00` in summer, `-06:00` in winter — DST transitions). `backtest_tick_context.py:165` does `pd.to_datetime(disk_df["timestamp"]).dt.tz_localize(None)` which raises `ValueError: Mixed timezones detected`.
-- **Why deferred:** worked around by regenerating the offending parquet with naive UTC timestamps. Same pattern will recur for any downloaded data stored with similar formatting.
-- **What's needed:** in `backtest_tick_context.py` and similar load paths, use `pd.to_datetime(col, utc=True).dt.tz_convert("UTC").dt.tz_localize(None)` to coerce mixed-tz inputs through UTC first. Add a unit test that feeds a mixed-tz DataFrame through the load path.
+- **Surfaced by:** algorithm portfolio audit 2026-06-01.
+- **RESOLVED** (2026-06-02, commit `eb67772`): both call sites in `backtest_tick_context.py` (disk-load + on_miss paths) now use `pd.to_datetime(col, utc=True).dt.tz_convert("UTC").dt.tz_localize(None)`. New unit test `test_market_data_loads_mixed_tz_string_timestamps_without_crash` pins the regression.
 
 ### `ctx.market_data` source fallback ignores bars cache when default_source is set
 - **Surfaced by:** algorithm portfolio audit 2026-06-01. Manifest declares `VIX source:yfinance` so bars cache key is `(yfinance, VIX, 1day)`. Algorithm calls `ctx.market_data("VIX", "1day", 1)` without `source=` kwarg. Tick context defaults to `_default_source` (the manifest's first asset's source, e.g. `polygon`) and tries to load polygon VIX, missing the yfinance entry in the cache.
@@ -107,9 +106,8 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **What's needed:** (a) pass the cancel-token into `_download_option_contracts` and check between contracts; (b) consider bounding contract discovery to N-deltas-from-ATM rather than the whole chain; (c) defer contract download until the algorithm actually requests bars for the contract (lazy load) rather than pre-downloading the whole monthly chain.
 
 ### Algorithm SDK should expose ET wall-clock helpers
-- **Surfaced by:** algorithm portfolio audit 2026-06-01. Multiple algorithms hardcode ET trading-hour windows against `ctx.timestamp.hour` directly (`options-rolling-calls` EARLIEST_ENTRY=9:44 / CLOSE_BEFORE_EOD=15:30; `options-ema-spreads` `time_to_start` parameter; `if ts.hour >= 15 and ts.minute >= 30`). `ctx.timestamp` is UTC, so these windows fire in a UTC-time slice that often misses NY trading hours entirely. Caused several audit runs to produce zero trades.
-- **Why deferred:** algorithm-side bug; not a framework bug per se.
-- **What's needed:** SDK helper `ctx.market_time()` returning ET-localized timestamp, and a `ctx.is_market_hours()` predicate. Document the convention in `sdk/context.py` and migrate offending algorithms.
+- **Surfaced by:** algorithm portfolio audit 2026-06-01.
+- **RESOLVED** (2026-06-02, commits `0807a3a` + `70e8f60`): `ctx.market_time()` (tz-aware datetime in the manifest's `market_timezone`) and `ctx.is_market_open()` (NYSE calendar via `pandas_market_calendars`, including holidays) implemented on `BacktestTickContext` and `LiveTickContext`. Manifest `market_timezone:` field with smart defaults per `asset_types` shipped in commit `a1392c5`. 3 affected algorithms (`options-rolling-calls`, `options-ema-spreads`, `options-condor-martingale`) migrated and merged via the 6/03 algorithm-PR rollout.
 
 ### Separate `downloads:` block from `assets:` in manifest
 - **Surfaced by:** algorithm portfolio audit 2026-06-01. The `assets:` block currently does triple duty: declares what to pre-download, what to pre-warm in the bars cache, and what the `default_source` should resolve to. Algorithms with dynamic universes (options chain underlyings, multi-symbol momentum) have to choose between (a) listing every symbol to control downloads but ballooning the manifest, or (b) listing fewer and relying on on-demand `ctx.market_data` to lazy-load.
@@ -167,12 +165,8 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **What's needed:** open a PR on the upstream `quilt-trader-test-algo` repo updating `quilt.yaml` to include the `assets:` block in the new schema.
 
 ### Push canonical-symbol manifest+algorithm fixes to ~17 upstream algorithm repos
-- **Surfaced by:** algorithm portfolio audit (2026-06-01). The canonical-symbol refactor (commits `51f74eb` through `134fbae`) made the framework reject non-canonical symbols at install + runtime. Every installed algorithm with bare crypto names (`BTC`, `ETH`, etc.) or provider-prefixed indexes (`^VIX`, `I:SPX`) or `O:`-prefixed OCC strings fails to install on a fresh checkout.
-- **Why deferred:** the audit patched 17 manifests + 3 Python files locally in `data/packages/<algo>/` (gitignored) and mirrored to `/tmp/quilt-algos/<algo>/` (external upstream repos). Without upstream PRs, a re-install reverts to the broken state.
-- **What's needed:** open one PR per algorithm against its upstream repo with the canonical-symbol fix. Touched repos:
-  - **Manifest-only fixes (14):** crypto-bbands-v2, diversified-leverage, options-butterfly-condor, options-condor-martingale, options-ema-spreads, options-ema-spreads-v2, options-ml-news-trading, options-rolling-calls, options-spreads-martingale, options-spreads-martingale-v2, options-straddle, stock-breakout, stock-ema-crossover, stock-multi-ema-spreads, stock-swing-trading, stock-top-etf-picker
-  - **Manifest + algorithm.py fixes (3):** crypto-custom-etf (default portfolio string), crypto-double-ema-4h + crypto-double-ema-trending (default symbols string), options-condor-martingale (2 pandas resample bugs at lines 704+716 — fed RangeIndex where DatetimeIndex was required)
-- **One-time data fix:** `data/market/yfinance/VIX/1day.parquet` was regenerated locally to fix mixed-tz string timestamps that crashed `pd.to_datetime`. This data lives outside any repo but the same fix logic should land in the yfinance download path (see `Tick context pd.to_datetime` backlog item under Backtesting).
+- **Surfaced by:** algorithm portfolio audit (2026-06-01).
+- **RESOLVED** (2026-06-03): `scripts/push_algorithm_patches.py` opened 19 draft PRs across the `ElectricJack/quilt-algo-*` repos with templated bodies linking the two specs. All 19 were squash-merged on 2026-06-03 evening. Subsequent sizing-cap fixes for 6 vulnerable options/spread algos (post `options-ema-spreads` -21,132% diagnosis) were pushed to the same branches and merged in the same batch.
 
 ### Equity curve doesn't reflect MTM during long-running positions
 - **Surfaced by:** 2026-06-03 options-ema-spreads diagnosis. A backtest that lost $10.67M on a single expiry showed `portfolio_value = $50,000` flat for the entire 6-month window in `equity_curve`, then jumped to `-$10,516,024` only on the last bar. Equity snapshots only book realized cash; open positions are not marked to market.
