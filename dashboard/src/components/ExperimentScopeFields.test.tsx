@@ -15,7 +15,7 @@ const baseProps = {
 };
 
 describe("ExperimentScopeFields", () => {
-  it("renders 6 inputs with correct labels", () => {
+  it("renders 7 inputs with correct labels", () => {
     render(<ExperimentScopeFields {...baseProps} />);
     expect(screen.getByLabelText(/start date/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/end date/i)).toBeInTheDocument();
@@ -23,6 +23,7 @@ describe("ExperimentScopeFields", () => {
     expect(screen.getByLabelText(/cost profile/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/benchmark symbol/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/benchmark source/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/mtm realism/i)).toBeInTheDocument();
   });
 
   it("onChange emits combined object on field change", () => {
@@ -81,7 +82,7 @@ describe("ExperimentScopeFields", () => {
     expect(onValidityChange).toHaveBeenLastCalledWith(false);
   });
 
-  it("disabled propagates to all 6 inputs", () => {
+  it("disabled propagates to all 7 inputs", () => {
     render(<ExperimentScopeFields {...baseProps} disabled />);
     expect(screen.getByLabelText(/start date/i)).toBeDisabled();
     expect(screen.getByLabelText(/end date/i)).toBeDisabled();
@@ -89,6 +90,7 @@ describe("ExperimentScopeFields", () => {
     expect(screen.getByLabelText(/cost profile/i)).toBeDisabled();
     expect(screen.getByLabelText(/benchmark symbol/i)).toBeDisabled();
     expect(screen.getByLabelText(/benchmark source/i)).toBeDisabled();
+    expect(screen.getByLabelText(/mtm realism/i)).toBeDisabled();
   });
 
   it("renders an MTM realism input with default value", () => {
