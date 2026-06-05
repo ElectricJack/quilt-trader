@@ -313,3 +313,180 @@ def test_envelope_never_returns_negative():
         position_quantity=10.0, alpha=1.0,
     )
     assert mtm >= 0
+
+
+def test_mtm_price_uses_layer_2_bs_with_cached_iv():
+    h = OptionsMTMHelper()
+    sim = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    h.observe("O:SPY240621C00500000", 12.0, 0.20, sim,
+              "SPY", "2024-06-21")
+    occ = {
+        "underlying": "SPY",
+        "expiration": "2024-06-21",
+        "option_type": "call",
+        "strike": 500.0,
+    }
+    # No position (qty=0) → envelope bypassed → pure BS
+    price = h.mtm_price(
+        symbol="O:SPY240621C00500000",
+        sim_time=datetime(2024, 6, 7, tzinfo=timezone.utc),
+        underlying_price=505.0,
+        position_quantity=0.0,
+        occ_parsed=occ,
+        alpha=0.0,
+    )
+    # BS(S=505, K=500, T=14/365, r=0.045, sigma=0.20, call) ≈ 7.4
+    assert 5.0 < price < 12.0
+
+
+def test_mtm_price_uses_constant_sigma_when_cache_cold():
+    h = OptionsMTMHelper()
+    occ = {
+        "underlying": "AAPL",
+        "expiration": "2024-09-20",
+        "option_type": "call",
+        "strike": 200.0,
+    }
+    price = h.mtm_price(
+        symbol="O:AAPL240920C00200000",
+        sim_time=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        underlying_price=200.0,
+        position_quantity=0.0,
+        occ_parsed=occ,
+        alpha=0.0,
+    )
+    # ATM call ~111 days out, sigma=0.40 → BS ≈ 14.6 (large because sigma is high)
+    assert 10.0 < price < 25.0
+
+
+def test_mtm_price_returns_intrinsic_when_expired():
+    h = OptionsMTMHelper()
+    occ = {
+        "underlying": "SPY",
+        "expiration": "2024-06-21",
+        "option_type": "call",
+        "strike": 500.0,
+    }
+    # Sim time AFTER expiry
+    price = h.mtm_price(
+        symbol="O:SPY240621C00500000",
+        sim_time=datetime(2024, 7, 1, tzinfo=timezone.utc),
+        underlying_price=510.0,
+        position_quantity=0.0,
+        occ_parsed=occ,
+        alpha=1.0,
+    )
+    # Intrinsic = 510 - 500 = 10
+    assert price == pytest.approx(10.0, abs=0.01)
+
+
+def test_mtm_price_short_envelope_uses_intrinsic_when_bs_below():
+    h = OptionsMTMHelper()
+    occ = {
+        "underlying": "SPY",
+        "expiration": "2024-06-21",
+        "option_type": "call",
+        "strike": 500.0,
+    }
+    # ITM call (S=510, K=500), short position, alpha=0
+    price = h.mtm_price(
+        symbol="O:SPY240621C00500000",
+        sim_time=datetime(2024, 6, 7, tzinfo=timezone.utc),
+        underlying_price=510.0,
+        position_quantity=-100.0,
+        occ_parsed=occ,
+        alpha=0.0,
+    )
+    # Must be at least intrinsic
+    assert price >= 10.0
+
+
+def test_mtm_price_handles_put_option_type():
+    h = OptionsMTMHelper()
+    occ = {
+        "underlying": "SPY",
+        "expiration": "2024-06-21",
+        "option_type": "put",
+        "strike": 500.0,
+    }
+    # ITM put: S=490, K=500
+    price = h.mtm_price(
+        symbol="O:SPY240621P00500000",
+        sim_time=datetime(2024, 6, 7, tzinfo=timezone.utc),
+        underlying_price=490.0,
+        position_quantity=0.0,
+        occ_parsed=occ,
+        alpha=0.0,
+    )
+    # BS put ITM by $10 with ~2 weeks left → ≥ 10 (intrinsic)
+    assert price >= 9.0
+
+
+def test_mtm_price_intrinsic_path_when_underlying_unavailable():
+    h = OptionsMTMHelper()
+    occ = {
+        "underlying": "SPY",
+        "expiration": "2024-06-21",
+        "option_type": "put",
+        "strike": 500.0,
+    }
+    # Past expiry → Layer 3
+    price = h.mtm_price(
+        symbol="O:SPY240621P00500000",
+        sim_time=datetime(2024, 7, 1, tzinfo=timezone.utc),
+        underlying_price=480.0,
+        position_quantity=0.0,
+        occ_parsed=occ,
+        alpha=0.0,
+    )
+    # Intrinsic = max(500-480, 0) = 20
+    assert price == pytest.approx(20.0, abs=0.01)
+
+
+def test_mtm_price_long_envelope_caps_at_last_mid():
+    h = OptionsMTMHelper()
+    sim_open = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    # Open observation: last_mid = 1.0, iv = 0.20
+    h.observe("O:SPY240621C00500000", 1.0, 0.20, sim_open,
+              "SPY", "2024-06-21")
+    occ = {
+        "underlying": "SPY",
+        "expiration": "2024-06-21",
+        "option_type": "call",
+        "strike": 500.0,
+    }
+    # Now BS would say ~7 (S=505) but we have a long position and
+    # last_known_mid = 1.0 → cap at 1.0 at alpha=0
+    price = h.mtm_price(
+        symbol="O:SPY240621C00500000",
+        sim_time=datetime(2024, 6, 10, tzinfo=timezone.utc),
+        underlying_price=505.0,
+        position_quantity=10.0,
+        occ_parsed=occ,
+        alpha=0.0,
+    )
+    assert price == pytest.approx(1.0, abs=0.01)
+
+
+def test_mtm_price_short_envelope_floors_at_last_mid():
+    h = OptionsMTMHelper()
+    sim_open = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    # Open: last_mid = 5.0
+    h.observe("O:SPY240621C00500000", 5.0, 0.20, sim_open,
+              "SPY", "2024-06-21")
+    occ = {
+        "underlying": "SPY",
+        "expiration": "2024-06-21",
+        "option_type": "call",
+        "strike": 500.0,
+    }
+    # BS for OTM call (S=480) ≈ low; but last_mid = 5.0 → floor at 5.0
+    price = h.mtm_price(
+        symbol="O:SPY240621C00500000",
+        sim_time=datetime(2024, 6, 10, tzinfo=timezone.utc),
+        underlying_price=480.0,
+        position_quantity=-10.0,
+        occ_parsed=occ,
+        alpha=0.0,
+    )
+    assert price >= 5.0

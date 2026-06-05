@@ -165,3 +165,69 @@ class OptionsMTMHelper:
 
         mtm = alpha * bs_or_intrinsic + (1.0 - alpha) * conservative
         return max(mtm, 0.0)
+
+    def mtm_price(
+        self,
+        symbol: str,
+        sim_time: datetime,
+        underlying_price: float,
+        position_quantity: float,
+        occ_parsed: dict,
+        alpha: float = 0.0,
+    ) -> float:
+        """Conservative MTM price for a single option.
+
+        Args:
+            symbol: OCC symbol (e.g. "O:SPY240621C00500000")
+            sim_time: current sim datetime (UTC)
+            underlying_price: most recent underlying close at sim_time
+            position_quantity: signed share count (>0 long, <0 short)
+            occ_parsed: dict with keys 'underlying' (str),
+              'expiration' (ISO 'YYYY-MM-DD' str), 'option_type'
+              ('call'/'put' or 'C'/'P'), 'strike' (float)
+            alpha: session mtm_realism in [0, 1]. 0 = full envelope,
+              1 = unbiased BS.
+
+        Returns:
+            Non-negative MTM price per share/contract unit.
+        """
+        underlying = occ_parsed["underlying"]
+        expiration_str = occ_parsed["expiration"]
+        option_type = occ_parsed["option_type"]
+        K = float(occ_parsed["strike"])
+
+        # Parse expiration → date → days
+        expiration_date = date.fromisoformat(expiration_str)
+        sim_date = sim_time.date() if hasattr(sim_time, "date") else sim_time
+        days_to_expiry = (expiration_date - sim_date).days
+        T = max(days_to_expiry, 0) / 365.0
+
+        # Compute intrinsic (always needed for envelope floor)
+        is_call = option_type[0].upper() == "C"
+        if is_call:
+            intrinsic = max(underlying_price - K, 0.0)
+        else:
+            intrinsic = max(K - underlying_price, 0.0)
+
+        if days_to_expiry <= 0:
+            bs_or_intrinsic = intrinsic
+        else:
+            # Layer 2: Black-Scholes with carry-forward IV
+            sigma = self._resolve_iv(symbol, underlying, expiration_str)
+            bs_or_intrinsic = black_scholes_price(
+                S=underlying_price, K=K, T=T, r=RISK_FREE_RATE,
+                sigma=sigma, option_type=option_type,
+            )
+
+        last_known_mid_entry = self._mid_by_symbol.get(symbol)
+        last_known_mid = (
+            last_known_mid_entry.mid if last_known_mid_entry is not None else None
+        )
+
+        return self._apply_envelope(
+            bs_or_intrinsic=bs_or_intrinsic,
+            intrinsic=intrinsic,
+            last_known_mid=last_known_mid,
+            position_quantity=position_quantity,
+            alpha=alpha,
+        )
