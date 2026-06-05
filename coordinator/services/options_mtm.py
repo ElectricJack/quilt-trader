@@ -71,3 +71,45 @@ def black_scholes_price(
     if is_call:
         return S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
     return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+
+class OptionsMTMHelper:
+    """Per-run helper: caches IVs/mids from live chain reads and produces
+    a conservative MTM estimate when chain data is unavailable.
+
+    Construct one per BacktestEngine.run(). No persistence; rebuilt each
+    run.
+    """
+
+    def __init__(self) -> None:
+        # Tier 1: exact OCC symbol → most recent IV observation
+        self._iv_by_symbol: dict[str, _IVCacheEntry] = {}
+        # Tier 2: (underlying, expiration ISO date) → most recent IV
+        self._iv_by_expiry: dict[tuple[str, str], _IVCacheEntry] = {}
+        # Tier 3: underlying → most recent ATM-ish IV (any contract seen)
+        self._iv_by_underlying: dict[str, _IVCacheEntry] = {}
+        # Last-known mid per OCC symbol
+        self._mid_by_symbol: dict[str, _MidCacheEntry] = {}
+
+    def observe(
+        self,
+        symbol: str,
+        mid: float,
+        iv: float,
+        sim_time: datetime,
+        underlying: str,
+        expiration_str: str,
+    ) -> None:
+        """Populate caches from a successful live chain read.
+
+        Non-positive iv or mid is dropped to avoid poisoning the cache
+        with bad data — but the two are independent (a row with good mid
+        and bad iv still updates the mid cache).
+        """
+        if mid > 0:
+            self._mid_by_symbol[symbol] = _MidCacheEntry(sim_time=sim_time, mid=mid)
+        if iv > 0:
+            entry = _IVCacheEntry(sim_time=sim_time, iv=iv)
+            self._iv_by_symbol[symbol] = entry
+            self._iv_by_expiry[(underlying, expiration_str)] = entry
+            self._iv_by_underlying[underlying] = entry

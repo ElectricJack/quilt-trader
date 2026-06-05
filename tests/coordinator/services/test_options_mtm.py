@@ -9,6 +9,7 @@ import pytest
 from coordinator.services.options_mtm import (
     FALLBACK_SIGMA,
     RISK_FREE_RATE,
+    OptionsMTMHelper,
     _IVCacheEntry,
     _MidCacheEntry,
     black_scholes_price,
@@ -103,3 +104,63 @@ def test_bs_zero_sigma_returns_discounted_intrinsic():
     )
     expected = 110.0 - 100.0 * math.exp(-0.05)
     assert price == pytest.approx(expected, abs=1e-6)
+
+
+def test_helper_initial_state_is_empty():
+    h = OptionsMTMHelper()
+    assert h._iv_by_symbol == {}
+    assert h._iv_by_expiry == {}
+    assert h._iv_by_underlying == {}
+    assert h._mid_by_symbol == {}
+
+
+def test_helper_observe_populates_all_four_caches():
+    h = OptionsMTMHelper()
+    sim = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    h.observe(
+        symbol="O:SPY240621C00500000",
+        mid=12.5,
+        iv=0.22,
+        sim_time=sim,
+        underlying="SPY",
+        expiration_str="2024-06-21",
+    )
+    assert h._iv_by_symbol["O:SPY240621C00500000"].iv == pytest.approx(0.22)
+    assert h._iv_by_symbol["O:SPY240621C00500000"].sim_time == sim
+    assert h._iv_by_expiry[("SPY", "2024-06-21")].iv == pytest.approx(0.22)
+    assert h._iv_by_underlying["SPY"].iv == pytest.approx(0.22)
+    assert h._mid_by_symbol["O:SPY240621C00500000"].mid == pytest.approx(12.5)
+    assert h._mid_by_symbol["O:SPY240621C00500000"].sim_time == sim
+
+
+def test_helper_observe_overwrites_with_newer_sim_time():
+    h = OptionsMTMHelper()
+    older = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    newer = datetime(2024, 6, 2, tzinfo=timezone.utc)
+    h.observe("O:SPY240621C00500000", 10.0, 0.20, older, "SPY", "2024-06-21")
+    h.observe("O:SPY240621C00500000", 11.0, 0.21, newer, "SPY", "2024-06-21")
+    assert h._iv_by_symbol["O:SPY240621C00500000"].iv == pytest.approx(0.21)
+    assert h._mid_by_symbol["O:SPY240621C00500000"].mid == pytest.approx(11.0)
+    # And the (underlying, expiry) cache should also have the newer entry
+    assert h._iv_by_expiry[("SPY", "2024-06-21")].iv == pytest.approx(0.21)
+
+
+def test_helper_observe_ignores_non_positive_iv():
+    # Some chain rows have iv=0 (data quality). Don't poison the caches.
+    h = OptionsMTMHelper()
+    sim = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    h.observe("O:SPY240621C00500000", 10.0, 0.0, sim, "SPY", "2024-06-21")
+    assert "O:SPY240621C00500000" not in h._iv_by_symbol
+    assert ("SPY", "2024-06-21") not in h._iv_by_expiry
+    assert "SPY" not in h._iv_by_underlying
+    # Mid should still be cached (mid > 0 is independent signal)
+    assert h._mid_by_symbol["O:SPY240621C00500000"].mid == pytest.approx(10.0)
+
+
+def test_helper_observe_ignores_non_positive_mid():
+    h = OptionsMTMHelper()
+    sim = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    h.observe("O:SPY240621C00500000", 0.0, 0.20, sim, "SPY", "2024-06-21")
+    assert "O:SPY240621C00500000" not in h._mid_by_symbol
+    # IV is positive, so its caches DO get populated
+    assert h._iv_by_symbol["O:SPY240621C00500000"].iv == pytest.approx(0.20)
