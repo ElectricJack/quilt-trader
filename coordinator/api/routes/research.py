@@ -57,6 +57,7 @@ class CreateSessionRequest(BaseModel):
     cost_profile: str = "default"                          # required, with default
     benchmark_symbol: str | None = None                    # optional pair
     benchmark_source: str | None = None
+    mtm_realism: float = 0.0
 
     @model_validator(mode="after")
     def _benchmark_pair(self):
@@ -70,6 +71,14 @@ class CreateSessionRequest(BaseModel):
     def _date_range_valid(self):
         if self.date_range_end <= self.date_range_start:
             raise ValueError("date_range_end must be after date_range_start")
+        return self
+
+    @model_validator(mode="after")
+    def _mtm_realism_in_range(self):
+        if not (0.0 <= self.mtm_realism <= 1.0):
+            raise ValueError(
+                f"mtm_realism must be in [0.0, 1.0]; got {self.mtm_realism!r}"
+            )
         return self
 
 
@@ -93,6 +102,7 @@ class SessionResponse(BaseModel):
     cost_profile: str
     benchmark_symbol: str | None = None
     benchmark_source: str | None = None
+    mtm_realism: float = 0.0
 
 
 class SweepRequest(BaseModel):
@@ -161,6 +171,7 @@ def _session_to_response(sess: OptimizationSession, n_runs: int) -> SessionRespo
         cost_profile=sess.cost_profile,
         benchmark_symbol=sess.benchmark_symbol,
         benchmark_source=sess.benchmark_source,
+        mtm_realism=sess.mtm_realism,
     )
 
 
@@ -225,7 +236,9 @@ async def create_session_endpoint(payload: CreateSessionRequest) -> SessionRespo
                 cost_profile=payload.cost_profile,
                 benchmark_symbol=payload.benchmark_symbol,
                 benchmark_source=payload.benchmark_source,
+                mtm_realism=payload.mtm_realism,
             )
+
             db.commit()
             db.refresh(sess)
             return _session_to_response(sess, n_runs=0)

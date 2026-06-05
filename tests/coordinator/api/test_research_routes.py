@@ -463,3 +463,100 @@ async def test_session_response_includes_all_six_new_fields(
     assert body["cost_profile"] == "paid_tier"
     assert body["benchmark_symbol"] == "QQQ"
     assert body["benchmark_source"] == "yfinance"
+
+
+@pytest.mark.asyncio
+async def test_create_session_defaults_mtm_realism_to_zero(
+    test_client, seeded_algorithm,
+):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-mtm-default",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        # mtm_realism omitted → server defaults to 0.0
+    })
+    assert resp.status_code == 200
+    assert resp.json()["mtm_realism"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_create_session_accepts_explicit_mtm_realism(
+    test_client, seeded_algorithm,
+):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-mtm-explicit",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        "mtm_realism": 0.5,
+    })
+    assert resp.status_code == 200
+    sid = resp.json()["id"]
+    # Round-trip via GET
+    get_resp = await test_client.get(f"/api/research/sessions/{sid}")
+    assert get_resp.json()["mtm_realism"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_mtm_realism_above_one(
+    test_client, seeded_algorithm,
+):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-mtm-bad-high",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        "mtm_realism": 1.5,
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_mtm_realism_below_zero(
+    test_client, seeded_algorithm,
+):
+    resp = await test_client.post("/api/research/sessions", json={
+        "name": "t-mtm-bad-low",
+        "hypothesis": "h",
+        "algorithm_id": seeded_algorithm.id,
+        "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 0.0},
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        "mtm_realism": -0.1,
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_session_accepts_endpoints_0_and_1(
+    test_client, seeded_algorithm,
+):
+    for value in (0.0, 1.0):
+        resp = await test_client.post("/api/research/sessions", json={
+            "name": f"t-mtm-{value}",
+            "hypothesis": "h",
+            "algorithm_id": seeded_algorithm.id,
+            "base_config": {},
+            "parameter_space": {"x": [1]},
+            "pre_registered_criteria": {"min_sharpe": 0.0},
+            "date_range_start": "2023-01-01",
+            "date_range_end": "2024-12-31",
+            "mtm_realism": value,
+        })
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["mtm_realism"] == pytest.approx(value)

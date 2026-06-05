@@ -28,6 +28,7 @@ def create_session(
     # NEW — optional pair
     benchmark_symbol: str | None = None,
     benchmark_source: str | None = None,
+    mtm_realism: float = 0.0,
 ) -> OptimizationSession:
     """Create a new OptimizationSession.
 
@@ -50,6 +51,7 @@ def create_session(
         cost_profile=cost_profile,
         benchmark_symbol=benchmark_symbol,
         benchmark_source=benchmark_source,
+        mtm_realism=mtm_realism,
     )
     db.add(sess)
     db.flush()
