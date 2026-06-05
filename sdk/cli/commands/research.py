@@ -95,11 +95,15 @@ def session_group() -> None:
               help="Benchmark symbol (paired with --benchmark-source)")
 @click.option("--benchmark-source", default=None,
               help="Benchmark data source (paired with --benchmark-symbol)")
+@click.option("--mtm-realism", type=float, default=0.0,
+              help="Backtest MTM realism in [0.0, 1.0]; "
+                   "0.0 = most conservative (default), "
+                   "1.0 = broker-like (potentially exploitable)")
 @click.pass_context
 def session_create(ctx, name, hypothesis, algorithm_id, base_config,
                    parameter_space, criteria, notes,
                    date_range_start, date_range_end, initial_cash,
-                   cost_profile, benchmark_symbol, benchmark_source):
+                   cost_profile, benchmark_symbol, benchmark_source, mtm_realism):
     """Create a new OptimizationSession (pre-registration step)."""
     if (benchmark_symbol is None) != (benchmark_source is None):
         click.echo(
@@ -122,6 +126,7 @@ def session_create(ctx, name, hypothesis, algorithm_id, base_config,
         "cost_profile": cost_profile,
         "benchmark_symbol": benchmark_symbol,
         "benchmark_source": benchmark_source,
+        "mtm_realism": mtm_realism,
     }
     async def go():
         c = _client(ctx)

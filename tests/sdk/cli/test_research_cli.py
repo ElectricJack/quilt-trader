@@ -1,4 +1,5 @@
 from click.testing import CliRunner
+import pytest
 
 from sdk.cli.commands.research import research_group
 
@@ -155,3 +156,82 @@ def test_session_create_rejects_missing_start():
     ])
     assert result.exit_code != 0
     assert "--start" in result.output
+
+
+def test_session_create_passes_mtm_realism_in_payload():
+    from unittest.mock import AsyncMock, patch
+
+    runner = CliRunner()
+    mock_response = {
+        "id": 99, "name": "t", "hypothesis": "h",
+        "algorithm_id": "algo-x", "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 1.0},
+        "status": "open", "notes": "",
+        "created_at": "2026-06-04", "completed_at": None, "n_runs": 0,
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        "initial_cash": 10000.0,
+        "cost_profile": "default",
+        "benchmark_symbol": None,
+        "benchmark_source": None,
+        "mtm_realism": 0.25,
+    }
+    with patch("sdk.cli.commands.research._client") as mock_client_factory:
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client_factory.return_value = mock_client
+        result = runner.invoke(research_group, [
+            "session", "create",
+            "--name", "t",
+            "--hypothesis", "h",
+            "--algorithm-id", "algo-x",
+            "--base-config", "{}",
+            "--parameter-space", '{"x":[1]}',
+            "--criteria", '{"min_sharpe":1.0}',
+            "--start", "2023-01-01",
+            "--end", "2024-12-31",
+            "--mtm-realism", "0.25",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["mtm_realism"] == pytest.approx(0.25)
+
+
+def test_session_create_defaults_mtm_realism_to_zero():
+    from unittest.mock import AsyncMock, patch
+
+    runner = CliRunner()
+    mock_response = {
+        "id": 100, "name": "t", "hypothesis": "h",
+        "algorithm_id": "algo-x", "base_config": {},
+        "parameter_space": {"x": [1]},
+        "pre_registered_criteria": {"min_sharpe": 1.0},
+        "status": "open", "notes": "",
+        "created_at": "2026-06-04", "completed_at": None, "n_runs": 0,
+        "date_range_start": "2023-01-01",
+        "date_range_end": "2024-12-31",
+        "initial_cash": 10000.0,
+        "cost_profile": "default",
+        "benchmark_symbol": None,
+        "benchmark_source": None,
+        "mtm_realism": 0.0,
+    }
+    with patch("sdk.cli.commands.research._client") as mock_client_factory:
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client_factory.return_value = mock_client
+        result = runner.invoke(research_group, [
+            "session", "create",
+            "--name", "t",
+            "--hypothesis", "h",
+            "--algorithm-id", "algo-x",
+            "--base-config", "{}",
+            "--parameter-space", '{"x":[1]}',
+            "--criteria", '{"min_sharpe":1.0}',
+            "--start", "2023-01-01",
+            "--end", "2024-12-31",
+        ])
+        assert result.exit_code == 0, result.output
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["mtm_realism"] == pytest.approx(0.0)
