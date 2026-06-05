@@ -328,6 +328,7 @@ async def sweep_endpoint(
         "cost_profile": sess.cost_profile,
         "benchmark_symbol": sess.benchmark_symbol,
         "benchmark_source": sess.benchmark_source,
+        "mtm_realism": sess.mtm_realism,
         "base_config": sess.base_config,    # algorithm config only
         "parameter_space": json.loads(sess.parameter_space),
         "search": payload.search,
@@ -380,6 +381,7 @@ async def walk_forward_endpoint(
         "cost_profile": sess.cost_profile,
         "benchmark_symbol": sess.benchmark_symbol,
         "benchmark_source": sess.benchmark_source,
+        "mtm_realism": sess.mtm_realism,
         "base_config": sess.base_config,    # algorithm config only
         "parameter_space": json.loads(sess.parameter_space),
         "train_years": payload.train_years,
