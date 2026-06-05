@@ -478,6 +478,9 @@ class OptimizationSession(Base):
     cost_profile: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default="default",
     )
+    mtm_realism: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="0.0",
+    )
     benchmark_symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
     benchmark_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
@@ -534,6 +537,9 @@ class BacktestRun(Base):
     sell_trading_fees: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     slippage_model: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     cost_profile: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    mtm_realism: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="0.0",
+    )
     config_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     benchmark_symbol: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     benchmark_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
