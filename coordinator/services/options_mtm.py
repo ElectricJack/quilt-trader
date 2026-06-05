@@ -27,3 +27,47 @@ class _IVCacheEntry:
 class _MidCacheEntry:
     sim_time: datetime
     mid: float
+
+
+def black_scholes_price(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    option_type: str,
+) -> float:
+    """Black-Scholes price for a European option.
+
+    Args:
+        S: underlying price
+        K: strike
+        T: time to expiry in years (≤ 0 returns intrinsic)
+        r: risk-free rate
+        sigma: implied volatility (≤ 0 returns discounted intrinsic)
+        option_type: "call"/"C" or "put"/"P" (case-insensitive)
+
+    Returns:
+        Theoretical option price ≥ 0.
+    """
+    is_call = option_type[0].upper() == "C"
+
+    # Expiration / past-expiration: return intrinsic
+    if T <= 0:
+        if is_call:
+            return max(S - K, 0.0)
+        return max(K - S, 0.0)
+
+    # Zero vol: discounted intrinsic (the deterministic value)
+    if sigma <= 0:
+        if is_call:
+            return max(S - K * math.exp(-r * T), 0.0)
+        return max(K * math.exp(-r * T) - S, 0.0)
+
+    sqrt_T = math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+
+    if is_call:
+        return S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
+    return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
