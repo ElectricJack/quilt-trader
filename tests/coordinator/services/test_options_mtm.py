@@ -211,3 +211,105 @@ def test_resolve_iv_falls_back_to_constant_when_cache_cold():
         expiration_str="2024-06-21",
     )
     assert iv == pytest.approx(FALLBACK_SIGMA)
+
+
+def test_envelope_long_alpha_0_caps_at_last_mid():
+    # Long, BS > last_mid → conservative = min(BS, last_mid) = last_mid
+    # alpha=0 → mtm = last_mid (full cap)
+    h = OptionsMTMHelper()
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=5.0, intrinsic=2.0, last_known_mid=3.0,
+        position_quantity=10.0, alpha=0.0,
+    )
+    assert mtm == pytest.approx(3.0)
+
+
+def test_envelope_long_alpha_1_returns_bs_unbiased():
+    h = OptionsMTMHelper()
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=5.0, intrinsic=2.0, last_known_mid=3.0,
+        position_quantity=10.0, alpha=1.0,
+    )
+    assert mtm == pytest.approx(5.0)
+
+
+def test_envelope_long_alpha_half_lerps():
+    h = OptionsMTMHelper()
+    # conservative = 3.0, bs = 5.0 → 0.5 * 5 + 0.5 * 3 = 4.0
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=5.0, intrinsic=2.0, last_known_mid=3.0,
+        position_quantity=10.0, alpha=0.5,
+    )
+    assert mtm == pytest.approx(4.0)
+
+
+def test_envelope_long_no_last_mid_passes_bs_through_at_alpha_0():
+    # min(bs, +inf) = bs → no cap applied → mtm = bs regardless of alpha
+    h = OptionsMTMHelper()
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=5.0, intrinsic=2.0, last_known_mid=None,
+        position_quantity=10.0, alpha=0.0,
+    )
+    assert mtm == pytest.approx(5.0)
+
+
+def test_envelope_short_alpha_0_floors_at_max():
+    # Short, BS < intrinsic and BS < last_mid → floor at max(BS, intrinsic, last_mid)
+    # BS=0.5, intrinsic=2.0, last_mid=0.8 → max = 2.0
+    # alpha=0 → mtm = 2.0
+    h = OptionsMTMHelper()
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=0.5, intrinsic=2.0, last_known_mid=0.8,
+        position_quantity=-5.0, alpha=0.0,
+    )
+    assert mtm == pytest.approx(2.0)
+
+
+def test_envelope_short_alpha_1_returns_bs_unbiased():
+    h = OptionsMTMHelper()
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=0.5, intrinsic=2.0, last_known_mid=0.8,
+        position_quantity=-5.0, alpha=1.0,
+    )
+    assert mtm == pytest.approx(0.5)
+
+
+def test_envelope_short_alpha_half_lerps():
+    h = OptionsMTMHelper()
+    # conservative = 2.0, bs = 0.5 → 0.5*0.5 + 0.5*2.0 = 1.25
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=0.5, intrinsic=2.0, last_known_mid=0.8,
+        position_quantity=-5.0, alpha=0.5,
+    )
+    assert mtm == pytest.approx(1.25)
+
+
+def test_envelope_short_no_last_mid_uses_zero_floor():
+    # last_known_mid=None → floor = max(bs, intrinsic, 0)
+    h = OptionsMTMHelper()
+    # BS=0.5, intrinsic=0 → max=0.5; alpha=0 → mtm = 0.5
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=0.5, intrinsic=0.0, last_known_mid=None,
+        position_quantity=-5.0, alpha=0.0,
+    )
+    assert mtm == pytest.approx(0.5)
+
+
+def test_envelope_zero_quantity_bypasses_envelope():
+    # No position direction → unbiased return regardless of alpha
+    h = OptionsMTMHelper()
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=5.0, intrinsic=2.0, last_known_mid=3.0,
+        position_quantity=0.0, alpha=0.0,
+    )
+    assert mtm == pytest.approx(5.0)
+
+
+def test_envelope_never_returns_negative():
+    # Even with bad inputs, mtm clamps at 0
+    h = OptionsMTMHelper()
+    mtm = h._apply_envelope(
+        bs_or_intrinsic=-0.1, intrinsic=0.0, last_known_mid=None,
+        position_quantity=10.0, alpha=1.0,
+    )
+    assert mtm >= 0

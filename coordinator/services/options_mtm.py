@@ -128,3 +128,40 @@ class OptionsMTMHelper:
         if entry is not None:
             return entry.iv
         return FALLBACK_SIGMA
+
+    @staticmethod
+    def _apply_envelope(
+        bs_or_intrinsic: float,
+        intrinsic: float,
+        last_known_mid: Optional[float],
+        position_quantity: float,
+        alpha: float,
+    ) -> float:
+        """Apply the direction-aware envelope, lerped by alpha ∈ [0, 1].
+
+        alpha=0.0: full envelope (most conservative for the position).
+        alpha=1.0: no envelope (unbiased BS).
+        alpha in between: linear interpolation.
+
+        position_quantity == 0 bypasses the envelope entirely.
+        """
+        if position_quantity == 0:
+            return max(bs_or_intrinsic, 0.0)
+
+        # Long: cap by last_known_mid; None → no cap
+        if position_quantity > 0:
+            if last_known_mid is None:
+                conservative = bs_or_intrinsic
+            else:
+                conservative = min(bs_or_intrinsic, last_known_mid)
+        else:
+            # Short: floor at max(BS, intrinsic, last_known_mid or 0)
+            floor_components = [bs_or_intrinsic, intrinsic]
+            if last_known_mid is not None:
+                floor_components.append(last_known_mid)
+            else:
+                floor_components.append(0.0)
+            conservative = max(floor_components)
+
+        mtm = alpha * bs_or_intrinsic + (1.0 - alpha) * conservative
+        return max(mtm, 0.0)
