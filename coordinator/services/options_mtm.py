@@ -113,3 +113,18 @@ class OptionsMTMHelper:
             self._iv_by_symbol[symbol] = entry
             self._iv_by_expiry[(underlying, expiration_str)] = entry
             self._iv_by_underlying[underlying] = entry
+
+    def _resolve_iv(
+        self, symbol: str, underlying: str, expiration_str: str,
+    ) -> float:
+        """Walk the three-tier cache; return FALLBACK_SIGMA on full miss."""
+        entry = self._iv_by_symbol.get(symbol)
+        if entry is not None:
+            return entry.iv
+        entry = self._iv_by_expiry.get((underlying, expiration_str))
+        if entry is not None:
+            return entry.iv
+        entry = self._iv_by_underlying.get(underlying)
+        if entry is not None:
+            return entry.iv
+        return FALLBACK_SIGMA

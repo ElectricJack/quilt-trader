@@ -164,3 +164,50 @@ def test_helper_observe_ignores_non_positive_mid():
     assert "O:SPY240621C00500000" not in h._mid_by_symbol
     # IV is positive, so its caches DO get populated
     assert h._iv_by_symbol["O:SPY240621C00500000"].iv == pytest.approx(0.20)
+
+
+def test_resolve_iv_prefers_exact_symbol():
+    h = OptionsMTMHelper()
+    sim = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    h.observe("O:SPY240621C00500000", 10.0, 0.30, sim, "SPY", "2024-06-21")
+    h.observe("O:SPY240621C00600000", 1.0, 0.25, sim, "SPY", "2024-06-21")
+    iv = h._resolve_iv(
+        symbol="O:SPY240621C00500000", underlying="SPY",
+        expiration_str="2024-06-21",
+    )
+    assert iv == pytest.approx(0.30)
+
+
+def test_resolve_iv_falls_back_to_expiry_tier():
+    h = OptionsMTMHelper()
+    sim = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    h.observe("O:SPY240621C00600000", 1.0, 0.25, sim, "SPY", "2024-06-21")
+    iv = h._resolve_iv(
+        symbol="O:SPY240621C00500000",
+        underlying="SPY",
+        expiration_str="2024-06-21",
+    )
+    assert iv == pytest.approx(0.25)
+
+
+def test_resolve_iv_falls_back_to_underlying_tier():
+    h = OptionsMTMHelper()
+    sim = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    # Different expiry's IV is the only thing in cache
+    h.observe("O:SPY240920C00600000", 5.0, 0.18, sim, "SPY", "2024-09-20")
+    iv = h._resolve_iv(
+        symbol="O:SPY240621C00500000",
+        underlying="SPY",
+        expiration_str="2024-06-21",
+    )
+    assert iv == pytest.approx(0.18)
+
+
+def test_resolve_iv_falls_back_to_constant_when_cache_cold():
+    h = OptionsMTMHelper()
+    iv = h._resolve_iv(
+        symbol="O:SPY240621C00500000",
+        underlying="SPY",
+        expiration_str="2024-06-21",
+    )
+    assert iv == pytest.approx(FALLBACK_SIGMA)
