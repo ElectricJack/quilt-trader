@@ -9,6 +9,7 @@ const baseProps = {
   costProfile: "default",
   benchmarkSymbol: "",
   benchmarkSource: "",
+  mtmRealism: 0.0,
   onChange: () => {},
   onValidityChange: () => {},
 };
@@ -88,5 +89,42 @@ describe("ExperimentScopeFields", () => {
     expect(screen.getByLabelText(/cost profile/i)).toBeDisabled();
     expect(screen.getByLabelText(/benchmark symbol/i)).toBeDisabled();
     expect(screen.getByLabelText(/benchmark source/i)).toBeDisabled();
+  });
+
+  it("renders an MTM realism input with default value", () => {
+    render(<ExperimentScopeFields {...baseProps} mtmRealism={0.0} />);
+    const input = screen.getByLabelText(/mtm realism/i) as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+    expect(input.value).toBe("0");
+  });
+
+  it("emits new mtm_realism on change", () => {
+    const onChange = vi.fn();
+    render(
+      <ExperimentScopeFields
+        {...baseProps}
+        mtmRealism={0.0}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/mtm realism/i), {
+      target: { value: "0.5" },
+    });
+    const last = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(last.mtm_realism).toBe(0.5);
+  });
+
+  it("onValidityChange false when mtm_realism out of range", () => {
+    const onValidityChange = vi.fn();
+    render(
+      <ExperimentScopeFields
+        {...baseProps}
+        startDate="2023-01-01"
+        endDate="2024-12-31"
+        mtmRealism={1.5}
+        onValidityChange={onValidityChange}
+      />,
+    );
+    expect(onValidityChange).toHaveBeenLastCalledWith(false);
   });
 });

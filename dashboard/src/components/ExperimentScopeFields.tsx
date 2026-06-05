@@ -7,6 +7,7 @@ interface Props {
   costProfile: string;
   benchmarkSymbol: string;      // "" when unset
   benchmarkSource: string;      // "" when unset
+  mtmRealism: number;
   onChange: (next: {
     date_range_start: string;
     date_range_end: string;
@@ -14,6 +15,7 @@ interface Props {
     cost_profile: string;
     benchmark_symbol: string | null;
     benchmark_source: string | null;
+    mtm_realism: number;
   }) => void;
   onValidityChange?: (valid: boolean) => void;
   disabled?: boolean;
@@ -27,13 +29,14 @@ function isValid(p: Props): boolean {
   const bsEmpty = !p.benchmarkSymbol.trim();
   const bSrcEmpty = !p.benchmarkSource.trim();
   if (bsEmpty !== bSrcEmpty) return false;     // pair violation
+  if (p.mtmRealism < 0 || p.mtmRealism > 1) return false;
   return true;
 }
 
 export function ExperimentScopeFields(props: Props) {
   const {
     startDate, endDate, initialCash, costProfile,
-    benchmarkSymbol, benchmarkSource,
+    benchmarkSymbol, benchmarkSource, mtmRealism,
     onChange, onValidityChange, disabled,
   } = props;
 
@@ -41,7 +44,7 @@ export function ExperimentScopeFields(props: Props) {
   useEffect(() => {
     onValidityChange?.(isValid(props));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startDate, endDate, initialCash, costProfile, benchmarkSymbol, benchmarkSource]);
+  }, [startDate, endDate, initialCash, costProfile, benchmarkSymbol, benchmarkSource, mtmRealism]);
 
   function emit(overrides: Partial<Props>) {
     const merged = { ...props, ...overrides };
@@ -52,6 +55,7 @@ export function ExperimentScopeFields(props: Props) {
       cost_profile: merged.costProfile,
       benchmark_symbol: merged.benchmarkSymbol.trim() || null,
       benchmark_source: merged.benchmarkSource.trim() || null,
+      mtm_realism: merged.mtmRealism,
     });
   }
 
@@ -122,6 +126,19 @@ export function ExperimentScopeFields(props: Props) {
             id="sf-bsrc" type="text" value={benchmarkSource} disabled={disabled}
             placeholder="e.g. polygon"
             onChange={(e) => emit({ benchmarkSource: e.target.value })}
+            className={input}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-2">
+        <div className="space-y-1">
+          <label htmlFor="sf-mtm" className="text-sm text-gray-300">
+            MTM realism (0 = conservative, 1 = broker-like)
+          </label>
+          <input
+            id="sf-mtm" type="number" min={0} max={1} step={0.05}
+            value={mtmRealism} disabled={disabled}
+            onChange={(e) => emit({ mtmRealism: parseFloat(e.target.value || "0") })}
             className={input}
           />
         </div>

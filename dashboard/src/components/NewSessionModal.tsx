@@ -36,6 +36,7 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
     cost_profile: "default",
     benchmark_symbol: null as string | null,
     benchmark_source: null as string | null,
+    mtm_realism: 0.0,
   });
   const [scopeValid, setScopeValid] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -136,6 +137,7 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
             costProfile={scope.cost_profile}
             benchmarkSymbol={scope.benchmark_symbol ?? ""}
             benchmarkSource={scope.benchmark_source ?? ""}
+            mtmRealism={scope.mtm_realism}
             onChange={setScope}
             onValidityChange={setScopeValid}
           />
