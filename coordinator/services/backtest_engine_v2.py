@@ -121,6 +121,7 @@ class BacktestEngine:
         progress_callback: Optional[Callable[[float], None]] = None,
         rng_seed: int = 12345,
         config: Optional[dict] = None,
+        mtm_realism: float = 0.0,
     ) -> None:
         """Two-pass execution.
 
@@ -134,6 +135,14 @@ class BacktestEngine:
         `_run_internal` with the real clock.  Observers fire normally; this is
         the canonical execution.
         """
+        from coordinator.services.options_mtm import OptionsMTMHelper
+        if not (0.0 <= mtm_realism <= 1.0):
+            raise ValueError(
+                f"mtm_realism must be in [0.0, 1.0]; got {mtm_realism!r}"
+            )
+        self._mtm_realism: float = mtm_realism
+        self._mtm_helper: OptionsMTMHelper = OptionsMTMHelper()
+
         try:
             self._discovery_pass(
                 algorithm=algorithm, ctx=ctx,
@@ -910,24 +919,73 @@ class BacktestEngine:
             return 0.0  # sim_time precedes symbol's first bar
         return 0.0  # no cache entry matched the symbol
 
-    def _lookup_option_mtm_price(self, sym: str, ctx) -> float | None:
-        """Get current mid-price for an option from cached chain data."""
-        if ctx is None:
-            return None
-        for key, df in ctx._option_chain_cache.items():
-            if df is None or (hasattr(df, 'empty') and df.empty):
-                continue
-            for col in ("ticker", "symbol"):
-                if col in df.columns:
-                    match = df[df[col] == sym]
-                    if not match.empty:
-                        row = match.iloc[0]
-                        bid = float(row.get("bid", 0))
-                        ask = float(row.get("ask", 0))
-                        if bid > 0 and ask > 0:
-                            return (bid + ask) / 2
-                        return ask if ask > 0 else bid
-        return None
+    def _lookup_option_mtm_price(
+        self, sym: str, ctx, position_quantity: float = 0.0, sim_time=None,
+    ) -> float:
+        """Get the MTM price for an option from cached chain data, or
+        fall back to a conservative Black-Scholes estimate.
+
+        Args:
+            sym: OCC symbol
+            ctx: BacktestTickContext (may be None for some defensive paths)
+            position_quantity: signed quantity for direction-aware envelope
+            sim_time: current sim datetime; only used on the fallback path
+
+        Returns:
+            Non-negative price (never None). Callers no longer need the
+            cost-basis fallback.
+        """
+        from coordinator.services.chain_builder import parse_occ_symbol
+
+        # Layer 1: live chain mid
+        if ctx is not None:
+            for key, df in ctx._option_chain_cache.items():
+                if df is None or (hasattr(df, "empty") and df.empty):
+                    continue
+                for col in ("ticker", "symbol"):
+                    if col in df.columns:
+                        match = df[df[col] == sym]
+                        if not match.empty:
+                            row = match.iloc[0]
+                            bid = float(row.get("bid", 0))
+                            ask = float(row.get("ask", 0))
+                            mid = (
+                                (bid + ask) / 2
+                                if bid > 0 and ask > 0
+                                else (ask if ask > 0 else bid)
+                            )
+                            iv = float(row.get("implied_volatility", 0) or 0)
+                            # Populate the carry-forward caches
+                            occ = parse_occ_symbol(sym)
+                            if occ is not None and sim_time is not None:
+                                self._mtm_helper.observe(
+                                    symbol=sym,
+                                    mid=mid,
+                                    iv=iv,
+                                    sim_time=sim_time,
+                                    underlying=occ["underlying"],
+                                    expiration_str=occ["expiration"],
+                                )
+                            return mid
+
+        # Layer 2/3: BS or intrinsic via helper
+        occ = parse_occ_symbol(sym)
+        if occ is None:
+            # Unparseable symbol — last-resort: 0 (will surface as flat position).
+            return 0.0
+        underlying = occ["underlying"]
+        # Resolve underlying close
+        underlying_price = self._lookup_symbol_close(underlying, sim_time, ctx, None)
+        if underlying_price <= 0:
+            underlying_price = 0.0
+        return self._mtm_helper.mtm_price(
+            symbol=sym,
+            sim_time=sim_time if sim_time is not None else datetime.now(timezone.utc),
+            underlying_price=underlying_price,
+            position_quantity=position_quantity,
+            occ_parsed=occ,
+            alpha=self._mtm_realism,
+        )
 
     def _positions_market_value(self, positions: dict, bar, ctx=None, sim_time=None) -> float:
         total = 0.0
@@ -935,8 +993,9 @@ class BacktestEngine:
             svc = self._asset_registry.get_service(sym)
             # Options need the chain-cache mid-price; equities can use the bar close.
             if svc.asset_type == AssetType.OPTIONS:
-                option_price = self._lookup_option_mtm_price(sym, ctx)
-                price = option_price if option_price is not None else ps.avg_price
+                price = self._lookup_option_mtm_price(
+                    sym, ctx, position_quantity=ps.quantity, sim_time=sim_time,
+                )
             else:
                 price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
                 if price == 0.0:
@@ -952,8 +1011,9 @@ class BacktestEngine:
             sym = k[0]
             svc = self._asset_registry.get_service(sym)
             if svc.asset_type == AssetType.OPTIONS:
-                option_price = self._lookup_option_mtm_price(sym, ctx)
-                current_price = option_price if option_price is not None else ps.avg_price
+                current_price = self._lookup_option_mtm_price(
+                    sym, ctx, position_quantity=ps.quantity, sim_time=sim_time,
+                )
             else:
                 current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
                 if current_price == 0.0:
@@ -1003,8 +1063,9 @@ class BacktestEngine:
         for (sym,), ps in positions.items():
             svc = self._asset_registry.get_service(sym)
             if svc.asset_type == AssetType.OPTIONS:
-                option_price = self._lookup_option_mtm_price(sym, ctx)
-                current_price = option_price if option_price is not None else ps.avg_price
+                current_price = self._lookup_option_mtm_price(
+                    sym, ctx, position_quantity=ps.quantity, sim_time=sim_time,
+                )
             else:
                 current_price = self._lookup_symbol_close(sym, sim_time, ctx, bar)
             if current_price == 0.0:

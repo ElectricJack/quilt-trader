@@ -605,6 +605,14 @@ def test_engine_run_reraises_when_algorithm_throws():
     assert "algorithm exploded" in str(obs.error)
 
 
+def _make_position(quantity, avg_price, asset_type="options"):
+    """Build a fake position dict matching the engine's internal _PositionState shape."""
+    from coordinator.services.backtest_engine_v2 import _PositionState
+    return _PositionState(
+        quantity=quantity, avg_price=avg_price, asset_type=asset_type,
+    )
+
+
 def test_sell_to_open_option_rejected_when_margin_exceeds_cash():
     """Sell-to-open uncovered options must require cash to cover assignment.
 
@@ -656,3 +664,110 @@ def test_sell_to_open_option_rejected_when_margin_exceeds_cash():
     assert "insufficient_buying_power" in reason
     # margin = 586 × 100 × 100 = $5,860,000 — must appear in the message
     assert "5,860,000" in reason or "5860000" in reason
+
+
+def test_chain_data_gap_short_option_mtm_does_not_collapse_to_initial_cash():
+    """Bug regression: 2026-06-04 equity-curve-MTM design.
+
+    A short option opened in bar 0 must continue to show deeply-negative
+    position_mv in bars 2-4 where no chain data is present (BS/intrinsic
+    fallback). Before this fix the fallback was ps.avg_price, which
+    produced pv ≈ initial_cash regardless of underlying moves.
+    """
+    from sdk.signals import Signal, SignalLeg, SignalType, OrderType
+
+    # 6-bar SPY clock: $480 → $600. Strike is $500 (ITM by expiry).
+    # Using lower strike so margin (500 × 100 × 1 = $50k) fits in $60k cash.
+    clock = _bars(
+        "2024-12-01", 6,
+        opens=[480, 500, 530, 560, 580, 600],
+        highs=[482, 502, 532, 562, 582, 602],
+        lows=[478, 498, 528, 558, 578, 598],
+        closes=[480, 500, 530, 560, 580, 600],
+    )
+
+    # Chain data present on bar 0 (so the SELL signal can be priced at bar 1)
+    # OCC canonical form (no "O:" prefix): SPY241220C00500000 — SPY $500 call expiring 2024-12-20
+    CHAIN_KEY = ("polygon", "SPY", None)
+    chain_df = pd.DataFrame([{
+        "symbol": "SPY241220C00500000",
+        "strike": 500.0, "option_type": "call",
+        "bid": 0.50, "ask": 0.60,
+        "implied_volatility": 0.20,
+    }])
+
+    ctx = BacktestTickContext(
+        bars={("polygon", "SPY", "1day"): clock},
+        positions={}, cash=60_000.0,
+    )
+    # Seed chain data so bar-1 fill can find a price
+    ctx._option_chain_cache[CHAIN_KEY] = chain_df
+
+    class _SellAndHoldAlgo:
+        """Sell 1 SPY $500 call on bar 0; clear chain data from bar 2 onward
+        so bars 2-5 must rely on the BS/intrinsic fallback.
+
+        Timing:
+          bar 0 on_tick → emits SELL signal, pending for bar 1
+          bar 1 on_tick → runs BEFORE fill resolution; keep cache alive
+                          fill executes; chain data still present
+          bar 2 on_tick → clears cache; bars 2-5 use BS fallback
+        """
+        def __init__(self):
+            self._tick_count = 0
+
+        def on_start(self, config, state):
+            self._tick_count = 0
+
+        def on_tick(self, ctx):
+            self._tick_count += 1
+            if self._tick_count == 1:
+                # Bar 0: emit the SELL signal
+                return [Signal(legs=[SignalLeg(
+                    symbol="SPY241220C00500000",
+                    signal_type=SignalType.SELL,
+                    quantity=1,
+                    asset_type="options",
+                    order_type=OrderType.MARKET,
+                )])]
+            if self._tick_count >= 3:
+                # Bar 2+: clear chain so MTM must fall back to BS/intrinsic
+                ctx._option_chain_cache.clear()
+            return []
+
+        def on_stop(self): return {}
+        def save_state(self): return {}
+
+    obs = RecordingObserver()
+    engine = BacktestEngine()
+    engine.run(
+        algorithm=_SellAndHoldAlgo(),
+        ctx=ctx,
+        clock_series=clock,
+        clock_timeframe="1day",
+        clock_source="polygon",
+        clock_symbol="SPY",
+        slippage=SlippageModel(market_bps=0.0),
+        buy_fees=[], sell_fees=[],
+        initial_cash=60_000.0,
+        observer=obs,
+        cancel_token=CancelToken(),
+        mtm_realism=0.0,
+    )
+
+    # Confirm the fill happened (short position was opened)
+    assert len(obs.fills) == 1, f"Expected 1 fill; got {len(obs.fills)}: {obs.fills}"
+    assert obs.error is None, f"Engine error: {obs.error}"
+
+    # By final bar (SPY=$600), the short $500 call is $100 ITM.
+    # Intrinsic = 100.  position_mv = -1 * 100 * 100 = -$10,000.
+    # cash ≈ 60,000 + premium received (~$0.50 * 100 = $50)
+    # equity ≈ 60,050 - 10,000 = $50,050.  Way below $60,000.
+    # With old fallback (avg_price ≈ $0.55): pv ≈ 60,050 - 55 = $59,995.
+    final_pv = obs.equity[-1]["pv"]
+    assert final_pv < 55_000, (
+        f"Expected pv well below initial_cash=${60_000} due to deep-ITM short call; "
+        f"got pv={final_pv}. The avg_price fallback would give pv ≈ $60,000."
+    )
+    # Confirm we actually see a loss (not near initial cash)
+    assert final_pv < 59_000
