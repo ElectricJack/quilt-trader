@@ -235,6 +235,7 @@ class BacktestRunner:
             # custom profile name once that exists; otherwise the realistic
             # default is what the user almost always wants.
             cost_profile = run.cost_profile or "default"
+            mtm_realism = float(run.mtm_realism) if run.mtm_realism is not None else 0.0
             await session.commit()
 
         try:
@@ -483,6 +484,7 @@ class BacktestRunner:
                         cancel_token=cancel,
                         progress_callback=lambda p: setattr(observer, "progress", p),
                         config=config_overrides,
+                        mtm_realism=mtm_realism,
                     ),
                 )
             finally:
