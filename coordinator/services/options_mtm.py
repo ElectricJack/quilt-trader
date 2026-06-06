@@ -148,12 +148,12 @@ class OptionsMTMHelper:
         if position_quantity == 0:
             return max(bs_or_intrinsic, 0.0)
 
-        # Long: cap by last_known_mid; None → no cap
+        # Long: no envelope cap. A LONG position's worst case is the option
+        # decaying to zero, which BS already captures correctly bar-by-bar.
+        # Capping LONG MTM at the entry-bar's mid would freeze the equity
+        # curve for the whole hold period; use unbiased BS instead.
         if position_quantity > 0:
-            if last_known_mid is None:
-                conservative = bs_or_intrinsic
-            else:
-                conservative = min(bs_or_intrinsic, last_known_mid)
+            return max(bs_or_intrinsic, 0.0)
         else:
             # Short: floor at max(BS, intrinsic, last_known_mid or 0)
             floor_components = [bs_or_intrinsic, intrinsic]

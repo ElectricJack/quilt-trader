@@ -347,14 +347,14 @@ class BacktestRunner:
                     raise RuntimeError(
                         f"Missing data for {symbol} {timeframe} {source}"
                     )
-                # Filter to the run's date range. Normalize tz on both sides
-                # because parquet timestamps are tz-naive and date_range_* are
-                # tz-aware. The mocked DF in tests is a MagicMock that doesn't
-                # support pandas indexing; guard with try.
+                # Filter to the run's date range with 180-day warmup buffer
+                # before the start so EMA/SMA/etc warm up correctly. End is
+                # the requested end. Mocked DF in tests is a MagicMock; guard.
                 try:
                     df = df.copy()
                     df["timestamp"] = _df_timestamps_naive(df)
-                    df = df[(df["timestamp"] >= _to_naive_utc(date_range_start)) &
+                    warmup_start = _to_naive_utc(date_range_start) - pd.Timedelta(days=180)
+                    df = df[(df["timestamp"] >= warmup_start) &
                             (df["timestamp"] <= _to_naive_utc(date_range_end))].reset_index(drop=True)
                 except Exception:
                     # MagicMock path in tests — leave df as-is.
@@ -367,6 +367,15 @@ class BacktestRunner:
             if bars:
                 clock_key = self._pick_clock_key(bars, manifest.trigger)
                 clock_series = bars[clock_key]
+                # Trim clock to actual backtest range (bars[] now includes 180d
+                # warmup for indicators).
+                try:
+                    cs = clock_series.copy()
+                    cs["timestamp"] = _df_timestamps_naive(cs)
+                    clock_series = cs[(cs["timestamp"] >= _to_naive_utc(date_range_start)) &
+                                       (cs["timestamp"] <= _to_naive_utc(date_range_end))].reset_index(drop=True)
+                except Exception:
+                    pass
                 clock_source, clock_symbol, clock_tf = clock_key
                 # If trigger is coarser than the clock data, resample to reduce ticks
                 trigger_s = self._trigger_to_seconds(manifest.trigger)

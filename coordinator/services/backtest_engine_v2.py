@@ -937,7 +937,12 @@ class BacktestEngine:
         """
         from coordinator.services.chain_builder import parse_occ_symbol
 
-        # Layer 1: live chain mid
+        occ = parse_occ_symbol(sym)
+        if occ is None:
+            return 0.0
+
+        # Harvest IV from chain cache (carry-forward into helper); do NOT use
+        # the chain mid as MTM since cache entries may be stale across bars.
         if ctx is not None:
             for key, df in ctx._option_chain_cache.items():
                 if df is None or (hasattr(df, "empty") and df.empty):
@@ -955,9 +960,7 @@ class BacktestEngine:
                                 else (ask if ask > 0 else bid)
                             )
                             iv = float(row.get("implied_volatility", 0) or 0)
-                            # Populate the carry-forward caches
-                            occ = parse_occ_symbol(sym)
-                            if occ is not None and sim_time is not None:
+                            if sim_time is not None:
                                 self._mtm_helper.observe(
                                     symbol=sym,
                                     mid=mid,
@@ -966,16 +969,11 @@ class BacktestEngine:
                                     underlying=occ["underlying"],
                                     expiration_str=occ["expiration"],
                                 )
-                            return mid
+                            break
+                break
 
-        # Layer 2/3: BS or intrinsic via helper
-        occ = parse_occ_symbol(sym)
-        if occ is None:
-            # Unparseable symbol — last-resort: 0 (will surface as flat position).
-            return 0.0
-        underlying = occ["underlying"]
-        # Resolve underlying close
-        underlying_price = self._lookup_symbol_close(underlying, sim_time, ctx, None)
+        # Always price via BS for MTM so the equity curve reflects daily moves
+        underlying_price = self._lookup_symbol_close(occ["underlying"], sim_time, ctx, None)
         if underlying_price <= 0:
             underlying_price = 0.0
         return self._mtm_helper.mtm_price(
