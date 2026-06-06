@@ -438,6 +438,40 @@ def create_app(
         coverage_index = CoverageIndex(data_svc)
         container.coverage_index = coverage_index
 
+        # Pre-warm coverage cache in background. Cold first call to
+        # /api/data/coverage reads parquet metadata for every non-option
+        # symbol on disk (~13s for ~250 symbols). Warming up-front means the
+        # first dashboard load doesn't pay that cost; meanwhile the endpoint
+        # still works (warming uses the same get_ranges cache the endpoint
+        # consumes).
+        async def _prewarm_coverage_cache() -> None:
+            from coordinator.services.chain_builder import parse_occ_symbol
+            try:
+                available = await asyncio.to_thread(data_svc.list_available_market_data)
+                # One (provider, symbol) per non-option entry.
+                pairs: set[tuple[str, str]] = set()
+                for item in available:
+                    sym = item.get("symbol")
+                    prov = item.get("provider")
+                    if not sym or not prov:
+                        continue
+                    if parse_occ_symbol(sym):
+                        continue
+                    pairs.add((prov, sym))
+                if not pairs:
+                    return
+                logger.info("Coverage prewarm: %d non-option symbols", len(pairs))
+                # Scans happen sequentially inside CoverageIndex; offload to
+                # a thread so we don't block the event loop.
+                def _do_warm() -> None:
+                    for prov, sym in pairs:
+                        coverage_index.get_ranges(prov, sym)
+                await asyncio.to_thread(_do_warm)
+                logger.info("Coverage prewarm: complete")
+            except Exception:
+                logger.exception("Coverage prewarm failed")
+        asyncio.create_task(_prewarm_coverage_cache())
+
         def _on_download_complete(
             provider: str,
             symbols: list[str],

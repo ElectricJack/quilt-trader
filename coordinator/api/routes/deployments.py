@@ -101,7 +101,6 @@ async def list_deployments(
     import json as _json
     from worker.adapter_factory import make_broker_adapter
 
-    # Fetch live positions per account (includes unrealized_pnl)
     container = None
     try:
         from coordinator.api.dependencies import get_container
@@ -111,29 +110,45 @@ async def list_deployments(
 
     live_positions_by_account: dict[str, list[dict]] = {}
     if container:
-        seen_accounts = {inst.account_id for inst, _, _, _ in rows}
-        for acct_id in seen_accounts:
+        seen_accounts = list({inst.account_id for inst, _, _, _ in rows})
+
+        # Parallel broker round-trips. Each fetch uses its own DB session —
+        # aiosqlite sessions are not safe to share across concurrent awaits.
+        session_factory = container.session_factory
+
+        async def _fetch_one(acct_id: str) -> tuple[str, list[dict]] | None:
             try:
-                acct = (await db.execute(select(Account).where(Account.id == acct_id))).scalar_one_or_none()
-                if acct:
-                    creds = _json.loads(container.encryption.decrypt(acct.credentials))
-                    adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
-                    positions = await asyncio.to_thread(adapter.get_positions)
-                    pos_list = []
-                    from coordinator.services.asset_services import get_default_registry
-                    registry = get_default_registry()
-                    for sym, p in positions.items():
-                        mv = float(p.get("market_value", 0))
-                        qty = float(p.get("quantity", 0))
-                        avg = float(p.get("avg_price", 0))
-                        upnl = float(p.get("unrealized_pnl", 0))
-                        if upnl == 0 and mv > 0 and avg > 0 and qty > 0:
-                            svc = registry.get_service(sym)
-                            upnl = svc.compute_unrealized_pnl(sym, qty, avg, mv)
-                        pos_list.append({"symbol": sym, "unrealized_pnl": upnl, "market_value": mv, "quantity": qty})
-                    live_positions_by_account[acct_id] = pos_list
+                async with session_factory() as session:
+                    acct = (await session.execute(
+                        select(Account).where(Account.id == acct_id)
+                    )).scalar_one_or_none()
+                if acct is None:
+                    return None
+                creds = _json.loads(container.encryption.decrypt(acct.credentials))
+                adapter = make_broker_adapter(acct.broker_type, acct.environment, creds)
+                positions = await asyncio.to_thread(adapter.get_positions)
+                from coordinator.services.asset_services import get_default_registry
+                registry = get_default_registry()
+                pos_list = []
+                for sym, p in positions.items():
+                    mv = float(p.get("market_value", 0))
+                    qty = float(p.get("quantity", 0))
+                    avg = float(p.get("avg_price", 0))
+                    upnl = float(p.get("unrealized_pnl", 0))
+                    if upnl == 0 and mv > 0 and avg > 0 and qty > 0:
+                        svc = registry.get_service(sym)
+                        upnl = svc.compute_unrealized_pnl(sym, qty, avg, mv)
+                    pos_list.append({"symbol": sym, "unrealized_pnl": upnl, "market_value": mv, "quantity": qty})
+                return acct_id, pos_list
             except Exception:
-                pass
+                return None
+
+        results = await asyncio.gather(*[_fetch_one(a) for a in seen_accounts], return_exceptions=False)
+        for res in results:
+            if res is None:
+                continue
+            acct_id, pos_list = res
+            live_positions_by_account[acct_id] = pos_list
 
     metrics_by_instance: dict[str, dict] = {}
     for inst, _, _, _ in rows:
@@ -145,14 +160,12 @@ async def list_deployments(
                 select(TradeLog).where(TradeLog.account_id == inst.account_id)
             )).scalars().all()
 
-        # Unrealized P&L from open positions
         positions = live_positions_by_account.get(inst.account_id, [])
         unrealized_pnl = sum(p["unrealized_pnl"] for p in positions)
         positions_in_profit = sum(1 for p in positions if p["unrealized_pnl"] > 0)
         positions_in_loss = sum(1 for p in positions if p["unrealized_pnl"] < 0)
         total_positions = positions_in_profit + positions_in_loss
 
-        # Realized P&L from closed trades
         sells = [t for t in trades if t.side == "sell"]
         buys_by_sym: dict[str, float] = {}
         for t in trades:

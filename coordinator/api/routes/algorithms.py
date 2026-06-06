@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import io
@@ -6,7 +7,7 @@ import shutil
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -317,6 +318,10 @@ def _full_name_from_url(repo_url: str) -> str | None:
     return m.group(1) if m else None
 
 
+from coordinator.api._ttl_cache import TTLCache
+_git_status_cache = TTLCache(ttl_seconds=60.0)
+
+
 @router.get("/api/algorithms/{algorithm_id}/git-status")
 async def algorithm_git_status(algorithm_id: str, db: AsyncSession = Depends(get_db)):
     algo = (await db.execute(select(Algorithm).where(Algorithm.id == algorithm_id))).scalar_one_or_none()
@@ -326,18 +331,24 @@ async def algorithm_git_status(algorithm_id: str, db: AsyncSession = Depends(get
     if not full_name:
         raise HTTPException(status_code=400, detail=f"Unsupported repo URL: {algo.repo_url}")
 
-    # PAT lookup mirrors GitHub repo listing endpoint
     setting = (await db.execute(select(Setting).where(Setting.key == "github_pat"))).scalar_one_or_none()
     if not setting:
         raise HTTPException(status_code=400, detail="GitHub PAT not configured")
     container = get_container()
     pat = container.encryption.decrypt(setting.value)
-    gh = GitHubService(pat=pat)
+
+    # Cache GitHub round-trips per (repo, commit) for 60s. Dashboard mounts
+    # were re-hitting this on every page load at ~1s each.
+    cache_key = (full_name, algo.commit_hash)
+
+    async def _fetch() -> Any:
+        gh = GitHubService(pat=pat)
+        return await asyncio.to_thread(gh.get_repo_status, full_name, algo.commit_hash)
+
     try:
-        status = gh.get_repo_status(full_name, algo.commit_hash)
+        return await _git_status_cache.get(cache_key, _fetch)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GitHub error: {e}")
-    return status
 
 
 @router.post("/api/algorithms/{algorithm_id}/update")

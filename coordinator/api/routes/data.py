@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date
 from typing import Optional
 
@@ -212,10 +213,18 @@ async def search_symbols(
     return {"results": results, "provider": provider}
 
 
+from coordinator.api._ttl_cache import TTLCache
+_available_cache = TTLCache(ttl_seconds=30.0)
+
+
 @router.get("/available")
 async def list_available():
     svc = get_data_service()
-    return svc.list_available_market_data()
+
+    async def _produce() -> list[dict]:
+        return await asyncio.to_thread(svc.list_available_market_data)
+
+    return await _available_cache.get("market", _produce)
 
 
 @router.get("/storage-summary")
@@ -226,29 +235,30 @@ async def storage_summary():
     market_dir = svc._market_dir
     custom_dir = svc._custom_dir
 
-    def dir_size(path: str) -> int:
+    def walk_with_attribution(root: str) -> tuple[int, dict[str, int]]:
+        """Single pass over the tree: total bytes + per-top-level-subdir bytes."""
         total = 0
-        if not os.path.isdir(path):
-            return 0
-        for dirpath, _, filenames in os.walk(path):
+        per_top: dict[str, int] = {}
+        if not os.path.isdir(root):
+            return 0, {}
+        root_abs = os.path.abspath(root)
+        for dirpath, _, filenames in os.walk(root):
+            rel = os.path.relpath(os.path.abspath(dirpath), root_abs)
+            top = rel.split(os.sep, 1)[0] if rel and rel != "." else None
             for f in filenames:
                 fp = os.path.join(dirpath, f)
                 try:
-                    total += os.path.getsize(fp)
+                    sz = os.path.getsize(fp)
                 except OSError:
-                    pass
-        return total
+                    continue
+                total += sz
+                if top:
+                    per_top[top] = per_top.get(top, 0) + sz
+        return total, per_top
 
-    market_bytes = dir_size(market_dir)
-    custom_bytes = dir_size(custom_dir)
+    market_bytes, by_provider = walk_with_attribution(market_dir)
+    custom_bytes, _ = walk_with_attribution(custom_dir)
     total_bytes = market_bytes + custom_bytes
-
-    by_provider: dict[str, int] = {}
-    if os.path.isdir(market_dir):
-        for prov in os.listdir(market_dir):
-            prov_path = os.path.join(market_dir, prov)
-            if os.path.isdir(prov_path):
-                by_provider[prov] = dir_size(prov_path)
 
     def fmt(b: int) -> str:
         if b >= 1 << 30:
@@ -531,7 +541,6 @@ async def get_coverage():
     grouped: dict[str, list] = {}
     for v in seen.values():
         grouped.setdefault(v["provider"], []).append(v)
-
     return {"providers": grouped}
 
 
