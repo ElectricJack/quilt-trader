@@ -454,9 +454,17 @@ class DownloadManager:
         # the lane is free so they can enqueue the next contract; gating on
         # success-only kept the polygon lane idle whenever a download
         # returned "no data." Exceptions in one listener don't block others.
+        # ``status`` and ``error_msg`` are passed so listeners can record
+        # terminal provider answers (e.g. "no data returned") as persistent
+        # goal state rather than re-deriving it from this transient log.
         for cb in list(self._completion_listeners):
             try:
-                cb(provider_name, symbols)
+                try:
+                    cb(provider_name, symbols, status=final_status, error_message=error_msg)
+                except TypeError:
+                    # Backward compat for older callbacks that only accept
+                    # (provider, symbols).
+                    cb(provider_name, symbols)
             except Exception:
                 logger.exception(
                     "completion listener %s failed (continuing with remaining listeners)",

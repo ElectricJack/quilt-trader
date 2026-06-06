@@ -56,7 +56,7 @@ def create_app(
                 ))
             except Exception:
                 pass
-            for col in ("phase", "discovered_contracts", "discovery_progress"):
+            for col in ("phase", "discovered_contracts", "discovery_progress", "terminal_symbols"):
                 try:
                     await conn.execute(text(f"ALTER TABLE data_goals ADD COLUMN {col} TEXT"))
                 except Exception:
@@ -438,15 +438,25 @@ def create_app(
         coverage_index = CoverageIndex(data_svc)
         container.coverage_index = coverage_index
 
-        def _on_download_complete(provider: str, symbols: list[str]) -> None:
+        def _on_download_complete(
+            provider: str,
+            symbols: list[str],
+            status: str | None = None,
+            error_message: str | None = None,
+        ) -> None:
             for sym in symbols:
                 coverage_index.invalidate(provider, sym)
             # Fan out to the goal processor (if constructed) so it can top up
-            # its in-flight queue without waiting for the next cron tick.
+            # its in-flight queue without waiting for the next cron tick, and
+            # record terminal "no data" failures persistently on the goal.
             gp = getattr(container, "goal_processor", None)
             if gp is not None:
                 try:
-                    asyncio.create_task(gp.on_download_complete(provider, symbols))
+                    asyncio.create_task(
+                        gp.on_download_complete(
+                            provider, symbols, status=status, error_message=error_message,
+                        )
+                    )
                 except RuntimeError:
                     # No running loop (e.g. during unit-test teardown) — skip.
                     pass

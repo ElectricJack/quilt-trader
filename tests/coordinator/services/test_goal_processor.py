@@ -254,18 +254,13 @@ async def test_no_data_returned_is_terminal_not_retried(tmp_path, engine_and_fac
     ds = _FakeDataService(market_dir=market_dir)
     gp = _make_processor(sf, dm, ds, market_dir)
 
-    # Symbol 0 has a terminal failure from a year ago — still terminal.
-    # Symbol 1 has a transient failure 10 seconds ago — backed off (will
-    # retry after 1 min).
+    # Symbol 1 has a transient failure 10 seconds ago in the downloads log —
+    # backed off (will retry after 1 min). Set up first so it's visible to any
+    # subsequent enqueue triggered by the terminal-failure completion event.
+    # Symbol 0 had a terminal "no data" completion event — recorded on the
+    # goal's terminal_symbols, never retried.
     # Symbol 2 is clean — should be picked.
     async with sf() as s:
-        s.add(MarketDataDownload(
-            symbols=[contracts[0]["symbol"]], date_range_start=date(2024, 6, 1),
-            date_range_end=date(2024, 6, 3), provider="polygon", data_type="bars",
-            timeframe="1day", status="failed", progress_current=0, progress_total=1,
-            completed_at=datetime.now(timezone.utc) - timedelta(days=365),
-            error_message=f"{contracts[0]['symbol']}: no data returned by polygon for 2024-06-01 to 2024-06-03",
-        ))
         s.add(MarketDataDownload(
             symbols=[contracts[1]["symbol"]], date_range_start=date(2024, 6, 1),
             date_range_end=date(2024, 6, 3), provider="polygon", data_type="bars",
@@ -274,6 +269,12 @@ async def test_no_data_returned_is_terminal_not_retried(tmp_path, engine_and_fac
             error_message=f"{contracts[1]['symbol']}: HTTPError 500 from polygon",
         ))
         await s.commit()
+    await gp.on_download_complete(
+        "polygon",
+        [contracts[0]["symbol"]],
+        status="failed",
+        error_message=f"{contracts[0]['symbol']}: no data returned by polygon for 2024-06-01 to 2024-06-03",
+    )
 
     async with sf() as s:
         goal = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
@@ -305,18 +306,13 @@ async def test_goal_completes_when_terminal_plus_ondisk_equals_total(tmp_path, e
     ds = _FakeDataService(market_dir=market_dir)
     gp = _make_processor(sf, dm, ds, market_dir)
 
-    # Two on disk, one terminal failure.
+    # Two on disk, one recorded as terminal directly on the goal.
     for c in contracts[:2]:
         d = poly / c["symbol"]; d.mkdir()
         (d / "1day.parquet").write_bytes(b"x")
     async with sf() as s:
-        s.add(MarketDataDownload(
-            symbols=[contracts[2]["symbol"]], date_range_start=date(2024, 6, 1),
-            date_range_end=date(2024, 6, 3), provider="polygon", data_type="bars",
-            timeframe="1day", status="failed", progress_current=0, progress_total=1,
-            completed_at=datetime.now(timezone.utc),
-            error_message=f"{contracts[2]['symbol']}: no data returned by polygon for 2024-06-01 to 2024-06-03",
-        ))
+        g = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
+        g.terminal_symbols = [contracts[2]["symbol"]]
         await s.commit()
 
     async with sf() as s:
@@ -421,6 +417,61 @@ async def test_disk_cache_refreshes_at_ttl(tmp_path, engine_and_factory, monkeyp
     fake_now[0] += timedelta(seconds=60)
     await gp._download_options(goal)
     assert scan_calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_terminal_state_survives_downloads_table_clear(tmp_path, engine_and_factory):
+    """Bug: clearing the market_data_downloads table must not cause the goal
+    to re-attempt contracts that Polygon already authoritatively answered
+    'no data' for. The terminal set must live on the DataGoal row, not be
+    derived from the transient downloads log."""
+    engine, sf = engine_and_factory
+    market_dir = str(tmp_path / "market")
+    Path(market_dir, "polygon").mkdir(parents=True)
+
+    contracts = CONTRACTS[:3]
+    goal_id = await _make_goal(sf, contracts=contracts)
+    dm = _FakeDownloadManager(polygon_concurrency=1)
+    ds = _FakeDataService(market_dir=market_dir)
+    gp = _make_processor(sf, dm, ds, market_dir)
+
+    terminal_sym = contracts[0]["symbol"]
+
+    # Simulate the download manager firing a completion event for a 'no data'
+    # terminal failure on symbol 0.
+    await gp.on_download_complete(
+        "polygon",
+        [terminal_sym],
+        status="failed",
+        error_message=f"{terminal_sym}: no data returned by polygon for 2024-06-01 to 2024-06-03",
+    )
+
+    # The goal row now records the terminal symbol.
+    async with sf() as s:
+        g = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
+        assert terminal_sym in (g.terminal_symbols or [])
+
+    # User clears the downloads log (cleanup). The goal's terminal state must
+    # survive this.
+    async with sf() as s:
+        for row in (await s.execute(select(MarketDataDownload))).scalars().all():
+            await s.delete(row)
+        await s.commit()
+
+    # Next processor tick: terminal_sym must NOT be re-enqueued, and
+    # failed_items must remain 1.
+    async with sf() as s:
+        goal = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
+        s.expunge(goal)
+    await gp._download_options(goal)
+
+    picked = {c["symbols"][0] for c in dm.created}
+    assert terminal_sym not in picked, (
+        f"terminal symbol {terminal_sym} was re-enqueued after downloads clear"
+    )
+    async with sf() as s:
+        g = (await s.execute(select(DataGoal).where(DataGoal.id == goal_id))).scalar_one()
+        assert g.failed_items == 1
 
 
 @pytest.mark.asyncio

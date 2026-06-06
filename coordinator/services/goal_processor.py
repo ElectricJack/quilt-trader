@@ -214,7 +214,7 @@ class GoalProcessor:
         discovered = {c.get("symbol") for c in contracts if c.get("symbol")}
         completed = len(discovered & on_disk)
         in_flight = await self._count_in_flight(provider_name, discovered)
-        _, terminal = await self._classified_failures(provider_name, discovered)
+        terminal = discovered & set(goal.terminal_symbols or [])
 
         # Done criterion: every discovered symbol is either on disk or has
         # been authoritatively answered "no data" by the provider, and
@@ -239,33 +239,58 @@ class GoalProcessor:
                 g.status = "completed"
             await session.commit()
 
-    async def on_download_complete(self, provider: str, symbols: list[str]) -> None:
+    async def on_download_complete(
+        self,
+        provider: str,
+        symbols: list[str],
+        status: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
         """Called by DownloadManager when any download finishes (success OR
         failure). Updates the disk cache incrementally if the parquet now
-        exists, then tries to top up the in-flight queue for any active
-        options goal that owns this symbol."""
+        exists; records terminal "no data" failures on each owning goal so the
+        state survives a cleanup of the transient market_data_downloads log;
+        then tops up the in-flight queue for any active options goal that
+        owns this symbol."""
         cache = self._disk_cache.setdefault(provider, set())
         for sym in symbols:
             if isinstance(sym, str) and sym and self._has_parquet(provider, sym):
                 cache.add(sym)
 
-        # Top up each affected goal.
+        is_terminal_failure = status == "failed" and _is_terminal_failure(error_message)
+
+        # Top up each affected goal, and persist terminal-symbol state where
+        # the failure was a "no data returned" answer from the provider.
         async with self._sf() as session:
             goals = (await session.execute(
                 select(DataGoal).where(
-                    DataGoal.status == "active",
+                    DataGoal.status.in_(("active", "paused")),
                     DataGoal.phase == "downloading",
                     DataGoal.goal_type == "options",
                 )
             )).scalars().all()
-            relevant: list[tuple[Any, list[dict]]] = []
+            owned_per_goal: list[tuple[Any, list[dict], list[str]]] = []
             for goal in goals:
                 if (goal.config or {}).get("provider", "polygon") != provider:
                     continue
                 cs = goal.discovered_contracts or []
-                if any(c.get("symbol") in symbols for c in cs):
-                    session.expunge(goal)
-                    relevant.append((goal, cs))
+                owned = [s for s in symbols if any(c.get("symbol") == s for c in cs)]
+                if not owned:
+                    continue
+                if is_terminal_failure:
+                    existing = set(goal.terminal_symbols or [])
+                    updated = existing | set(owned)
+                    if updated != existing:
+                        goal.terminal_symbols = sorted(updated)
+                owned_per_goal.append((goal, cs, owned))
+            if is_terminal_failure:
+                await session.commit()
+            relevant: list[tuple[Any, list[dict]]] = []
+            for goal, cs, _owned in owned_per_goal:
+                if goal.status != "active":
+                    continue
+                session.expunge(goal)
+                relevant.append((goal, cs))
         for goal, cs in relevant:
             try:
                 await self._enqueue_for_goal(goal, cs, provider)
@@ -287,7 +312,8 @@ class GoalProcessor:
         if slot <= 0:
             return
 
-        backed_off, terminal = await self._classified_failures(provider, discovered)
+        backed_off = await self._backed_off_symbols(provider, discovered)
+        terminal = discovered & set(getattr(goal, "terminal_symbols", None) or [])
         eligible = discovered - on_disk - in_flight - backed_off - terminal
         if not eligible:
             return
@@ -364,22 +390,20 @@ class GoalProcessor:
     async def _count_in_flight(self, provider: str, candidates: set[str]) -> int:
         return len(await self._in_flight_symbols(provider, candidates))
 
-    async def _classified_failures(
+    async def _backed_off_symbols(
         self, provider: str, candidates: set[str],
-    ) -> tuple[set[str], set[str]]:
-        """Classify failed downloads into (backed_off, terminal).
+    ) -> set[str]:
+        """Symbols whose transient failures are still inside their exponential
+        backoff window.
 
-        - **terminal**: the latest failure for the symbol was "no data
-          returned" — polygon has answered authoritatively. Never retry;
-          count toward the goal's `failed_items` and treat as done.
-        - **backed_off**: transient failure still inside its exponential
-          backoff window. Will retry once the window expires.
-
-        A symbol that has BOTH terminal and transient failures is treated
-        as terminal — the latest finding wins.
+        Terminal "no data returned" answers are tracked on the goal itself
+        (``DataGoal.terminal_symbols``) so they survive a cleanup of the
+        transient ``market_data_downloads`` log. Transient backoff is
+        derived from the log on purpose — if the log is cleared we only
+        ever retry sooner, never re-do work the provider already answered.
         """
         if not candidates:
-            return set(), set()
+            return set()
         async with self._sf() as session:
             stmt = (
                 select(MarketDataDownload)
@@ -392,12 +416,10 @@ class GoalProcessor:
             )
             rows = (await session.execute(stmt)).scalars().all()
 
-        # Aggregate per symbol. A 'completed' row resets state; subsequent
-        # failures restart the count. The latest row's terminal-ness wins.
         from collections import defaultdict
         fail_count: dict[str, int] = defaultdict(int)
         last_failed_at: dict[str, datetime] = {}
-        latest_is_terminal: dict[str, bool] = {}
+        latest_was_terminal: dict[str, bool] = {}
         for row in rows:
             for s in row.symbols or []:
                 if s not in candidates:
@@ -405,21 +427,17 @@ class GoalProcessor:
                 if row.status == "completed":
                     fail_count[s] = 0
                     last_failed_at.pop(s, None)
-                    latest_is_terminal[s] = False
+                    latest_was_terminal[s] = False
                 elif row.status == "failed":
                     fail_count[s] += 1
                     if row.completed_at is not None:
                         last_failed_at[s] = row.completed_at
-                    latest_is_terminal[s] = _is_terminal_failure(row.error_message)
+                    latest_was_terminal[s] = _is_terminal_failure(row.error_message)
 
-        terminal: set[str] = set()
         backed_off: set[str] = set()
         now = _utcnow()
         for sym, n in fail_count.items():
-            if n <= 0:
-                continue
-            if latest_is_terminal.get(sym):
-                terminal.add(sym)
+            if n <= 0 or latest_was_terminal.get(sym):
                 continue
             last = last_failed_at.get(sym)
             if last is None:
@@ -429,7 +447,7 @@ class GoalProcessor:
             delay = _backoff_seconds(n)
             if (now - last).total_seconds() < delay:
                 backed_off.add(sym)
-        return backed_off, terminal
+        return backed_off
 
     async def _process_bars_goal(self, goal: DataGoal) -> None:
         config = goal.config

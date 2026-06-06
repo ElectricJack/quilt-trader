@@ -307,6 +307,10 @@ class DataGoal(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")  # active | paused | completed
     phase: Mapped[str] = mapped_column(String, nullable=False, default="discovering")  # discovering | downloading | completed
     discovered_contracts: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # [{symbol, expiration}, ...]
+    # Symbols the provider has authoritatively answered "no data" for. Lives
+    # on the goal so it survives cleanup of the transient market_data_downloads
+    # log — clearing download history must not cause the goal to redo work.
+    terminal_symbols: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     discovery_progress: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # "45/105 expirations"
     total_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
