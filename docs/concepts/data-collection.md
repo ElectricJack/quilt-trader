@@ -6,7 +6,7 @@
 
 - The on-disk storage layout under `data/market/`, `data/custom/`, and `data/datasets/`.
 - How the bundled providers differ (asset classes, history depth, paid vs free, live streaming).
-- The split between live **subscriptions** and historical **downloads**, and how both land in the same Parquet store.
+- How live **subscriptions** and historical **downloads** both land in the same Parquet store.
 - How the **coverage index** decides what to refetch.
 - The **datasets framework** for non-bar time series (FMP fundamentals, disclosures, earnings calendar).
 - Where custom-scraped, non-price data fits.
@@ -82,6 +82,8 @@ The `_live` provider suffix (e.g. `alpaca_live`, `tradier_live`, `coinbase_live`
 
 The supported timeframe strings — `1min`, `5min`, `15min`, `1hour`, `1day` — are uniform across providers, with the exception that Tradier's historical bars endpoint is daily-only and will raise on anything else.
 
+Rule of thumb: Polygon Starter is the right default for equities and options research — broadest coverage, the free tier is usable, and paid tiers unlock real-time. Tradier is the pick if you already have a brokerage account there and only need daily equities bars. Alpaca pairs well with Alpaca-as-broker for live trading where the same vendor supplies fills and data. ThetaData is the specialist option for deep options history. yfinance is fine for daily indices and prototyping, but do not back live strategies with it.
+
 Per the recent audit of Polygon's REST surface (`docs/notes/polygon-endpoints.md`), Polygon's free Starter tier covers `/v3/reference/tickers`, `/v3/reference/options/contracts`, and the `/v2/aggs/...` aggregates endpoint used for bars. The provider surfaces `bid`/`ask` on each bar row when Polygon includes them (rare for equities, common for option contracts). Real-time option chain snapshots remain a paid endpoint.
 
 ### Subscriptions vs downloads
@@ -105,6 +107,8 @@ Three or more consecutive missing business days break a run into two ranges — 
 ### The datasets framework
 
 Bars-per-symbol covers most market data needs, but not everything is a price bar. Earnings calendars, congressional trading disclosures, insider transactions, and quarterly income statements all have their own event-date and knowledge-date semantics. The **datasets framework** (`coordinator/services/datasets/`) handles them as first-class registered specs.
+
+These don't fit the bars store because they need composite identity keys (e.g. `(date, symbol)` or `(date, symbol, filing_id)` — declared as `id_columns` on each `DatasetSpec`), bitemporal `event_date`/`knowledge_date` semantics distinct from a bar timestamp (so backtests can apply a `knowledge_date <= as_of` filter), and per-endpoint pagination strategies (`SINGLE`, `PAGE`, `DATE_RANGE`). The datasets framework handles those concerns once, generically — fetch, normalize, dedupe-by-`id_columns`, atomic parquet write.
 
 A dataset is described by a `DatasetSpec` (`coordinator/services/datasets/registry.py:13`):
 
@@ -134,6 +138,40 @@ The currently bundled provider is **FMP** (Financial Modeling Prep), with specs 
 - `fmp.earnings_calendar` — date-range earnings calendar
 
 Algorithms read datasets the same way they read market bars: through the SDK, with the framework handling the storage layout for you. Adding a new dataset means writing a `DatasetSpec` and an adapter for the new provider — the storage layer, scheduling, and quota tracking come for free.
+
+### Adding a provider
+
+Historical providers live in `coordinator/services/data_providers/` and
+are duck-typed — there's no shared base class or `Protocol`. A new
+provider is just a class that exposes:
+
+```python
+async def fetch_bars(
+    self,
+    symbol: str,
+    timeframe: str,        # "1min" | "5min" | "15min" | "1hour" | "1day"
+    start: date,
+    end: date,
+    on_page: PageCallback | None = None,    # (page_idx, cumulative_bars, fraction_or_None)
+    on_status: StatusCallback | None = None, # (message)
+    on_bars: BarsCallback | None = None,     # (bars_for_this_page) — fired before next page
+) -> list[dict]:
+    ...
+```
+
+Each returned bar is a dict with `timestamp` (ISO string), `open`,
+`high`, `low`, `close`, `volume`. Compare `yfinance_provider.py` (the
+simplest reference — single-shot, no pagination) with `polygon.py`
+(paginated with rate-limit-aware retries) to see the range. The
+coordinator wires providers into the download path via
+`BarsJobDispatcher` (`coordinator/services/download_job.py`).
+
+Live streaming is a separate surface: stream adapters live under
+`worker/` (e.g. `worker/alpaca_adapter.py`,
+`worker/polygon_stream_adapter.py`,
+`worker/coinbase_stream_adapter.py`) and write ticks under
+`data/market/{provider}_live/{symbol}/ticks/`, which the live-feed
+aggregator collapses into the standard 1-minute parquet.
 
 ### Custom data via scrapers
 
