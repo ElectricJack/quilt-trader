@@ -5,8 +5,8 @@ and honest backtests, driven by a CLI an AI agent can use end-to-end.
 
 - **Own your data** — every quote, bar, and scraped row lives in a
   local Parquet store you control.
-- **Honest options backtests** — a layered MTM model with three-tier
-  IV resolution, not a wishful mid-price.
+- **Honest options backtests** — direction-aware fills with a
+  documented realism knob, not a wishful mid-price.
 - **CLI-first, agent-friendly** — every operation has a `quilt`
   command with `--json` output and documented exit codes.
 
@@ -74,11 +74,11 @@ Learn more → [docs/concepts/architecture.md](docs/concepts/architecture.md)
 
 ### Own your data
 
-Free feeds are incomplete and paid feeds are unreplayable — Quilt
-stores everything you pull, locally, in an open format.
-
 Every subscription tick and every historical download lands in the
-same Parquet store under `data/market/{provider}/{symbol}/{timeframe}.parquet`.
+same local Parquet store, in an open format you can query, copy, or
+move without asking permission.
+
+Files live under `data/market/{provider}/{symbol}/{timeframe}.parquet`.
 Switch providers, query from a notebook, or rsync the whole tree to
 another box — it's just files. Backtests read from this store, so what
 you see is what your algorithm saw.
@@ -117,7 +117,7 @@ failed. Long-running commands stream NDJSON under `--follow --json`,
 so an agent can tail a backtest or a deployment without parsing
 human-formatted logs.
 
-Learn more → [cli-and-agentic-workflows.md](docs/concepts/cli-and-agentic-workflows.md).
+Learn more → [cli-and-agentic-workflows.md](docs/concepts/cli-and-agentic-workflows.md)
 To see the surface an agent works against, also see
 [writing-algorithms.md](docs/concepts/writing-algorithms.md).
 
@@ -170,5 +170,5 @@ about 30 minutes.
 
 ## Status
 
-Private — not yet open source. Issues and pull requests welcome from
-invited collaborators.
+Private alpha — coordinator, workers, dashboard, and the five
+providers above all run end-to-end. Open source release pending.
