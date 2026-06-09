@@ -78,6 +78,15 @@ Subcommands live in `sdk/cli/commands/`. Grouped by domain:
 
 Both `algo` and `algorithm` work; same for `deploy` and `deployment` (wired in `sdk/cli/main.py:57,62`).
 
+### Where credentials live
+
+Agents driving Quilt typically receive broker keys via env vars in their sandbox and pass them through on `account create`:
+
+    quilt account create --name "Alpaca Paper" --broker alpaca --env paper \
+      --api-key "$ALPACA_KEY" --secret-key "$ALPACA_SECRET"
+
+The coordinator writes them to its encrypted settings store; subsequent runs reference the account by name or id, never by raw key. Broker identifiers accepted today include `alpaca` and `tradier` (Tradier uses `--access-token` and `--account-id` instead of `--secret-key`; see `sdk/cli/commands/account.py:78-107`). There is no CLI verb that reveals a stored secret — `quilt settings get` returns which keys are *set*, not their values (`sdk/cli/commands/settings.py:73-86`). For provider-level credentials (data vendors, etc.) use `quilt settings set <key> <value>`.
+
 ### Machine-readable everywhere
 
 Every read command honours `--json`. The shape is the raw response from the coordinator API, serialised with `json.dumps(..., default=str, indent=2)` (`sdk/cli/output.py:15-19`). No envelope, no `{"data": ...}` wrapping, no pagination metadata for endpoints that return arrays.
@@ -112,6 +121,8 @@ Every read command honours `--json`. The shape is the raw response from the coor
 ]
 ```
 
+> Agents typically extract `id` for follow-up calls, `status` for state checks, and `lifetime_metrics` for decision logic. Treat any unlisted key as opaque.
+
 The `id`, `algorithm_id`, `account_id`, `worker_id` fields are full UUIDs in `--json` mode; the human table shows the first 8 chars (`sdk/cli/commands/deployment.py:55-58`).
 
 Mutation commands also emit JSON when `--json` is set — `quilt deployment create --json` returns the new deployment object; `quilt deployment start --json` returns `{"active_run_id": "..."}` (the body of the `/start` endpoint).
@@ -134,8 +145,8 @@ The spec for this doc claimed several commands are idempotent. Walking the actua
 
 - **`quilt init`** is **not** idempotent. If `~/.quilt/config.yaml` exists it exits `2` ("config already exists; use --force to overwrite", `sdk/cli/commands/init.py:27-28`). Re-running it on a fresh box is safe; re-running on a configured box requires `--force` (which **overwrites** the file).
 - **`quilt coord start`** **is** idempotent. If the PID file points to a live process serving `/api/health`, it prints `already running` and returns `0` (`sdk/cli/commands/coord.py:34-37`).
-- **`quilt algorithm install`** is **not** idempotent. Names are not unique in the `algorithms` table (`coordinator/database/models.py:65-70`); re-running with the same name creates a second row. If you re-install, expect duplicates in `quilt algorithm list`. Use `quilt algorithm update <name>` to pull the latest commit for a GitHub-sourced install.
-- **`quilt deployment create`** is **not** idempotent. Deployments have no human name; every call creates a new UUID row even with identical `(algo, account, worker, config)`. Agents should `list` first and only `create` if no match.
+- **`quilt algorithm install`** creates a new row on each call. Names are not unique in the `algorithms` table (`coordinator/database/models.py:65-70`); re-running with the same name yields a second row rather than updating the first. Expect duplicates in `quilt algorithm list` if you re-install. Use `quilt algorithm update <name>` to pull the latest commit for a GitHub-sourced install.
+- **`quilt deployment create`** creates a new UUID row on every call, even with identical `(algo, account, worker, config)` — there is no upsert. Deployments have no human name. Agents should `list --json`, filter on the tuple, and only `create` if no match.
 - **`quilt deployment start` / `stop`** are guarded by status (409 if the deployment is in the wrong state — `coordinator/api/routes/deployments.py:214-215`), which maps to exit `2`. Repeating a `start` on an already-running deployment is a user error, not a no-op.
 - **Destructive commands require `--yes`**: `algorithm uninstall`, `account delete`, `worker delete`, `deployment delete`, `backtest delete`. Without it they exit `2`. Agents should always pass `--yes` explicitly.
 
@@ -196,7 +207,7 @@ quilt deployment start "$DEPLOY_ID"
 ```bash
 # 6. Watch live activity. --follow emits NDJSON (one JSON object per line)
 #    when --json is set, so the agent can stream-parse and react to events.
-quilt --json deployment activity "$DEPLOY_ID" --follow --severity warn
+quilt deployment activity "$DEPLOY_ID" --follow --severity warn --json
 #   stdout: {"timestamp": "...", "severity": "warn", "kind": "log", ...}
 #           {"timestamp": "...", "severity": "error", "kind": "event", ...}
 #   exit on Ctrl+C: 0
