@@ -41,7 +41,11 @@ problems:
   need its own auth handshake — if a worker can open a WebSocket to the
   coordinator's tailnet IP, it's already authenticated by WireGuard.
 - **No port forwarding.** The coordinator binds on its tailnet
-  interface. Nothing is exposed to the public internet.
+  interface, port 8000 by default (`coordinator/config.py:9`, override
+  with `QT_PORT`). Nothing is exposed to the public internet. If you're
+  running the coordinator inside WSL2, see
+  [`../notes/wsl-tailscale-setup.md`](../notes/wsl-tailscale-setup.md)
+  for the networking caveat.
 - **Encrypted by default.** WireGuard handles transport security. The
   coordinator → worker channel carries broker credentials in plaintext
   JSON because the channel itself is the encryption layer.
@@ -76,6 +80,21 @@ re-issues a `start_instance` for every instance that was running. This
 reconcile path lives at `coordinator/api/websocket.py:284-289` and
 fires from the heartbeat handler whenever a worker transitions from
 offline to online.
+
+**How the coordinator knows it's still the same worker.** Identity is
+the worker's UUID, minted by the coordinator at `quilt worker add` time
+and baked into the install one-liner as `WORKER_ID`. The install script
+writes that into `/etc/quilt-trader-worker.env` as `QTW_WORKER_ID`
+(`scripts/install-worker.sh:117-127`), and the worker process sends it
+on every heartbeat (`worker/agent.py:68-78`). If you re-image the host
+and re-run the same install one-liner (or otherwise preserve the same
+`QTW_WORKER_ID`), the new process re-uses the UUID and the coordinator
+treats it as the same worker. If you instead run `quilt worker add`
+again to mint a fresh UUID, you get a new worker row in the dashboard.
+Beyond the UUID, the tailnet is the auth boundary — there is no
+per-worker certificate. A device that's on your tailnet and knows a
+valid `QTW_WORKER_ID` can speak as that worker, which is why the
+"Limits" section names the tailnet as the trust boundary.
 
 The two consequences worth internalizing:
 
@@ -140,7 +159,7 @@ and folds trade/error/stop events through `activity_event` and the
 `instance_started`/`instance_stopped`/`instance_error` lifecycle
 messages. Read the tables above, not the spec.
 
-Note that `signal_response` is sent from coordinator → worker but
+Note that `signal_response` is sent from coordinator → worker, and is
 auto-approved today (`coordinator/api/websocket.py:338-347`) — the PDT
 gating logic is a planned hook, not a current enforcement point.
 
@@ -174,7 +193,11 @@ gating logic is a planned hook, not a current enforcement point.
    baked in (`coordinator/api/routes/workers.py:189-225`). The Tailscale
    authkey is pulled from the encrypted `tailscale_authkey` setting if
    you configured one; otherwise the placeholder `tskey-CHANGE-ME` is
-   substituted and you fill it in by hand.
+   substituted and you fill it in by hand. If you don't yet have a
+   Tailscale account, sign up at [tailscale.com](https://tailscale.com)
+   and generate an authkey from the admin console (Settings → Keys →
+   Generate auth key). A reusable, non-ephemeral key with no expiry is
+   the simplest choice for personal use; tighten as needed.
 
 3. **Paste it into a fresh shell on the new host.** That's
    `scripts/install-worker.sh`. It:
