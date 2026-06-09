@@ -65,8 +65,10 @@ Every open option position is re-priced on every bar by
                   2. resolve sigma via three-tier IV cache
                        (symbol → (underlying, expiry) → underlying ATM
                         → FALLBACK_SIGMA = 0.40)
-                  3. bs_or_intrinsic = black_scholes_price(S, K, T,
-                       r=0.045, sigma, option_type)
+                  3. bs_or_intrinsic = black_scholes_price(
+                       S=underlying, K=strike, T=years_to_expiry,
+                       r=RISK_FREE_RATE, sigma=sigma,
+                       option_type=option_type)
                        (T ≤ 0 → intrinsic; sigma ≤ 0 → discounted intrinsic)
                   4. apply direction-aware envelope, lerped by α = mtm_realism
                   5. return max(result, 0.0)
@@ -185,6 +187,12 @@ exposes `mtm_realism`:
 single configuration end-to-end. Flags: `--algo`, `--start`, `--end`,
 `--cash`, `--config` (JSON overrides), `--wait`. **`--mtm-realism` is
 not exposed here.** Single-run backtests use the engine default of `0.0`.
+This is deliberate: `quilt backtest run` is for quick iteration under
+the conservative default. Anything that exercises the knob — including
+the `mtm_realism = 1.0` broker-reconciliation use case — runs through
+a pre-registered research session so the chosen value is persisted on
+the session row alongside the hypothesis and pre-registered criteria,
+and inherits to every backtest spawned under it.
 
 **`quilt research session create`**
 (`sdk/cli/commands/research.py:64`) creates an `OptimizationSession` —
@@ -248,13 +256,15 @@ What you should expect to see — without fabricating specific numbers:
   actually happen* — when underlying moves against a short position.
   The broker-like curve will too, but may show smoother day-to-day
   changes when chain data is sparse.
-- A strategy that passes pre-registered OOS criteria under
-  `mtm_realism = 0.0` and fails under `mtm_realism = 1.0` does not
-  exist (the conservative path is, by construction, no friendlier than
-  the unbiased one for shorts and identical for longs). The interesting
-  case is the reverse: a strategy that passes at `1.0` and fails at
-  `0.0` is one whose edge lives in the gap-bar MTM optimism. **That
-  strategy should not be deployed.**
+- Per-bar, the conservative path is no friendlier than the unbiased
+  one for shorts and identical for longs. In practice this means a
+  strategy that passes pre-registered OOS criteria at `0.0` will almost
+  always pass at `1.0` — modulo second-order effects where the
+  algorithm uses MTM to size new positions (e.g. portfolio-percent
+  sizing) and the fatter conservative liability changes the trade
+  sequence. The interesting case is the reverse: a strategy that
+  passes at `1.0` and fails at `0.0` is one whose edge lives in the
+  gap-bar MTM optimism. **That strategy should not be deployed.**
 
 The point of running both is not to pick the friendlier number. It's to
 see how much of your reported edge is robust and how much is an artifact
@@ -286,9 +296,10 @@ of the price-discovery model.
   There is no in-period adaptation; the train window does not slide
   with regime detection.
 - **`mtm_realism` is not exposed on `quilt backtest run`.** Single-run
-  backtests always use `0.0`. To experiment with the dial, create a
-  research session — even a session with a trivial parameter space and
-  one trial.
+  backtests always use `0.0`; see *Sweeps, walk-forward, and parameter
+  sets* above for the rationale and the research-session path. To
+  experiment with the dial, create a session — even a trivial one with
+  a single trial.
 
 ## See also
 
