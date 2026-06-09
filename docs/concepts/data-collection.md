@@ -44,7 +44,8 @@ data/
 │   │   └── BTCUSD/
 │   │       └── 1day.parquet
 │   ├── tradier/
-│   │   └── BTCUSD/
+│   │   └── AAPL/
+│   │       └── 1day.parquet
 │   ├── alpaca_live/
 │   │   └── SPY/
 │   │       ├── 1min.parquet
