@@ -25,7 +25,7 @@ Optional:
 ## Step 1 — Install the coordinator
 
 ```bash
-git clone https://github.com/your-org/quilt-trader.git
+git clone https://github.com/ElectricJack/quilt-trader.git
 cd quilt-trader
 python3 -m venv .venv
 source .venv/bin/activate
@@ -88,20 +88,27 @@ created worker: a1b2c3d4 (local-dev)
 install_token: <long random string>
 ```
 
-Run the worker process from the repo root. The worker needs the websockets extras:
+Run the worker process from the repo root:
 
 ```bash
+# Step a: install worker extras (same venv as the coordinator is fine — this just adds websockets):
 pip install -e ".[worker]"
 
-export WORKER_TOKEN='<install_token from above>'
-export QTW_WORKER_ID='<full worker id — use `quilt worker show local-dev` to see it>'
+# Step b: look up the worker's full UUID:
+quilt worker show local-dev | grep '^id:'
+# copy the UUID printed above into the export below
+
+# Step c: export the four env vars the worker process reads:
+export WORKER_TOKEN='<install_token from `quilt worker add` output>'
+export QTW_WORKER_ID='<full UUID from step b>'
 export QTW_WORKER_NAME='local-dev'
 export QTW_COORDINATOR_URL='ws://localhost:8000'
 
+# Step d: start the worker (leave this terminal open):
 python3 -m worker.main
 ```
 
-Leave that terminal open. You should see the worker connect; in the dashboard's **Workers** tab the worker now shows `online`.
+The worker should print a connection log line. In the dashboard's **Workers** tab the worker now shows `online`.
 
 ### Clearing the `pending` install status (cosmetic)
 
@@ -122,7 +129,7 @@ Create a directory and drop two files into it.
 mkdir -p ./toy-momentum
 ```
 
-`./toy-momentum/algorithm.py`:
+Save the next block as `./toy-momentum/algorithm.py`:
 
 ```python
 from __future__ import annotations
@@ -172,7 +179,7 @@ class ToyMomentum(QuiltAlgorithm):
         return self.save_state()
 ```
 
-`./toy-momentum/quilt.yaml`:
+Save the next block as `./toy-momentum/quilt.yaml`:
 
 ```yaml
 name: toy-momentum
@@ -229,7 +236,7 @@ quilt backtest run --algo toy-momentum-v1 \
   --start 2024-06-01 --end 2024-06-30 --wait
 ```
 
-Open the dashboard's **Backtests** tab to see the equity curve, trades, and stats. The toy algorithm will not look impressive — that's expected. You have proven the pipeline end-to-end.
+Open the dashboard's **Backtests** tab to see the equity curve, trades, and stats. You should see a row in the Backtests list with `status: completed` — click into it for the equity curve and trades table. The toy algorithm will not look impressive; that's expected. You have proven the pipeline end-to-end.
 
 ## Step 6 — Deploy live (optional)
 
@@ -244,11 +251,13 @@ quilt data subscribe alpaca SPY
 Create and start a deployment:
 
 ```bash
+# Create the deployment — this prints a "created: <id>" line. Copy that id.
 quilt deployment create \
   --algo toy-momentum-v1 \
   --account "Alpaca Paper" \
   --worker local-dev
 
+# Substitute the id from above:
 quilt deployment start <deployment-id>
 quilt deployment activity <deployment-id> --follow
 ```
@@ -278,7 +287,7 @@ Pick by intent:
 | `quilt up` exits with `port 8000 already in use` | Another service is bound to 8000 | Kill the offender, or run `quilt coord start --port 8001` and visit that port |
 | `python: command not found` | Ubuntu / WSL only ships `python3` | Use `python3` and `pip3` everywhere; or alias `python=python3` |
 | Worker stays `pending` in the dashboard | Localhost worker never hit the install-claim endpoint | Run the `curl ... /api/workers/install/claim/...` command from Step 3 |
-| `on_tick` logs show `bars is None` | No SPY data is available on disk (backtest) or no live subscription (deploy) | Run `quilt data download --symbol SPY --start ... --end ...` for backtests, or `quilt data subscribe alpaca SPY` for live |
+| `on_tick` logs show `bars is None` (visible in `quilt deployment activity --follow` or backtest output) | No SPY data is available on disk (backtest) or no live subscription (deploy) | Run `quilt data download --symbol SPY --start ... --end ...` for backtests, or `quilt data subscribe alpaca SPY` for live |
 | `npm run build` fails with a syntax error | Node version is older than 18 | Upgrade Node (`nvm install 20` is the easy path) |
 | `pip install -e` fails with "editable install requires setuptools" | Old pip | `pip install -U pip` then retry |
 | Worker process exits with `WORKER_TOKEN not set` | Forgot to `export` the env vars before `python -m worker.main` | Re-export `WORKER_TOKEN`, `QTW_WORKER_ID`, `QTW_WORKER_NAME`, `QTW_COORDINATOR_URL` in the same shell |
