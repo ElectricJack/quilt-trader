@@ -76,7 +76,7 @@ Optional:
 
 ### The class
 
-Your entry point file defines a class that extends `QuiltAlgorithm` (`sdk/algorithm.py:11`). The class has eight overridable methods, three of which are required.
+Your entry point file defines a class that extends `QuiltAlgorithm` (`sdk/algorithm.py:11`). Seven overridable callbacks (three required, four optional) plus a `notify(...)` helper.
 
 **`on_start(self, config, restored_state)`** — `sdk/algorithm.py:17`. Called once when the algorithm instance comes up. `config` is the parsed `config.parameters` from the manifest, with any deployment-time overrides applied. `restored_state` is either `None` (cold start) or the dict your last `save_state()` returned. Put initialization here: read config into attributes, restore prior state, set up internal counters. Do not place expensive network or disk work here; it blocks the worker startup.
 
@@ -84,7 +84,7 @@ Your entry point file defines a class that extends `QuiltAlgorithm` (`sdk/algori
 
 **`on_stop(self)`** — `sdk/algorithm.py:23`. Called once when the instance is shut down (deploy update, manual stop, worker restart). Return a dict of final state. Most implementations just return `self.save_state()`.
 
-**`save_state(self)`** — `sdk/algorithm.py:26`. Called by the framework on a checkpoint cadence between ticks. Return a JSON-serializable dict. The framework stores it durably; it is what gets handed back to `on_start` as `restored_state` on the next boot.
+**`save_state(self)`** — `sdk/algorithm.py:26`. Called by the framework after every tick (best-effort; failures are logged and swallowed so a bad checkpoint cannot crash the worker — see `worker/live_instance_runtime.py:170`). Return a JSON-serializable dict. The framework stores it durably; it is what gets handed back to `on_start` as `restored_state` on the next boot.
 
 **`on_signal_rejected(self, signal, reason)`** — `sdk/algorithm.py:29`. Optional. Called if the coordinator (risk checks, broker, PDT logic) refuses a signal you emitted. Use it to log, retry, or back off. Default is a no-op.
 
@@ -127,8 +127,7 @@ The `trigger` field controls when `on_tick` fires. It is validated against the r
 | --- | --- | --- |
 | `bar:1min` | A 1-minute bar closes for any subscribed asset | Default for short-timeframe equities and options |
 | `bar:1h`, `bar:1day` | The named bar closes | Slower strategies that only act on session or daily data |
-| `interval:60s` | Every N seconds, regardless of bar boundaries | Quote-driven or rebalancing logic that wants wall-clock cadence |
-| `interval:5m`, `interval:1h` | Every N minutes or hours | Lower-frequency polling |
+| `interval:30s`, `interval:5m`, `interval:1h` | Every N seconds, minutes, or hours, regardless of bar boundaries | Quote-driven, rebalancing, or lower-frequency polling on wall-clock cadence |
 | `event` | An external event (scraper completion, custom event) | Event-driven strategies that wake on news, not the clock |
 
 If the field is omitted, the default is `bar:1min` (`sdk/manifest.py:73`).
@@ -151,7 +150,7 @@ signal = Signal.simple(
 )
 ```
 
-For multi-leg orders (spreads, condors, etc.) construct legs directly:
+For multi-leg orders (spreads, condors, etc.) construct legs directly. The leg symbols below use OCC option symbol format (root + expiry + call/put + strike):
 
 ```python
 from sdk.signals import Signal, SignalLeg, SignalType, OrderType
@@ -185,7 +184,7 @@ Algorithms restart. A deployment update redeploys the package; a worker crashes;
 
 The flow is simple:
 
-1. Between ticks, the framework calls `save_state()` on your algorithm. You return a JSON-serializable dict.
+1. After every tick, the framework calls `save_state()` on your algorithm. You return a JSON-serializable dict.
 2. The coordinator stores it durably (alongside the instance row).
 3. On the next boot, the framework calls `on_start(config, restored_state=<the dict>)`.
 4. Your `on_start` checks whether `restored_state` is `None` (cold start) or populated (recovery) and rehydrates accordingly.
@@ -197,7 +196,7 @@ What goes in the dict: anything you cannot reconstruct from current bars + posit
 A complete EMA-crossover algorithm. Drop this in `my-algo/algorithm.py` alongside a `quilt.yaml` declaring `entry_point: algorithm.py`, `class_name: EmaCross`, and a `trigger: bar:1day`.
 
 ```python
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from sdk.algorithm import QuiltAlgorithm
 from sdk.signals import Signal, SignalType, OrderType
@@ -209,7 +208,7 @@ if TYPE_CHECKING:
 class EmaCross(QuiltAlgorithm):
     """Hold the symbol when short EMA > long EMA, exit when it crosses back."""
 
-    def on_start(self, config: dict, restored_state: Optional[dict]) -> None:
+    def on_start(self, config: dict, restored_state: dict | None) -> None:
         self.symbol = config.get("symbol", "QQQ")
         self.ema_short = int(config.get("ema_short", 10))
         self.ema_long = int(config.get("ema_long", 50))
@@ -260,6 +259,8 @@ class EmaCross(QuiltAlgorithm):
 ```
 
 That is the whole algorithm. The manifest declares the trigger, the SDK delivers the bars, the framework routes the signals to whatever broker your deployment is wired to.
+
+To run this against historical data or deploy it to a live account, see [`cli-and-agentic-workflows.md`](./cli-and-agentic-workflows.md).
 
 ## Limits and sharp edges
 
