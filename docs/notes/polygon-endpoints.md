@@ -14,8 +14,14 @@ Status as of 2026-05-13. Base URL: `https://api.polygon.io`. Free Starter tier i
 | Endpoint | Path | Returns | Free? | Status |
 |---|---|---|---|---|
 | Aggregates (bars) | `/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}` | OHLCV bars at custom timeframe | Yes (2yr history) | ✅ `PolygonProvider.fetch_bars` |
+| Ticker search | `/v3/reference/tickers` | Symbol/name/type matches for a query string | Yes | ✅ `PolygonProvider.search_symbols` |
+| Options contracts reference | `/v3/reference/options/contracts` | Contract tickers / strikes / types for a given underlying + expiration | Yes | ✅ `PolygonProvider.discover_option_contracts` |
 
-The aggregates endpoint paginates via `next_url` (cursor-based). Our code follows it correctly.
+Aggregates: we send `limit=50000`, `sort=asc` and paginate via `next_url` (cursor-based). The provider also surfaces `bid`/`ask` on each bar if Polygon includes them in the result row (most equities don't; some option contracts do). `vw` (VWAP) and `n` (trade count) are still dropped — see "Dropped fields worth adding" below.
+
+Ticker search: sends `search={query}&active=true&limit=20` and returns `(symbol, name, type)` tuples for the UI's symbol picker.
+
+Options contracts reference: used to enumerate option contracts before fetching their bars. Accepts `underlying_ticker`, `expiration_date`, `as_of` (set to the expiration), `limit=1000`, `sort=strike_price`, `order=asc`, and optional `strike_price.gte` / `strike_price.lte` for ATM-window filtering. Paginates via `next_url`. Contract *bars* still come from the same aggregates endpoint, just with an option ticker like `O:SPY240315C00500000`.
 
 ## High-value additions (in rough priority order)
 
@@ -63,7 +69,7 @@ The aggregates endpoint paginates via `next_url` (cursor-based). Our code follow
 | Trades | `/v3/trades/{ticker}` | Tick-level trade data is paid |
 | Quotes | `/v3/quotes/{ticker}` | NBBO quotes are paid |
 | Real-time WebSocket | `wss://socket.polygon.io/...` | Real-time streaming is paid |
-| Options chain snapshots | `/v3/snapshot/options/{underlying}` | Options data is paid |
+| Options chain snapshots | `/v3/snapshot/options/{underlying}` | Real-time chain snapshots are paid (contract *reference* + delayed bars work on free — see above) |
 
 ## Notes on what we shipped
 - We expose `quotes` and `trades` as **disabled checkboxes** in the download dialog with a "(not yet supported)" label. Backend rejects them with a clear error if anyone bypasses the UI. Re-enable when (a) the user upgrades to a paid plan AND (b) we implement `fetch_quotes`/`fetch_trades` on `PolygonProvider`.
