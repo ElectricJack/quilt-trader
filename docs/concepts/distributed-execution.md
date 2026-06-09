@@ -325,6 +325,6 @@ untouched throughout.
 ## See also
 
 - [`architecture.md`](architecture.md) — system topology and where state lives.
-- [`writing-algorithms.md`](writing-algorithms.md) — what runs inside `LiveInstanceRuntime` on the worker.
+- [`cli-and-agentic-workflows.md`](cli-and-agentic-workflows.md) — driving the worker lifecycle from the CLI.
 - [`../notes/wsl-tailscale-setup.md`](../notes/wsl-tailscale-setup.md) — WSL2 networking caveats when the coordinator is inside WSL2.
 - [`../superpowers/specs/2026-05-12-quilt-trader-design.md`](../superpowers/specs/2026-05-12-quilt-trader-design.md) §2.3 — original protocol spec (message names are stale; see notes above).
