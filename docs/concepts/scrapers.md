@@ -54,7 +54,7 @@ There is no async, no retry hook, no streaming output. If `on_run` raises, the e
 
 Output goes to `data/custom/<name>.csv` (`scraper_engine.py:31-32`). The path layout is fixed; algorithms look up custom data by scraper name only.
 
-**Atomicity caveat.** The current engine writes the CSV in place via `df.to_csv(out_path, index=False)` (`scraper_engine.py:55`) — not via a temp-file-plus-rename. A concurrent reader can in principle see a partial file. In practice the cron schedule is coarse (typically once a day) and algorithm consumers read at tick boundaries scheduled around the same UTC clock, so collisions are rare; if you build a high-frequency scraper this is a sharp edge to know about.
+**Atomicity caveat.** The current engine writes the CSV in place via `df.to_csv(out_path, index=False)` (`scraper_engine.py:55`) — not via a temp-file-plus-rename. A concurrent reader can in principle see a partial file. This is a known gap, not a design choice; the fix (write to `<name>.csv.tmp`, then `os.replace`) is small and contributions are welcome. In practice the cron cadence is coarse and tick reads cluster on the same UTC clock, so collisions are rare today.
 
 ### The manifest
 
@@ -96,7 +96,17 @@ The `config.parameters` block declares the keys passed to `on_start`. Per-instan
 
 Inside `on_tick`, an algorithm calls `ctx.data("alpha-picks-scraper")` and gets back the current CSV as a `pandas.DataFrame`. In live mode the worker pre-fetches custom data sources before each tick (`worker/context.py:188`); in backtests the backtest context (`coordinator/services/backtest_tick_context.py:282`) does the same lookup.
 
-Freshness is "as of the last successful scrape." There is no point-in-time history in the framework — the CSV at `data/custom/<name>.csv` is the only version that exists, and it gets overwritten on every successful run. Algorithms that need to detect changes (e.g. "Alpha Picks added TSLA today") diff successive frames themselves, typically by stashing the last-seen frame on `self` in `on_tick`.
+Freshness is "as of the last successful scrape." There is no point-in-time history in the framework — the CSV at `data/custom/<name>.csv` is the only version that exists, and it gets overwritten on every successful run. Algorithms that need to detect changes (e.g. "Alpha Picks added TSLA today") diff successive frames themselves, typically by stashing the last-seen frame on `self` in `on_tick`:
+
+```python
+def on_tick(self, ctx):
+    picks = ctx.data("alpha-picks-scraper")
+    prev = getattr(self, "_last_picks", None)
+    if prev is not None:
+        added = set(picks["symbol"]) - set(prev["symbol"])
+        # ... act on `added`
+    self._last_picks = picks
+```
 
 ### Scheduling
 
@@ -108,6 +118,8 @@ A few details worth knowing:
 - **Catch-up on startup.** If today's base cron time has already passed when the coordinator starts and there has been no successful run since, the registry fires a catch-up run immediately. Catch-up is bounded by `MAX_ATTEMPTS_PER_DAY = 3` (`scraper_registry.py:29`) so a chronically failing scraper can't burn the upstream API on every restart.
 - **Persistence.** Every attempt is recorded in the `scrapers` SQLite table — `last_attempt_at`, `last_success`, `last_error`, `attempts_today`. This is what the `quilt data scrapers` CLI and the dashboard read.
 - **Manual trigger.** `POST /api/scrapers/<name>/run` runs a scraper immediately; `quilt data scraper-run <name>` is the CLI wrapper (`sdk/cli/commands/data.py:193`).
+- **Overlap.** The scheduler registers jobs with `coalesce=True` and APScheduler's default `max_instances=1` (`scheduler.py:58-61`), so if `on_run` is still executing when the next cron tick fires, the new run is blocked and any further missed firings collapse into a single catch-up run (bounded by the 600s `misfire_grace_time`). You won't get two copies of the same scraper racing on the CSV.
+- **Per-run timeout.** There is no engine-level timeout today. A scraper that hangs on a network call will hold its slot until the coordinator restarts. Set your own HTTP client timeouts inside `on_run`.
 
 ### Packaging and installation
 
@@ -126,7 +138,7 @@ Two install paths exist today:
 1. **Manual clone.** `git clone <repo> packages/<name>`, then create the venv and install requirements as the package's README documents. The coordinator picks it up on next restart via `discover_and_register`.
 2. **HTTP install.** `POST /api/scrapers` with `{ "repo_url": "<git url>" }` clones the repo into `packages/`, creates the venv, installs `requirements.txt`, validates the manifest, and registers the scraper without a coordinator restart (`scraper_registry.py:228`).
 
-Note that `quilt algorithm install` is for algorithms only — the algorithm install endpoint rejects manifests where `type != "algorithm"` (`coordinator/api/routes/algorithms.py:724`). There is currently no `quilt scraper install` CLI command; either use the manual clone path or `curl` the HTTP endpoint.
+Note that `quilt algorithm install` is algorithm-only — the algorithm install endpoint validates `type == "algorithm"` and rejects scraper manifests (`coordinator/api/routes/algorithms.py:724`). There is no `quilt scraper install` CLI today; use the manual clone path or `curl` the HTTP endpoint above. A symmetric CLI command is a reasonable contribution — the HTTP endpoint already does the real work.
 
 To list installed scrapers: `quilt data scrapers` (`sdk/cli/commands/data.py:175`).
 
@@ -146,7 +158,7 @@ Setup details — how to pre-log-in the Chromium profile, how to re-auth when th
 ## Limits & sharp edges
 
 - **Output is full-overwrite; no history snapshots.** The framework keeps exactly one version of each scraper's CSV — the most recent successful run. If you need point-in-time queries, snapshot it yourself (a daily `cp` into a dated subdirectory works, or pipe the DataFrame into the bitemporal datasets framework instead).
-- **CSV writes are in-place, not atomic.** `df.to_csv` writes byte-by-byte to the live path. Concurrent readers can in principle see a partial file. Coarse cron cadences make this rare in practice, but if you're building anything tick-frequency, do the temp-file-plus-rename yourself in `on_run` before returning.
+- **CSV writes are in-place, not atomic.** See the atomicity caveat under "Execution model." For tick-frequency scrapers, write to a temp path inside `on_run` and `os.replace` onto the final filename before returning.
 - **One scraper, one CSV.** The output filename is derived from the scraper's `name` field. Multi-output scrapers must split into multiple scraper packages, each with its own manifest and schedule.
 - **Cookie-based scrapers need manual re-auth when sessions expire.** Playwright-profile scrapers like alpha-picks fail with a recognizable error when the upstream login wall reappears; you re-log-in to the profile by hand. There is no automated credential rotation in the framework.
 - **Playwright ships a ~150MB Chromium per venv.** Each scraper package gets its own venv, so each Playwright-based scraper costs another ~150MB of disk. Worth knowing if you plan to run a dozen of them on a coordinator with thin storage.
