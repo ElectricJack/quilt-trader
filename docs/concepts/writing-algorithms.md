@@ -262,7 +262,7 @@ That is the whole algorithm. The manifest declares the trigger, the SDK delivers
 
 To run this against historical data or deploy it to a live account, see [`cli-and-agentic-workflows.md`](./cli-and-agentic-workflows.md).
 
-## Limits and sharp edges
+## Limits & sharp edges
 
 - **`on_tick` is synchronous and blocking.** It runs in the worker subprocess. Anything that takes seconds — a slow scraper read, an HTTP call to an external API, heavy numerical work — delays the next tick. If you need to do expensive work, do it in a scraper package (separate process, scheduled) and read the result via `ctx.data(source_name)`.
 - **No `async` / `await`.** The SDK is synchronous. Do not define `async def on_tick`; it will not be awaited.

@@ -1,7 +1,7 @@
 # QuiltTrader
 
 A distributed algorithmic trading framework built around honest data
-and honest backtests, driven by a CLI an AI agent can use end-to-end.
+and honest backtests, driven by a CLI that an AI agent can use end-to-end.
 
 - **Own your data** — every quote, bar, and scraped row lives in a
   local Parquet store you control.

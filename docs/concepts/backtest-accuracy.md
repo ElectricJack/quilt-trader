@@ -270,7 +270,7 @@ The point of running both is not to pick the friendlier number. It's to
 see how much of your reported edge is robust and how much is an artifact
 of the price-discovery model.
 
-## Limits and sharp edges
+## Limits & sharp edges
 
 - **Constant-sigma fallback.** When no IV has been observed for an
   underlying yet, the helper uses `FALLBACK_SIGMA = 0.40`. This is fine

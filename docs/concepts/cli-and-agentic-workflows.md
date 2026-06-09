@@ -218,7 +218,7 @@ The `--follow` JSON-lines behaviour is implemented in `sdk/cli/follow.py:113-117
 
 The agent has driven the entire loop — write code, validate, install, backtest, evaluate, deploy, observe — without ever opening a browser.
 
-## Limits and sharp edges
+## Limits & sharp edges
 
 - **No schema version on `--json` output.** Future additions are additive (new keys, not renamed ones) but you should diff against fixtures if you depend on the shape. There is no `--json-schema` discovery command yet.
 - **No machine-readable error catalog.** Failures are `(exit_code, stderr_string)`. Most coordinator errors carry the FastAPI `detail` text on stderr; agents that need to branch on a *specific* failure (e.g. "broker auth rejected") have to substring-match the message. A stable error-code field is on the wishlist.
