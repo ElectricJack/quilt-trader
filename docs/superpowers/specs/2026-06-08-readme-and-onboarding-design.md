@@ -65,8 +65,8 @@ Total target: ~250 lines, scannable in 60 seconds. Sections, in order, with roug
 | 1 | Hero | ~80 | Name, one-line pitch, three-bullet "what makes it different." |
 | 2 | What goes wrong with most algo trading setups | ~150 | Names concrete failure modes in free data, options backtests, single-machine assumptions, human-only CLIs. |
 | 3 | Quilt-trader's bet | ~80 | The project's opinions: own your data, honest backtests, agent-first, distributed by default. |
-| 4 | Architecture diagram + caption | ~60 + ASCII | The existing diagram, lightly refreshed. Sets up the rest. |
-| 5 | Five value-prop sections | ~80 each | Data → Backtests → Agentic-CLI → Scrapers → Distributed. Each ties back to a §2 problem, names a concrete detail, ends with `Learn more →`. |
+| 4 | Architecture diagram + caption | ~60 + ASCII | The existing diagram, lightly refreshed. Sets up the rest. Caption ends with `Learn more → docs/concepts/architecture.md`. |
+| 5 | Five value-prop sections | ~80 each | Data → Backtests → Agentic-CLI → Scrapers → Distributed. Each ties back to a §2 problem, names a concrete detail, ends with `Learn more →`. Agentic-CLI section also references `writing-algorithms.md` for readers who want to see the algorithm-author surface. |
 | 6 | Get started | ~30 | Two lines, link to `docs/onboarding/getting-started.md`. |
 | 7 | What it isn't | ~60 | Honest non-goals (not HFT, not multi-user, not cloud-native, not hosted). |
 | 8 | License + status | ~20 | Current status line. |
@@ -134,7 +134,7 @@ Linear, copy-paste-able, no decision points unless necessary. Target: ~200 lines
 | 4. Install and run a toy algorithm | Embed a tiny (~20 line) momentum algorithm inline, clearly labeled "toy example, do not trade." `quilt algorithm install`, `quilt deployment create`, `quilt deployment start`. |
 | 5. Watch it work | `quilt deployment activity <id> --follow`, dashboard view, then stop it. |
 | 6. Run a backtest | `quilt backtest run --algo <name> --start 2024-01-01 --end 2024-12-31 --wait`. View the report. |
-| What to read next | Cross-links to all five concept doc value props. |
+| What to read next | Cross-links to all seven concept docs, grouped by reader intent: "Want the big picture? → architecture.md. Want to write algorithms? → writing-algorithms.md. Want honest backtests? → backtest-accuracy.md. Want more data sources? → data-collection.md. Want to deploy to a fleet? → distributed-execution.md. Adding a custom scraper? → scrapers.md. Driving Quilt from an AI agent? → cli-and-agentic-workflows.md." |
 | Troubleshooting first-run failures | Short table of 5–6 most common first-run errors (coordinator port in use, Tailscale not up, broker keys rejected, dashboard build failed, worker can't reach coordinator, WSL2 networking). |
 
 ## 7. Tone, style, and conventions
