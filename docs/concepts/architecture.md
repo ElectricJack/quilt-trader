@@ -65,6 +65,16 @@ The full list of services lives under
 `coordinator/services/`; the full list of REST routes lives under
 `coordinator/api/routes/`.
 
+#### Discord notifier (optional)
+
+`coordinator/services/discord_bot.py` defines a `DiscordNotifier`
+with per-event-type channel routing and a minimum severity
+threshold. When configured, the coordinator forwards worker events
+(`trade_executed`, status changes, PDT warnings) to the configured
+channels. Workers never talk to Discord directly — all
+notifications fan out from the coordinator. This is a notification
+surface, not a remote-control plane; slash commands are out of scope.
+
 ### Workers
 
 A worker is one process started by `python -m worker.main`
@@ -108,18 +118,6 @@ The dashboard is served by the coordinator. The build output
 client-side routes survive a page refresh. API and WebSocket routes
 are registered first and take precedence.
 
-### Discord bot
-
-Optional. `coordinator/services/discord_bot.py` defines a
-`DiscordNotifier` with per-event-type channel routing and a minimum
-severity threshold. When configured, the coordinator routes
-worker events (`trade_executed`, status changes, PDT warnings) to
-the configured channels. Workers never talk to Discord directly —
-all notifications fan out from the coordinator.
-
-This is a notification surface, not a remote-control plane. Slash
-commands are out of scope.
-
 ### Communication channels
 
 Three transports, each with a clear job:
@@ -145,8 +143,8 @@ Three transports, each with a clear job:
   is the identity boundary. `worker/main.py:14` discovers the local
   Tailscale IP and sends it on every heartbeat.
 
-The full enumeration of message types lives in the design spec
-(see "See also" below, §2.3).
+The full enumeration of message types lives in
+[`distributed-execution.md`](distributed-execution.md).
 
 ## Worked example
 
@@ -168,10 +166,11 @@ A single algorithm running end to end:
     |                  |                            |  open broker    |
     |                  |                            |  connection)    |
     |                  |                            |                 |
-    |                  |                            | REST: GET       |
-    |                  |                            | /api/data/bars  |
-    |                  |                            |<----------------|
-    |                  |  parquet read              |                 |
+    |                  |  REST: GET                 |                 |
+    |                  |  /api/data/bars            |                 |
+    |                  |<---------------------------|                 |
+    |                  |  (parquet read)            |                 |
+    |                  |  REST: 200 OK (bars)       |                 |
     |                  |--------------------------->|                 |
     |                  |                            |                 |
     |                  |                            | (algo emits     |
@@ -193,6 +192,12 @@ A single algorithm running end to end:
     | ws: broadcast    |                            |                 |
     | trade event      |                            |                 |
     |<-----------------|                            |                 |
+    |                  |                            |                 |
+    |                  |  ws: state_checkpoint      |                 |
+    |                  |  {instance_id, state}      |                 |
+    |                  |<---------------------------|                 |
+    |                  |  (stores state for         |                 |
+    |                  |   re-send on restart)      |                 |
 ```
 
 Every durable side effect (config, trade, position) is a coordinator
