@@ -3,7 +3,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { DatasetsAvailableSection } from "./DatasetsAvailableSection";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { useCoverage, useAvailableData, useFillGaps, useDownloads, useDeleteDatasets, useStorageSummary } from "../api/hooks";
+import { useCoverage, useFillGaps, useDownloads, useDeleteDatasets, useStorageSummary } from "../api/hooks";
 import { api } from "../api/client";
 import { OptionsChainMatrix } from "./OptionsChainMatrix";
 import { useProcessedCoverage, type AssetType, type DisplayRow } from "../hooks/useProcessedCoverage";
@@ -57,7 +57,6 @@ export function AvailableDataTab() {
   const initialPreview = searchParams.get("preview");
 
   const { data: coverageData, isLoading: coverageLoading, refetch: refetchCoverage } = useCoverage();
-  const { isLoading: availableLoading } = useAvailableData();
   const { data: storageSummary } = useStorageSummary();
   const fillGapsMutation = useFillGaps();
   const deleteDatasetsMutation = useDeleteDatasets();
@@ -311,7 +310,7 @@ export function AvailableDataTab() {
     setPreview({ provider, symbol, timeframe: tf, targetDate: date });
   }
 
-  if (coverageLoading || availableLoading) {
+  if (coverageLoading) {
     return <p className="text-gray-400 text-sm">Loading…</p>;
   }
   if (!processed) {

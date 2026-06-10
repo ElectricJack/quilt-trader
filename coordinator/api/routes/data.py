@@ -213,20 +213,6 @@ async def search_symbols(
     return {"results": results, "provider": provider}
 
 
-from coordinator.api._ttl_cache import TTLCache
-_available_cache = TTLCache(ttl_seconds=30.0)
-
-
-@router.get("/available")
-async def list_available():
-    svc = get_data_service()
-
-    async def _produce() -> list[dict]:
-        return await asyncio.to_thread(svc.list_available_market_data)
-
-    return await _available_cache.get("market", _produce)
-
-
 @router.get("/storage-summary")
 async def storage_summary():
     """Return data storage path and total disk usage."""

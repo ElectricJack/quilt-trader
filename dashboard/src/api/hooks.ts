@@ -35,7 +35,6 @@ export const keys = {
   cashFlows: (accountId: string) => ["accounts", accountId, "cash-flows"] as const,
   backtests: () => ["backtests"] as const,
   backtest: (id: string) => ["backtests", id] as const,
-  availableData: () => ["data", "available"] as const,
   downloads: () => ["data", "downloads"] as const,
   download: (id: string) => ["data", "downloads", id] as const,
   events: (params: EventParams) => ["events", params] as const,
@@ -533,15 +532,6 @@ export function useAllInstances() {
   });
 }
 
-// ─── Available Data ───────────────────────────────────────────────────────────
-
-export function useAvailableData() {
-  return useQuery({
-    queryKey: keys.availableData(),
-    queryFn: api.listAvailableData,
-  });
-}
-
 // ─── Coverage ─────────────────────────────────────────────────────────────────
 
 export function useProviders() {
@@ -594,7 +584,6 @@ export function useDeleteDatasets() {
       api.deleteDatasets(body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["data", "coverage"] });
-      void qc.invalidateQueries({ queryKey: ["data", "available"] });
     },
   });
 }

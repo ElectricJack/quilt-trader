@@ -16,7 +16,6 @@ import type {
   CashFlow,
   BacktestComparison,
   MarketDataDownload,
-  AvailableMarketData,
   MarketDataResponse,
   PortfolioEquityResponse,
   PortfolioKpis,
@@ -628,9 +627,6 @@ export const api = {
   },
 
   // Data
-  listAvailableData(): Promise<AvailableMarketData[]> {
-    return request<AvailableMarketData[]>("/api/data/available");
-  },
   listScrapers(): Promise<ScraperRecord[]> {
     return request<ScraperRecord[]>("/api/scrapers");
   },

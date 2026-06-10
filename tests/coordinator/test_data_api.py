@@ -91,16 +91,3 @@ async def test_get_custom_data(client):
         body = response.json()
         assert len(body["data"]) == 1
         assert body["data"][0]["symbol"] == "TSLA"
-
-
-@pytest.mark.asyncio
-async def test_list_available_data(client):
-    with patch("coordinator.api.routes.data.get_data_service") as mock:
-        svc = MagicMock()
-        svc.list_available_market_data.return_value = [
-            {"provider": "polygon", "symbol": "AAPL", "timeframe": "1day", "size_bytes": 1024},
-        ]
-        mock.return_value = svc
-        response = await client.get("/api/data/available")
-        assert response.status_code == 200
-        assert len(response.json()) == 1

@@ -45,14 +45,6 @@ def _make_download(status: str, symbols: list[str] | None = None) -> MarketDataD
     )
 
 
-class TestDataAvailableEndpoint:
-    @pytest.mark.asyncio
-    async def test_list_available_data(self, client):
-        resp = await client.get("/api/data/available")
-        assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
-
-
 class TestDownloadEndpoints:
     @pytest.mark.asyncio
     async def test_list_downloads_empty(self, client):
