@@ -1,6 +1,6 @@
 import asyncio
 from datetime import date
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,6 +14,9 @@ from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import Account, DataSource
 from coordinator.services.data_service import DataService
 from coordinator.services.download_manager import DownloadManager
+
+if TYPE_CHECKING:
+    from coordinator.services.coverage_index import CoverageIndex
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -479,21 +482,21 @@ async def list_option_contracts(
 
 # ─── Coverage endpoints ───────────────────────────────────────────────────────
 
-@router.get("/coverage")
-async def get_coverage():
-    """Return coverage ranges for all assets on disk, grouped by provider."""
-    svc = get_data_service()
-    coverage = get_coverage_index()
+def _build_coverage_payload(
+    svc: DataService, coverage: Optional["CoverageIndex"]
+) -> dict:
+    """Compute the /api/data/coverage response.
+
+    Walks the parquet directory, deduplicates per (provider, symbol), parses
+    OCC option symbols, groups them by underlying, and consults CoverageIndex
+    for date ranges. Pure function of disk state + CoverageIndex._cache.
+    """
+    from coordinator.services.chain_builder import parse_occ_symbol
 
     available = svc.list_available_market_data()
 
-    # Deduplicate to one entry per (provider, symbol) — collect unique timeframes on disk.
-    # Collapse OCC option contracts into a single grouped entry per underlying
-    # to avoid sending 2000+ rows to the frontend.
-    from coordinator.services.chain_builder import parse_occ_symbol
-
     seen: dict[str, dict] = {}
-    options_groups: dict[str, dict] = {}  # "provider/underlying" -> summary
+    options_groups: dict[str, dict] = {}
 
     for item in available:
         provider = item["provider"]
@@ -535,11 +538,18 @@ async def get_coverage():
             "option_expirations": len(exps),
         }
 
-    # Group by provider
     grouped: dict[str, list] = {}
     for v in seen.values():
         grouped.setdefault(v["provider"], []).append(v)
     return {"providers": grouped}
+
+
+@router.get("/coverage")
+async def get_coverage():
+    """Return coverage ranges for all assets on disk, grouped by provider."""
+    svc = get_data_service()
+    coverage = get_coverage_index()
+    return await asyncio.to_thread(_build_coverage_payload, svc, coverage)
 
 
 class DeleteDatasetRequest(BaseModel):
