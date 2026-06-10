@@ -43,7 +43,8 @@ export const keys = {
   deployments: (params?: { algorithm_id?: string; worker_id?: string; account_id?: string }) => ["deployments", params] as const,
   deployment: (id: string) => ["deployments", id] as const,
   deploymentRuns: (id: string) => ["deployments", id, "runs"] as const,
-  researchSessions: () => ["research", "sessions"] as const,
+  researchSessions: (filters?: { algorithm_id?: string; status?: string; limit?: number }) =>
+    ["research", "sessions", filters ?? {}] as const,
   researchSession: (id: number) => ["research", "sessions", id] as const,
   researchJobs: (sessionId: number) =>
     ["research", "sessions", sessionId, "jobs"] as const,
