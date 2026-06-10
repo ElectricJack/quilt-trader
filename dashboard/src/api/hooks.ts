@@ -1104,10 +1104,11 @@ export function useCreateBacktestRun() {
   });
 }
 
-export function useBacktestRuns(algorithm_id?: string) {
+export function useBacktestRuns(params?: { algorithm_id?: string; limit?: number; offset?: number }) {
   return useQuery({
-    queryKey: ["backtest-runs", algorithm_id ?? null] as const,
-    queryFn: () => api.listBacktestRuns(algorithm_id ? { algorithm_id } : undefined),
+    queryKey: ["backtest-runs", params ?? {}] as const,
+    queryFn: () => api.listBacktestRuns(params),
+    enabled: params?.algorithm_id !== undefined ? !!params.algorithm_id : true,
   });
 }
 

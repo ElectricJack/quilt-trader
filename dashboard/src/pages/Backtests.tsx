@@ -131,7 +131,7 @@ interface RunsTabProps {
 }
 
 function RunsTab({ algoById, navigate, algorithmId }: RunsTabProps) {
-  const { data: runs = [], isLoading } = useBacktestRuns(algorithmId);
+  const { data: runs = [], isLoading } = useBacktestRuns(algorithmId ? { algorithm_id: algorithmId } : undefined);
   const del = useDeleteBacktestRun();
   const addAlert = useUIStore((s) => s.addAlert);
   const [deleteTarget, setDeleteTarget] = useState<BacktestRunRecord | null>(
