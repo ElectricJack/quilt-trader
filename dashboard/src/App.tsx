@@ -66,11 +66,11 @@ export function App() {
             <Route path="/algorithms/:id" element={<AlgorithmShell />}>
               <Route index element={<AlgorithmDetail />} />
               <Route path="backtests" element={<AlgorithmBacktestsList />} />
-              <Route path="backtests/:id" element={<BacktestRunDetail />} />
+              <Route path="backtests/:runId" element={<BacktestRunDetail />} />
               <Route path="research" element={<AlgorithmResearchList />} />
-              <Route path="research/:id" element={<ResearchSessionDetail />} />
+              <Route path="research/:sessionId" element={<ResearchSessionDetail />} />
               <Route path="deployments" element={<AlgorithmDeploymentsList />} />
-              <Route path="deployments/:id" element={<DeploymentDetail />} />
+              <Route path="deployments/:instanceId" element={<DeploymentDetail />} />
               <Route path="config" element={<AlgorithmConfig />} />
             </Route>
             <Route path="/deployments/:id" element={<DeploymentDetail />} />

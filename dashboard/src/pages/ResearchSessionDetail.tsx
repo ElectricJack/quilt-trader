@@ -11,8 +11,8 @@ import { ResearchJobRow } from "../components/ResearchJobRow";
 import { NewSweepModal } from "../components/NewSweepModal";
 
 export function ResearchSessionDetail() {
-  const { id } = useParams<{ id: string }>();
-  const sessionId = id ? parseInt(id, 10) : null;
+  const params = useParams<{ id?: string; sessionId?: string }>();
+  const sessionId = (params.sessionId ?? params.id) ? parseInt((params.sessionId ?? params.id)!, 10) : null;
   const sessionQ = useResearchSession(sessionId);
   const jobsQ = useResearchJobs(sessionId);
   const cancelMut = useCancelResearchJob(sessionId ?? 0);
