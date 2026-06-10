@@ -5,8 +5,6 @@ import {
   Bot,
   Server,
   Database,
-  FlaskConical,
-  Microscope,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -20,8 +18,6 @@ const NAV_ITEMS = [
   { to: "/data", label: "Data", icon: Database },
   { to: "/workers", label: "Workers", icon: Server },
   { to: "/algorithms", label: "Algorithms", icon: Bot },
-  { to: "/backtests", label: "Backtests", icon: FlaskConical },
-  { to: "/research", label: "Research", icon: Microscope },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
