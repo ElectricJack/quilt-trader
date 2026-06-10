@@ -560,3 +560,93 @@ async def test_create_session_accepts_endpoints_0_and_1(
         })
         assert resp.status_code == 200, resp.text
         assert resp.json()["mtm_realism"] == pytest.approx(value)
+
+
+# ---------------------------------------------------------------------------
+# Task 1 — filter sessions by algorithm_id, status, limit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_filters_by_algorithm_id(test_client, db_session_factory, seeded_algorithm):
+    """algorithm_id query param scopes the result list."""
+    other_id = f"algo-{uuid.uuid4().hex[:8]}"
+    async with db_session_factory() as s:
+        s.add(Algorithm(id=other_id, repo_url="https://x.com/o", name="other", source_path="/tmp/o"))
+        # Two sessions for seeded_algorithm
+        for i in range(2):
+            s.add(OptimizationSession(
+                name=f"mine-{i}-{uuid.uuid4().hex[:6]}",
+                hypothesis="h",
+                algorithm_id=seeded_algorithm.id,
+                base_config={},
+                parameter_space=json.dumps({}),
+                pre_registered_criteria=json.dumps({}),
+                status="open",
+                date_range_start=date(2023, 1, 1),
+                date_range_end=date(2024, 12, 31),
+            ))
+        s.add(OptimizationSession(
+            name=f"theirs-{uuid.uuid4().hex[:6]}",
+            hypothesis="h",
+            algorithm_id=other_id,
+            base_config={},
+            parameter_space=json.dumps({}),
+            pre_registered_criteria=json.dumps({}),
+            status="open",
+            date_range_start=date(2023, 1, 1),
+            date_range_end=date(2024, 12, 31),
+        ))
+        await s.commit()
+
+    resp = await test_client.get(f"/api/research/sessions?algorithm_id={seeded_algorithm.id}")
+    assert resp.status_code == 200
+    names = [s["name"] for s in resp.json()]
+    assert sum(1 for n in names if n.startswith("mine-")) == 2
+    assert not any(n.startswith("theirs-") for n in names)
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_status_multi_value(test_client, db_session_factory, seeded_algorithm):
+    """status query accepts comma-separated values."""
+    async with db_session_factory() as s:
+        for status in ("open", "completed", "archived"):
+            s.add(OptimizationSession(
+                name=f"st-{status}-{uuid.uuid4().hex[:6]}",
+                hypothesis="h",
+                algorithm_id=seeded_algorithm.id,
+                base_config={},
+                parameter_space=json.dumps({}),
+                pre_registered_criteria=json.dumps({}),
+                status=status,
+                date_range_start=date(2023, 1, 1),
+                date_range_end=date(2024, 12, 31),
+            ))
+        await s.commit()
+
+    resp = await test_client.get("/api/research/sessions?status=open,completed")
+    assert resp.status_code == 200
+    statuses = {s["status"] for s in resp.json()}
+    assert statuses == {"open", "completed"}
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_limit(test_client, db_session_factory, seeded_algorithm):
+    async with db_session_factory() as s:
+        for i in range(7):
+            s.add(OptimizationSession(
+                name=f"lim-{i}-{uuid.uuid4().hex[:6]}",
+                hypothesis="h",
+                algorithm_id=seeded_algorithm.id,
+                base_config={},
+                parameter_space=json.dumps({}),
+                pre_registered_criteria=json.dumps({}),
+                status="open",
+                date_range_start=date(2023, 1, 1),
+                date_range_end=date(2024, 12, 31),
+            ))
+        await s.commit()
+
+    resp = await test_client.get("/api/research/sessions?limit=3")
+    assert resp.status_code == 200
+    assert len(resp.json()) == 3
