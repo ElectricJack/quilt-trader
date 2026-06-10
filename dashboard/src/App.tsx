@@ -6,7 +6,7 @@ import { useWebSocketSync } from "./hooks/useWebSocketSync";
 import { Overview } from "./pages/Overview";
 import { Accounts } from "./pages/Accounts";
 import { AccountDetail } from "./pages/AccountDetail";
-import { Algorithms } from "./pages/Algorithms";
+import { AlgorithmsGrid } from "./pages/AlgorithmsGrid";
 import { AlgorithmDetail } from "./pages/AlgorithmDetail";
 import { DeploymentDetail } from "./pages/DeploymentDetail";
 import { Workers } from "./pages/Workers";
@@ -61,7 +61,7 @@ export function App() {
                 /strategies kept as a back-compat alias. */}
             <Route path="/accounts/:id/open-position" element={<Strategies />} />
             <Route path="/accounts/:id/strategies" element={<Strategies />} />
-            <Route path="/algorithms" element={<Algorithms />} />
+            <Route path="/algorithms" element={<AlgorithmsGrid />} />
             {/* Nested algorithm routes — detail components keep their existing :id param */}
             <Route path="/algorithms/:id" element={<AlgorithmShell />}>
               <Route index element={<AlgorithmDetail />} />
