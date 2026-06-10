@@ -577,12 +577,20 @@ async def delete_datasets(body: list[DeleteDatasetRequest]):
     """Delete one or more market data parquet files."""
     svc = get_data_service()
     coverage = get_coverage_index()
+    container = get_container()
     deleted = 0
     for item in body:
         if svc.delete_market_data(item.provider, item.symbol, item.timeframe):
             deleted += 1
             if coverage:
                 coverage.invalidate(item.provider, item.symbol)
+    if deleted > 0:
+        cov_snap = getattr(container, "coverage_snapshot", None)
+        if cov_snap is not None:
+            cov_snap.invalidate()
+        store_snap = getattr(container, "storage_summary_snapshot", None)
+        if store_snap is not None:
+            store_snap.invalidate()
     return {"deleted": deleted}
 
 

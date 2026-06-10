@@ -347,6 +347,16 @@ class ScraperRegistry:
             record.last_error = None
             logger.info("scraper %s wrote %s", name, result.output_path)
             await self._upsert_data_source(record, result)
+
+            from coordinator.api.dependencies import get_container
+            try:
+                container = get_container()
+                snap = getattr(container, "storage_summary_snapshot", None)
+                if snap is not None:
+                    snap.invalidate()
+            except AssertionError:
+                # Container not initialized (e.g. CLI / test contexts) — skip.
+                pass
         else:
             record.last_status = "failed"
             record.last_error = result.error

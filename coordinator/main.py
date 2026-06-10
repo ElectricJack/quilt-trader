@@ -480,6 +480,14 @@ def create_app(
         ) -> None:
             for sym in symbols:
                 coverage_index.invalidate(provider, sym)
+
+            cov_snap = getattr(container, "coverage_snapshot", None)
+            if cov_snap is not None:
+                cov_snap.invalidate()
+            store_snap = getattr(container, "storage_summary_snapshot", None)
+            if store_snap is not None:
+                store_snap.invalidate()
+
             # Fan out to the goal processor (if constructed) so it can top up
             # its in-flight queue without waiting for the next cron tick, and
             # record terminal "no data" failures persistently on the goal.
