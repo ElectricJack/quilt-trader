@@ -435,42 +435,42 @@ def create_app(
         )
 
         from coordinator.services.coverage_index import CoverageIndex
+        from coordinator.services.cached_snapshot import CachedSnapshot
+        from coordinator.api.routes.data import (
+            _build_coverage_payload,
+            _build_storage_summary_payload,
+        )
+
         coverage_index = CoverageIndex(data_svc)
         container.coverage_index = coverage_index
 
-        # Pre-warm coverage cache in background. Cold first call to
-        # /api/data/coverage reads parquet metadata for every non-option
-        # symbol on disk (~13s for ~250 symbols). Warming up-front means the
-        # first dashboard load doesn't pay that cost; meanwhile the endpoint
-        # still works (warming uses the same get_ranges cache the endpoint
-        # consumes).
-        async def _prewarm_coverage_cache() -> None:
-            from coordinator.services.chain_builder import parse_occ_symbol
+        # Two snapshot caches back the slow read endpoints. The coverage
+        # snapshot's first refresh also warms CoverageIndex._cache as a side
+        # effect — it iterates the same (provider, symbol) pairs.
+        async def _coverage_producer() -> dict:
+            return await asyncio.to_thread(
+                _build_coverage_payload, data_svc, coverage_index
+            )
+
+        async def _storage_summary_producer() -> dict:
+            return await asyncio.to_thread(
+                _build_storage_summary_payload, data_svc
+            )
+
+        container.coverage_snapshot = CachedSnapshot("coverage", _coverage_producer)
+        container.storage_summary_snapshot = CachedSnapshot(
+            "storage_summary", _storage_summary_producer
+        )
+
+        async def _prewarm_snapshots() -> None:
             try:
-                available = await asyncio.to_thread(data_svc.list_available_market_data)
-                # One (provider, symbol) per non-option entry.
-                pairs: set[tuple[str, str]] = set()
-                for item in available:
-                    sym = item.get("symbol")
-                    prov = item.get("provider")
-                    if not sym or not prov:
-                        continue
-                    if parse_occ_symbol(sym):
-                        continue
-                    pairs.add((prov, sym))
-                if not pairs:
-                    return
-                logger.info("Coverage prewarm: %d non-option symbols", len(pairs))
-                # Scans happen sequentially inside CoverageIndex; offload to
-                # a thread so we don't block the event loop.
-                def _do_warm() -> None:
-                    for prov, sym in pairs:
-                        coverage_index.get_ranges(prov, sym)
-                await asyncio.to_thread(_do_warm)
-                logger.info("Coverage prewarm: complete")
+                await container.coverage_snapshot.refresh_now()
+                await container.storage_summary_snapshot.refresh_now()
+                logger.info("Data snapshot prewarm: complete")
             except Exception:
-                logger.exception("Coverage prewarm failed")
-        asyncio.create_task(_prewarm_coverage_cache())
+                logger.exception("Data snapshot prewarm failed")
+
+        asyncio.create_task(_prewarm_snapshots())
 
         def _on_download_complete(
             provider: str,
