@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAlgorithm, useBacktestRuns, useDeployments } from "../api/hooks";
 import { useResearchSessions } from "../hooks/useResearchSessions";
 import { AlgorithmKpiRow } from "../components/AlgorithmKpiRow";
+import { RunBacktestModal } from "../components/RunBacktestModal";
 
 export function AlgorithmHub() {
   const { id = "" } = useParams<{ id: string }>();
@@ -13,12 +15,22 @@ export function AlgorithmHub() {
     limit: 5,
   });
   const { data: deployments = [] } = useDeployments({ algorithm_id: id });
+  const [runBacktestOpen, setRunBacktestOpen] = useState(false);
 
   if (!algo) return null;
   const s = algo.summary;
 
   return (
     <div className="space-y-8">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setRunBacktestOpen(true)}
+          className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+        >
+          Run Backtest
+        </button>
+      </div>
+
       <AlgorithmKpiRow
         sharpe={s?.headline_sharpe ?? null}
         sharpeSource={s?.headline_sharpe_source ?? null}
@@ -117,6 +129,31 @@ export function AlgorithmHub() {
           </table>
         )}
       </section>
+      <details className="rounded border border-gray-800 bg-gray-900">
+        <summary className="cursor-pointer px-3 py-2 text-sm text-gray-300">Parameter sets</summary>
+        <div className="px-3 py-2 text-sm text-gray-400">
+          <Link className="text-indigo-400" to={`/algorithms/${id}/config`}>
+            View parameter sets in Config →
+          </Link>
+        </div>
+      </details>
+
+      <details className="rounded border border-gray-800 bg-gray-900">
+        <summary className="cursor-pointer px-3 py-2 text-sm text-gray-300">Manifest</summary>
+        <pre className="overflow-x-auto rounded bg-gray-950 p-3 text-xs text-gray-400">
+{JSON.stringify(algo.config_schema, null, 2)}
+        </pre>
+      </details>
+
+      <RunBacktestModal
+        open={runBacktestOpen}
+        onClose={() => setRunBacktestOpen(false)}
+        algorithmId={id}
+        manifestConfig={
+          (algo.config_schema?.parameters as Array<{ name: string; type: string; default?: unknown }>) ?? []
+        }
+        parameterSets={(algo as any).parameter_sets ?? []}
+      />
     </div>
   );
 }
