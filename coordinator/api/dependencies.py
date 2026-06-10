@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from coordinator.services.tick_scheduler import TickScheduler
     from coordinator.services.lifecycle import LifecycleService
     from coordinator.services.coverage_index import CoverageIndex
+    from coordinator.services.cached_snapshot import CachedSnapshot
     from coordinator.services.account_lifecycle import AccountLifecycleService
 
 
@@ -40,6 +41,8 @@ class ServiceContainer:
         self.tick_scheduler: Optional["TickScheduler"] = None
         self.lifecycle_service: Optional["LifecycleService"] = None
         self.coverage_index: Optional["CoverageIndex"] = None
+        self.coverage_snapshot: Optional["CachedSnapshot[dict]"] = None
+        self.storage_summary_snapshot: Optional["CachedSnapshot[dict]"] = None
         self.account_lifecycle: Optional["AccountLifecycleService"] = None
 
 
