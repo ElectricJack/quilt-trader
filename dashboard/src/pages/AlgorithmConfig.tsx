@@ -1,10 +1,17 @@
+import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useAlgorithm } from "../api/hooks";
+import { ParameterSetsSection } from "../components/ParameterSetsSection";
+import { RunBacktestModal } from "../components/RunBacktestModal";
 
 export function AlgorithmConfig() {
   const { id = "" } = useParams<{ id: string }>();
   const { data: algo } = useAlgorithm(id);
+  const [backtestOpen, setBacktestOpen] = useState(false);
+  const [backtestPreloadSetId, setBacktestPreloadSetId] = useState<string>();
+
   if (!algo) return null;
+
   return (
     <div className="space-y-6">
       <section>
@@ -21,12 +28,40 @@ export function AlgorithmConfig() {
           · {algo.commit_hash?.slice(0, 8) ?? "—"}
         </p>
       </section>
+
+      <ParameterSetsSection
+        algorithmId={algo.id}
+        manifestConfig={
+          (algo.config_schema?.parameters as Array<{
+            name: string;
+            type: string;
+            default?: unknown;
+          }>) ?? []
+        }
+        onBacktest={(setId) => {
+          setBacktestPreloadSetId(setId);
+          setBacktestOpen(true);
+        }}
+        onDeploy={() => {
+          // TODO: Navigate to deploy flow if needed
+        }}
+      />
+
       <section>
         <h2 className="mb-2 text-lg font-medium text-gray-100">Manifest</h2>
         <pre className="overflow-x-auto rounded bg-gray-950 p-3 text-xs text-gray-300">
 {JSON.stringify(algo.config_schema, null, 2)}
         </pre>
       </section>
+
+      <RunBacktestModal
+        open={backtestOpen}
+        onClose={() => { setBacktestOpen(false); setBacktestPreloadSetId(undefined as any); }}
+        algorithmId={algo.id}
+        manifestConfig={(algo.config_schema?.parameters as Array<{ name: string; type: string; default?: unknown }>) ?? []}
+        parameterSets={(algo as any).parameter_sets ?? []}
+        preloadSetId={backtestPreloadSetId}
+      />
     </div>
   );
 }
