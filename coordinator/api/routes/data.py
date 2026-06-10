@@ -213,11 +213,14 @@ async def search_symbols(
     return {"results": results, "provider": provider}
 
 
-@router.get("/storage-summary")
-async def storage_summary():
-    """Return data storage path and total disk usage."""
+def _build_storage_summary_payload(svc: DataService) -> dict:
+    """Compute the /api/data/storage-summary response.
+
+    Pure function of disk state. Runs under asyncio.to_thread because it walks
+    data/market/ and data/custom/ (~58k files).
+    """
     import os
-    svc = get_data_service()
+
     market_dir = svc._market_dir
     custom_dir = svc._custom_dir
 
@@ -262,8 +265,17 @@ async def storage_summary():
         "market_formatted": fmt(market_bytes),
         "custom_bytes": custom_bytes,
         "custom_formatted": fmt(custom_bytes),
-        "by_provider": {k: {"bytes": v, "formatted": fmt(v)} for k, v in sorted(by_provider.items(), key=lambda x: -x[1])},
+        "by_provider": {
+            k: {"bytes": v, "formatted": fmt(v)}
+            for k, v in sorted(by_provider.items(), key=lambda x: -x[1])
+        },
     }
+
+
+@router.get("/storage-summary")
+async def storage_summary():
+    """Return data storage path and total disk usage."""
+    return await asyncio.to_thread(_build_storage_summary_payload, get_data_service())
 
 
 @router.get("/sources")
