@@ -7,7 +7,6 @@ import { Overview } from "./pages/Overview";
 import { Accounts } from "./pages/Accounts";
 import { AccountDetail } from "./pages/AccountDetail";
 import { AlgorithmsGrid } from "./pages/AlgorithmsGrid";
-import { AlgorithmDetail } from "./pages/AlgorithmDetail";
 import { DeploymentDetail } from "./pages/DeploymentDetail";
 import { Workers } from "./pages/Workers";
 import { WorkerDetail } from "./pages/WorkerDetail";
@@ -18,6 +17,7 @@ import { Settings } from "./pages/Settings";
 import { Strategies } from "./pages/Strategies";
 import { ResearchSessionDetail } from "./pages/ResearchSessionDetail";
 import { AlgorithmShell } from "./components/AlgorithmShell";
+import { AlgorithmHub } from "./pages/AlgorithmHub";
 import { AlgorithmBacktestsList } from "./pages/AlgorithmBacktestsList";
 import { AlgorithmResearchList } from "./pages/AlgorithmResearchList";
 import { AlgorithmDeploymentsList } from "./pages/AlgorithmDeploymentsList";
@@ -64,7 +64,7 @@ export function App() {
             <Route path="/algorithms" element={<AlgorithmsGrid />} />
             {/* Nested algorithm routes — detail components keep their existing :id param */}
             <Route path="/algorithms/:id" element={<AlgorithmShell />}>
-              <Route index element={<AlgorithmDetail />} />
+              <Route index element={<AlgorithmHub />} />
               <Route path="backtests" element={<AlgorithmBacktestsList />} />
               <Route path="backtests/:runId" element={<BacktestRunDetail />} />
               <Route path="research" element={<AlgorithmResearchList />} />
