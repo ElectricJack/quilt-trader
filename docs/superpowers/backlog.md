@@ -278,9 +278,13 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** the user is on polygon's free tier (1 concurrent / ~13s latency). A paid-tier upgrade will allow higher concurrency. The new download design uses `concurrency + 1` as the goal's in-flight cap, so raising the setting automatically scales the queue.
 - **RESOLVED** (2026-05-27, commit `f8865f7`): Two new Settings keys `polygon_min_request_interval_s` and `polygon_concurrency` loaded at coordinator startup and passed to `PolygonProvider` + `DownloadManager.provider_concurrency`. `PUT /api/settings/polygon-tier` to set, `DELETE` to clear. Requires coordinator restart to apply (provider construction happens at startup).
 
----
-
-## Datasets framework (FMP)
+### Faster coverage prewarm (column projection + parallel scans)
+- **Deferred from:** [2026-06-09-data-snapshot-cache-design.md](specs/2026-06-09-data-snapshot-cache-design.md)
+- **Why deferred:** the snapshot-cache design makes warm reads ~5 ms but the *cold* coordinator-restart path still pays the full prewarm cost (~12 s on ~250 non-option symbols). The snapshot design treats this as out-of-scope and addresses it only by ensuring readers wait cleanly on the ready event instead of racing. Reducing the prewarm itself is a follow-up.
+- **What's needed:** two independent wins in `coordinator/services/coverage_index.py::_scan` —
+  1. **Column projection:** `pd.read_parquet(path, columns=["timestamp"])` instead of loading all OHLCV columns. Measured ~60 ms → ~35 ms per file on SPY's 421k-row 1-min parquet; ~halving per-symbol cost.
+  2. **Parallel scans:** the prewarm currently iterates symbols sequentially in one `asyncio.to_thread` call. A `concurrent.futures.ThreadPoolExecutor` with 4–8 workers would cut the wall-clock further (pandas/pyarrow release the GIL during parquet decode).
+  Together these should drop prewarm from ~12 s to ~1–2 s on this disk, getting the cold-restart page load into the same "couple hundred ms" range as warm navigation.
 
 ### `DatasetGoal` declarative model
 - **Deferred from:** [2026-05-28-datasets-framework-design.md](specs/2026-05-28-datasets-framework-design.md)
