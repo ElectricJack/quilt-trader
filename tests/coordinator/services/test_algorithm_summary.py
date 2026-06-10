@@ -144,3 +144,54 @@ async def test_counts_and_last_activity(async_session_factory):
 
     assert summary["counts"] == {"deployments": 0, "backtests": 2, "research_sessions": 1}
     assert summary["last_activity_at"].startswith("2026-06-01")
+
+
+@pytest.mark.asyncio
+async def test_live_sharpe_overrides_backtest(async_session_factory):
+    """When a live instance reports sharpe_30d, that wins over last backtest sharpe."""
+    async with async_session_factory() as s:
+        algo = _make_algo(s)
+        s.add(AlgorithmInstance(
+            id=f"i-{uuid.uuid4().hex[:6]}", algorithm_id=algo.id,
+            account_id="acct-1", worker_id="w-1", status="live",
+            lifetime_metrics={"sharpe_30d": 2.1},
+        ))
+        s.add(BacktestRun(
+            id="r-1", algorithm_id=algo.id, status="completed",
+            sharpe_ratio=0.9,
+            date_range_start=date(2025, 1, 1), date_range_end=date(2025, 12, 31),
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ))
+        await s.commit()
+        svc = AlgorithmSummaryService()
+        summary = await svc.build_for(algo.id, s)
+
+    assert summary["headline_sharpe"] == pytest.approx(2.1)
+    assert summary["headline_sharpe_source"] == "live_30d"
+
+
+@pytest.mark.asyncio
+async def test_live_sparkline_from_any_instance(async_session_factory):
+    """Sparkline pulls from the latest AlgorithmRun across all instances, even when no active instance exists."""
+    async with async_session_factory() as s:
+        algo = _make_algo(s)
+        inst = AlgorithmInstance(
+            id=f"i-{uuid.uuid4().hex[:6]}", algorithm_id=algo.id,
+            account_id="acct-1", worker_id="w-1", status="stopped",
+        )
+        s.add(inst)
+        await s.flush()
+        s.add(AlgorithmRun(
+            instance_id=inst.id, run_number=1,
+            equity_curve=[{"equity": 100.0 + i} for i in range(10)],
+            started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            stopped_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        ))
+        await s.commit()
+        svc = AlgorithmSummaryService()
+        summary = await svc.build_for(algo.id, s)
+
+    assert summary["status"] == "idle"
+    assert summary["equity_sparkline_source"] == "live"
+    assert len(summary["equity_sparkline"]) == 10
+    assert summary["equity_sparkline"][0] == 100.0

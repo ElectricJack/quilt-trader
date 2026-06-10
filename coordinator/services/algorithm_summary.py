@@ -74,16 +74,15 @@ class AlgorithmSummaryService:
             status = (active.status or "idle").lower()
             status_source = active.id
 
-        latest_run = None
-        if active is not None:
-            latest_run = (
-                await db.execute(
-                    select(AlgorithmRun)
-                    .where(AlgorithmRun.instance_id == active.id)
-                    .order_by(desc(AlgorithmRun.run_number))
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
+        latest_run = (
+            await db.execute(
+                select(AlgorithmRun)
+                .join(AlgorithmInstance, AlgorithmRun.instance_id == AlgorithmInstance.id)
+                .where(AlgorithmInstance.algorithm_id == algorithm_id)
+                .order_by(desc(AlgorithmRun.run_number))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
 
         latest_bt = (
             await db.execute(
@@ -115,9 +114,13 @@ class AlgorithmSummaryService:
             sparkline = _downsample(latest_bt.equity_curve, target=60)
             sparkline_source = "backtest"
 
+        run_ts = None
+        if latest_run is not None:
+            run_ts = latest_run.stopped_at or latest_run.started_at or latest_run.created_at
+
         last_activity_dt: datetime | None = None
         for candidate in (
-            latest_run.created_at if latest_run else None,
+            run_ts,
             latest_bt.created_at if latest_bt else None,
         ):
             if candidate and (last_activity_dt is None or candidate > last_activity_dt):
