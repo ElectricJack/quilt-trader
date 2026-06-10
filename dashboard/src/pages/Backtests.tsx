@@ -127,10 +127,11 @@ const comparisonColumns: ColumnDef<BacktestComparison, unknown>[] = [
 interface RunsTabProps {
   algoById: Map<string, string>;
   navigate: ReturnType<typeof useNavigate>;
+  algorithmId?: string;
 }
 
-function RunsTab({ algoById, navigate }: RunsTabProps) {
-  const { data: runs = [], isLoading } = useBacktestRuns();
+function RunsTab({ algoById, navigate, algorithmId }: RunsTabProps) {
+  const { data: runs = [], isLoading } = useBacktestRuns(algorithmId);
   const del = useDeleteBacktestRun();
   const addAlert = useUIStore((s) => s.addAlert);
   const [deleteTarget, setDeleteTarget] = useState<BacktestRunRecord | null>(
@@ -297,7 +298,11 @@ function ComparisonsTab({ navigate }: ComparisonsTabProps) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function Backtests() {
+interface BacktestsProps {
+  algorithmId?: string;
+}
+
+export function Backtests({ algorithmId }: BacktestsProps = {}) {
   const [tab, setTab] = useState<"runs" | "comparisons">("runs");
   const navigate = useNavigate();
   const { data: algos = [] } = useAlgorithms();
@@ -321,7 +326,7 @@ export function Backtests() {
           </button>
         ))}
       </div>
-      {tab === "runs" && <RunsTab algoById={algoById} navigate={navigate} />}
+      {tab === "runs" && <RunsTab algoById={algoById} navigate={navigate} algorithmId={algorithmId} />}
       {tab === "comparisons" && <ComparisonsTab navigate={navigate} />}
     </div>
   );

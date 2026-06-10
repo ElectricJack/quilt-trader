@@ -21,6 +21,11 @@ import { Settings } from "./pages/Settings";
 import { Strategies } from "./pages/Strategies";
 import { Research } from "./pages/Research";
 import { ResearchSessionDetail } from "./pages/ResearchSessionDetail";
+import { AlgorithmShell } from "./components/AlgorithmShell";
+import { AlgorithmBacktestsList } from "./pages/AlgorithmBacktestsList";
+import { AlgorithmResearchList } from "./pages/AlgorithmResearchList";
+import { AlgorithmDeploymentsList } from "./pages/AlgorithmDeploymentsList";
+import { AlgorithmConfig } from "./pages/AlgorithmConfig";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -57,7 +62,17 @@ export function App() {
             <Route path="/accounts/:id/open-position" element={<Strategies />} />
             <Route path="/accounts/:id/strategies" element={<Strategies />} />
             <Route path="/algorithms" element={<Algorithms />} />
-            <Route path="/algorithms/:id" element={<AlgorithmDetail />} />
+            {/* Nested algorithm routes — detail components keep their existing :id param */}
+            <Route path="/algorithms/:id" element={<AlgorithmShell />}>
+              <Route index element={<AlgorithmDetail />} />
+              <Route path="backtests" element={<AlgorithmBacktestsList />} />
+              <Route path="backtests/:id" element={<BacktestRunDetail />} />
+              <Route path="research" element={<AlgorithmResearchList />} />
+              <Route path="research/:id" element={<ResearchSessionDetail />} />
+              <Route path="deployments" element={<AlgorithmDeploymentsList />} />
+              <Route path="deployments/:id" element={<DeploymentDetail />} />
+              <Route path="config" element={<AlgorithmConfig />} />
+            </Route>
             <Route path="/deployments/:id" element={<DeploymentDetail />} />
             <Route path="/instances/:id" element={<InstanceRedirect />} />
             <Route path="/workers" element={<Workers />} />

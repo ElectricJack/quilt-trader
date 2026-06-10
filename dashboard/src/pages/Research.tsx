@@ -4,10 +4,14 @@ import { Microscope, Plus } from "lucide-react";
 import { useResearchSessions } from "../hooks/useResearchSessions";
 import { NewSessionModal } from "../components/NewSessionModal";
 
-export function Research() {
+interface ResearchProps {
+  algorithmId?: string;
+}
+
+export function Research({ algorithmId }: ResearchProps = {}) {
   const [modalOpen, setModalOpen] = useState(false);
   const nav = useNavigate();
-  const q = useResearchSessions();
+  const q = useResearchSessions(algorithmId ? { algorithm_id: algorithmId } : undefined);
 
   return (
     <div className="space-y-4">
