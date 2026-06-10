@@ -39,7 +39,7 @@ class CachedSnapshot(Generic[T]):
         self._value = value
         self._ready.set()
         logger.info(
-            "snapshot %s refreshed in %.2fs", self._name, time.perf_counter() - start
+            "snapshot %s refreshed in %.1fs", self._name, time.perf_counter() - start
         )
 
     def invalidate(self) -> None:
@@ -63,7 +63,7 @@ class CachedSnapshot(Generic[T]):
             self._value = value
             self._ready.set()
             logger.info(
-                "snapshot %s refreshed in %.2fs",
+                "snapshot %s refreshed in %.1fs",
                 self._name,
                 time.perf_counter() - start,
             )
