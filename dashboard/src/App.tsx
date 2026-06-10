@@ -12,20 +12,20 @@ import { DeploymentDetail } from "./pages/DeploymentDetail";
 import { Workers } from "./pages/Workers";
 import { WorkerDetail } from "./pages/WorkerDetail";
 import { Data } from "./pages/Data";
-import { Backtests } from "./pages/Backtests";
-import { BacktestDetail } from "./pages/BacktestDetail";
-// ── Spec D U2: backtest run detail ──
 import { BacktestRunDetail } from "./pages/BacktestRunDetail";
 import { Notifications } from "./pages/Notifications";
 import { Settings } from "./pages/Settings";
 import { Strategies } from "./pages/Strategies";
-import { Research } from "./pages/Research";
 import { ResearchSessionDetail } from "./pages/ResearchSessionDetail";
 import { AlgorithmShell } from "./components/AlgorithmShell";
 import { AlgorithmBacktestsList } from "./pages/AlgorithmBacktestsList";
 import { AlgorithmResearchList } from "./pages/AlgorithmResearchList";
 import { AlgorithmDeploymentsList } from "./pages/AlgorithmDeploymentsList";
 import { AlgorithmConfig } from "./pages/AlgorithmConfig";
+import { LegacyBacktestRunRedirect } from "./pages/redirects/LegacyBacktestRunRedirect";
+import { LegacyResearchSessionRedirect } from "./pages/redirects/LegacyResearchSessionRedirect";
+import { LegacyDeploymentRedirect } from "./pages/redirects/LegacyDeploymentRedirect";
+import { LegacyBacktestsCompareRedirect } from "./pages/redirects/LegacyBacktestsCompareRedirect";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -73,17 +73,17 @@ export function App() {
               <Route path="deployments/:instanceId" element={<DeploymentDetail />} />
               <Route path="config" element={<AlgorithmConfig />} />
             </Route>
-            <Route path="/deployments/:id" element={<DeploymentDetail />} />
+            {/* Legacy URL redirects — resolve entity then navigate to nested route */}
+            <Route path="/backtest-runs/:id" element={<LegacyBacktestRunRedirect />} />
+            <Route path="/backtests/:id" element={<LegacyBacktestsCompareRedirect />} />
+            <Route path="/backtests" element={<Navigate to="/algorithms" replace />} />
+            <Route path="/research/sessions/:id" element={<LegacyResearchSessionRedirect />} />
+            <Route path="/research" element={<Navigate to="/algorithms" replace />} />
+            <Route path="/deployments/:id" element={<LegacyDeploymentRedirect />} />
             <Route path="/instances/:id" element={<InstanceRedirect />} />
             <Route path="/workers" element={<Workers />} />
             <Route path="/workers/:id" element={<WorkerDetail />} />
             <Route path="/data" element={<Data />} />
-            <Route path="/backtests" element={<Backtests />} />
-            <Route path="/backtests/:id" element={<BacktestDetail />} />
-            {/* ── Spec D U2: backtest run detail ── */}
-            <Route path="/backtest-runs/:id" element={<BacktestRunDetail />} />
-            <Route path="/research" element={<Research />} />
-            <Route path="/research/sessions/:id" element={<ResearchSessionDetail />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
