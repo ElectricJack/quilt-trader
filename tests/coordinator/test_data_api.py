@@ -91,3 +91,80 @@ async def test_get_custom_data(client):
         body = response.json()
         assert len(body["data"]) == 1
         assert body["data"][0]["symbol"] == "TSLA"
+
+
+import asyncio as _asyncio
+from coordinator.services.cached_snapshot import CachedSnapshot
+
+
+@pytest.mark.asyncio
+async def test_coverage_returns_snapshot(client):
+    """The /coverage route returns whatever the coverage_snapshot holds."""
+    from coordinator.api.dependencies import get_container
+
+    container = get_container()
+    fake_payload = {"providers": {"polygon": [{"symbol": "AAPL"}]}}
+
+    async def fake_producer() -> dict:
+        return fake_payload
+
+    container.coverage_snapshot = CachedSnapshot("coverage", fake_producer)
+    await container.coverage_snapshot.refresh_now()
+
+    resp = await client.get("/api/data/coverage")
+    assert resp.status_code == 200
+    assert resp.json() == fake_payload
+
+
+@pytest.mark.asyncio
+async def test_storage_summary_returns_snapshot(client):
+    """The /storage-summary route returns whatever the storage_summary_snapshot holds."""
+    from coordinator.api.dependencies import get_container
+
+    container = get_container()
+    fake_payload = {
+        "market_data_path": "/x",
+        "custom_data_path": "/y",
+        "total_bytes": 0,
+        "total_formatted": "0.0 KB",
+        "market_bytes": 0,
+        "market_formatted": "0.0 KB",
+        "custom_bytes": 0,
+        "custom_formatted": "0.0 KB",
+        "by_provider": {},
+    }
+
+    async def fake_producer() -> dict:
+        return fake_payload
+
+    container.storage_summary_snapshot = CachedSnapshot(
+        "storage_summary", fake_producer
+    )
+    await container.storage_summary_snapshot.refresh_now()
+
+    resp = await client.get("/api/data/storage-summary")
+    assert resp.status_code == 200
+    assert resp.json() == fake_payload
+
+
+@pytest.mark.asyncio
+async def test_coverage_503_when_snapshot_unready(client, monkeypatch):
+    """If the snapshot never becomes ready within the timeout, return 503."""
+    import coordinator.api.routes.data as data_module
+    from coordinator.api.dependencies import get_container
+
+    container = get_container()
+
+    # A snapshot whose producer never resolves.
+    async def hung_producer() -> dict:
+        await _asyncio.Event().wait()  # forever
+        return {}
+
+    container.coverage_snapshot = CachedSnapshot("coverage", hung_producer)
+    # Don't call refresh_now — _ready will never be set.
+
+    # Shorten the wait so the test runs fast.
+    monkeypatch.setattr(data_module, "_SNAPSHOT_READ_TIMEOUT_S", 0.05)
+
+    resp = await client.get("/api/data/coverage")
+    assert resp.status_code == 503

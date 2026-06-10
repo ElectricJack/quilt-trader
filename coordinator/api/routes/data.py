@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
+_SNAPSHOT_READ_TIMEOUT_S = 30.0
+
 _data_service: Optional[DataService] = None
 _download_manager: Optional[DownloadManager] = None
 
@@ -278,7 +280,14 @@ def _build_storage_summary_payload(svc: DataService) -> dict:
 @router.get("/storage-summary")
 async def storage_summary():
     """Return data storage path and total disk usage."""
-    return await asyncio.to_thread(_build_storage_summary_payload, get_data_service())
+    container = get_container()
+    snap = container.storage_summary_snapshot
+    if snap is None:
+        raise HTTPException(503, "Storage summary snapshot not initialized")
+    try:
+        return await asyncio.wait_for(snap.get(), timeout=_SNAPSHOT_READ_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "Storage summary snapshot not ready")
 
 
 @router.get("/sources")
@@ -547,9 +556,14 @@ def _build_coverage_payload(
 @router.get("/coverage")
 async def get_coverage():
     """Return coverage ranges for all assets on disk, grouped by provider."""
-    svc = get_data_service()
-    coverage = get_coverage_index()
-    return await asyncio.to_thread(_build_coverage_payload, svc, coverage)
+    container = get_container()
+    snap = container.coverage_snapshot
+    if snap is None:
+        raise HTTPException(503, "Coverage snapshot not initialized")
+    try:
+        return await asyncio.wait_for(snap.get(), timeout=_SNAPSHOT_READ_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "Coverage snapshot not ready")
 
 
 class DeleteDatasetRequest(BaseModel):
