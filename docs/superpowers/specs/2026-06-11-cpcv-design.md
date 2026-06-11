@@ -25,7 +25,6 @@ Performance: comparable to the existing sweep at default sizes once a job-scoped
 
 ## Non-goals
 
-- **Dashboard UI for CPCV results.** CLI prints summary; dashboard rendering is a follow-up spec under `/algorithms/:id/research/:session_id`.
 - **Manifest-declared `trade_horizon`** auto-populating `purge_horizon`. v1 takes purge_horizon as user input (default 0).
 - **CPCV-driven parameter promotion** (auto-pick winning config and write a `ParameterSet`).
 - **Multi-symbol union timeline edge cases.** v1 uses the cost-profile default symbol's timeline for group boundaries.
@@ -269,6 +268,93 @@ On completion, prints to stdout:
 - Mode A: `segment_sharpes` table, bootstrap CI, deflated Sharpe sentinel ("N/A — no selection").
 - Mode B: per-path Sharpe table, mean ± CI, deflated Sharpe, mean PSR. Hints to view per-segment heatmap via the dashboard (when implemented).
 
+## Dashboard UI
+
+Lives under `/algorithms/:id/research/:session_id` (per the algorithm-as-container restructure). The session detail page already lists jobs; when a row's `kind === "cpcv"` and `status === "completed"`, render a CPCV results panel inline (no separate route). All data comes from the existing `GET /api/research/sessions/:id/jobs/:job_id` endpoint — no new endpoints.
+
+**Components** (all in `dashboard/src/components/cpcv/`):
+
+### `<CpcvSummaryCard>`
+
+Single horizontal row at the top of the panel. Mode-aware.
+
+- **Mode A.** Four KPIs: mean segment Sharpe, median, std, 95% bootstrap CI.
+- **Mode B.** Six KPIs: mean path Sharpe, median, std, 95% bootstrap CI, **deflated Sharpe** (with badge: green if > 0, red if ≤ 0), **PSR** (mean across paths, with badge: green if > 0.95).
+
+Each KPI tile follows the `<AlgorithmKpiRow>` styling already used on the algorithm hub — same `<Kpi label value sub>` primitive, reused.
+
+### `<CpcvPathDistribution>` (mode B only)
+
+Inline SVG histogram of `path_sharpes`. Bin count = `max(5, ceil(sqrt(n_paths)))`. Visual elements:
+
+- Mean line (dashed, white).
+- 95% CI shaded band (translucent).
+- Zero-baseline reference line.
+- Hover: bin tooltip shows `{count, range, paths_in_bin}`.
+
+Compact (~240 × 140 px). For small N where path count is tiny (e.g., N=4 k=2 → 3 paths), render a strip plot of individual values instead of a histogram (auto-detect when n_paths < 8).
+
+### `<CpcvSegmentHeatmap>`
+
+Two-dim grid showing per-segment Sharpe.
+
+- **Mode A.** Single row of N cells (one per group). Columns labeled by date range.
+- **Mode B.** Matrix: rows = groups (0..N-1, chronological top→bottom), columns = splits the group is test in (0..C(N-1,k-1)-1). Cell color: greenscale for positive Sharpe, redscale for negative, neutral for missing cell (group not in this split's test set).
+
+Color scale uses the `viridis`/`RdBu` diverging palette already used elsewhere in the dashboard (check `dashboard/src/lib/colors.ts`; reuse).
+
+Hover a cell: tooltip shows `{group, split, sharpe, total_return, run_id}` plus a small button "open backtest" linking to `/algorithms/:id/backtests/:run_id`.
+
+### `<CpcvPathDetail>` (mode B, optional click-through)
+
+Click any row in the path table (rendered next to the histogram) → opens a drawer showing:
+- The stitched equity curve for that path (lightweight-charts, already a dashboard dep).
+- A small per-segment breakdown: 6 rows × {group, split, sharpe, total_return}.
+- Each row links to `/algorithms/:id/backtests/:run_id`.
+
+### `<CpcvResultsPanel>`
+
+Top-level composer. Receives the completed job. Layout:
+
+```
++------------------------------------------------+
+| <CpcvSummaryCard>                              |
++------------------------------------------------+
+| <CpcvPathDistribution>  | <CpcvSegmentHeatmap> |
+|                         |                      |
++-------------------------+----------------------+
+| <CpcvPathTable>     (mode B only)              |
++------------------------------------------------+
+```
+
+For Mode A, the right column (heatmap) takes full width and the path distribution + table sections are omitted.
+
+### Integration into ResearchSessionDetail
+
+`dashboard/src/pages/ResearchSessionDetail.tsx` already renders a jobs list. Add a branch: when `job.kind === "cpcv"` and the row is expanded, mount `<CpcvResultsPanel job={job}>`. Expansion mirrors the existing sweep-result expansion pattern.
+
+For in-progress jobs (`status === "running"`), the panel shows the same progress bar shape used by sweep/walk-forward; full results render only at `status === "completed"`.
+
+### Submission form
+
+`<NewCpcvModal>` mirrors `<NewSweepModal>` with mode-specific fields:
+
+- Mode toggle (fixed / select).
+- `n_groups` and `test_groups_per_split` sliders with a live preview: "**15 splits, 5 paths, projected 330 backtests**" updated as values change.
+- `embargo` and `purge_horizon` integer inputs.
+- For mode=select: parameter_space JSON editor (mirrors existing sweep modal pattern), `search`, `max_trials_per_split`, `objective`, `objective_direction`.
+- Submit → `POST /api/research/sessions/:id/cpcv` → toast with `projected_backtest_count` confirmation; on accept, returns `job_id` and the modal closes.
+
+Button to open the modal lives on `ResearchSessionDetail.tsx` next to the existing "New Sweep" and "New Walk-Forward" buttons. Hub page (`/algorithms/:id`) doesn't add a CPCV button directly — CPCV requires a research session as parent context, same as sweep/walk-forward.
+
+### Testing
+
+- `CpcvSummaryCard.test.tsx` — modes A + B render correct KPIs from fixture JSON; deflated Sharpe badge colors.
+- `CpcvPathDistribution.test.tsx` — histogram bins computed correctly; strip-plot fallback when `n_paths < 8`; mean line + CI band rendered.
+- `CpcvSegmentHeatmap.test.tsx` — matrix dimensions; cell color matches Sharpe sign; missing cells rendered neutral; hover tooltip data complete.
+- `CpcvResultsPanel.test.tsx` — mode A vs B layout differences; in-progress state shows progress bar.
+- `NewCpcvModal.test.tsx` — projected_backtest_count preview updates as `n_groups` / `test_groups_per_split` / `max_trials_per_split` change.
+
 ## Persistence
 
 `ResearchJob.result` JSON (≤ ~200 KB for max defaults):
@@ -359,4 +445,4 @@ None blocking. The two decisions made during brainstorming:
 - Per-tick allocation elimination in engine — `__slots__`, vectorized state.
 - Manifest-declared `trade_horizon` auto-populating `purge_horizon`.
 - CPCV-driven parameter promotion (auto-write a `ParameterSet` from path-winner).
-- Dashboard UI for CPCV results (per-segment heatmap, path distribution chart) — lands under `/algorithms/:id/research/:session_id`.
+- Cross-job CPCV comparison view (compare two completed CPCV jobs side-by-side).
