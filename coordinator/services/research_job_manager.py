@@ -55,6 +55,9 @@ class ResearchJobManager:
     async def create_walk_forward_job(self, *, session_id: int, request_payload: dict) -> str:
         return await self._create_job("walk-forward", session_id, request_payload)
 
+    async def create_cpcv_job(self, *, session_id: int, request_payload: dict) -> str:
+        return await self._create_job("cpcv", session_id, request_payload)
+
     async def get_job(self, job_id: str) -> Optional[dict]:
         async with self._sf() as s:
             row = (await s.execute(select(ResearchJob).where(ResearchJob.id == job_id))).scalar_one_or_none()
@@ -141,6 +144,9 @@ class ResearchJobManager:
             progress_cb = self._make_progress_callback(job_id, cancel_flag)
             if kind == "sweep":
                 await self._dispatch_sweep(session_id, payload, progress_cb)
+            elif kind == "cpcv":
+                cpcv_result = await self._dispatch_cpcv(session_id, payload, progress_cb)
+                await self._persist_result(job_id, cpcv_result)
             else:
                 await self._dispatch_walk_forward(session_id, payload, progress_cb)
             await self._mark_terminal(job_id, "completed")
@@ -206,6 +212,91 @@ class ResearchJobManager:
                 progress_callback=progress_cb,
             )
             db.commit()
+
+    async def _dispatch_cpcv(self, session_id: int, payload: dict, progress_cb):
+        """Dispatch a CPCV job via run_cpcv with a sync session."""
+        from coordinator.services.validation.bars_cache import BacktestBarsCache
+        from coordinator.services.validation.cpcv import run_cpcv
+
+        if self._sync_sf is None:
+            raise RuntimeError("sync_session_factory required for cpcv dispatch")
+        bars_cache = BacktestBarsCache()
+        with self._sync_sf() as db:
+            result = await run_cpcv(
+                db=db,
+                runner_factory=self._runner_factory,
+                session_id=session_id,
+                mode=payload["mode"],
+                n_groups=payload.get("n_groups", 6),
+                test_groups_per_split=payload.get("test_groups_per_split", 2),
+                embargo=payload.get("embargo", 5),
+                purge_horizon=payload.get("purge_horizon", 0),
+                parallelism=payload.get("parallelism") or 1,
+                parameter_space=payload.get("parameter_space"),
+                search=payload.get("search"),
+                max_trials_per_split=payload.get("max_trials_per_split"),
+                objective=payload.get("objective") or "sharpe_ratio",
+                objective_direction=payload.get("objective_direction") or "maximize",
+                seed=payload.get("seed") or 0,
+                bars_cache=bars_cache,
+                progress_callback=progress_cb,
+            )
+            db.commit()
+        return result
+
+    def _serialize_cpcv(self, result) -> dict:
+        """Convert CPCVResult dataclass to JSON-safe dict for ResearchJob.result."""
+        return {
+            "mode": result.mode,
+            "n_groups": result.n_groups,
+            "test_groups_per_split": result.test_groups_per_split,
+            "embargo": result.embargo,
+            "purge_horizon": result.purge_horizon,
+            "groups": [
+                {
+                    "index": g.index,
+                    "start": g.start.isoformat(),
+                    "end": g.end.isoformat(),
+                    "n_bars": g.n_bars,
+                }
+                for g in result.groups
+            ],
+            "splits": [
+                {
+                    "index": s.index,
+                    "train_groups": list(s.train_groups),
+                    "test_groups": list(s.test_groups),
+                    "selected_config": s.selected_config,
+                    "selected_objective": s.selected_objective,
+                    "inner_trial_run_ids": s.inner_trial_run_ids,
+                    "oos_segment_run_ids": {
+                        str(g): rid for g, rid in s.oos_segment_run_ids.items()
+                    },
+                }
+                for s in result.splits
+            ],
+            "segment_run_ids": result.segment_run_ids,
+            "paths": [
+                [
+                    {"group": seg.group, "split": seg.split, "run_id": seg.run_id}
+                    for seg in path
+                ]
+                for path in result.paths
+            ],
+            "summary": result.summary,
+        }
+
+    async def _persist_result(self, job_id: str, result) -> None:
+        """Persist a CPCVResult into ResearchJob.result before marking terminal."""
+        serialized = self._serialize_cpcv(result)
+        async with self._sf() as s:
+            row = (await s.execute(
+                select(ResearchJob).where(ResearchJob.id == job_id)
+            )).scalar_one_or_none()
+            if row is None:
+                return
+            row.result = serialized
+            await s.commit()
 
     async def _publish_update(self, job_id: str) -> None:
         """Load the row's current state and invoke the broadcaster, if any.
@@ -281,6 +372,7 @@ def _row_to_dict(row: ResearchJob) -> dict:
         "progress_pct": row.progress_pct,
         "progress_message": row.progress_message,
         "run_ids": row.run_ids or [],
+        "result": row.result,
         "error_message": row.error_message,
         "started_at": row.started_at.isoformat() if row.started_at else None,
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
