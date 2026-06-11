@@ -124,6 +124,21 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** the UI works around it by computing from the trades endpoint on demand; the data isn't lost, just not persisted.
 - **RESOLVED** (2026-05-27, commit `18aaaab`): `backtest_finalizer.finalize_run` now mirrors `win_rate`, `profit_factor`, `avg_win`, `avg_loss`, `expectancy`, `longest_winning_streak`, `longest_losing_streak` from key_metrics to the flat BacktestRun columns. Also sums `total_fees_paid` and `total_slippage_dollars` from `trades.parquet`.
 
+### Process-pool CPU parallelism for backtests
+- **Surfaced by:** CPCV design 2026-06-11 ([2026-06-11-cpcv-design.md](specs/2026-06-11-cpcv-design.md)).
+- **Why deferred:** today the validation lab uses `asyncio.Semaphore(parallelism)` to dispatch concurrent backtests. For CPU-bound backtest tick loops the GIL serializes them — actual speedup is 1.5–3x, not the 8x the semaphore implies. Process-based parallelism via `ProcessPoolExecutor` would deliver near-linear scaling on multi-core machines.
+- **What's needed:** (a) a `ProcessPoolExecutor` adapter around `BacktestRunner.run` that round-trips `run_id` + config through pickling and reads the result back from the DB; (b) per-worker `BacktestBarsCache` so workers don't duplicate-load (or shared-memory `multiprocessing.shared_memory.SharedMemory` views of the bars); (c) a config flag on the validation lab orchestrators to choose asyncio vs process executor. Real 6–8x wall-time reduction on CPCV jobs. Framework-wide change; benefits sweep and walk-forward equally.
+
+### Engine two-pass warmup elimination
+- **Surfaced by:** CPCV design 2026-06-11 ([2026-06-11-cpcv-design.md](specs/2026-06-11-cpcv-design.md)).
+- **Why deferred:** `BacktestEngine.run` does a `on_start + one warmup tick` pass before the canonical run to populate `ctx._bars`. That's a 2x cost on the first tick + per-backtest overhead. The integration spec landed pass 1 to populate the cache that pass 2 uses for clock construction — but pass 1 fires observers in pass 2 only, so pass 1 work is mostly wasted from the strategy's perspective.
+- **What's needed:** decouple union-clock construction from the warmup tick. Pre-compute the union clock from the cache contents that exist at `on_start` time, or eagerly populate `ctx._bars` from the bars cache during context construction so no warmup tick is needed. Estimate: removes ~5–20% of per-backtest cost for short-window backtests (small N CPCV groups feel this most).
+
+### Per-tick allocation reduction in engine
+- **Surfaced by:** CPCV design 2026-06-11 ([2026-06-11-cpcv-design.md](specs/2026-06-11-cpcv-design.md)).
+- **Why deferred:** the engine allocates Python objects per tick (per-tick dicts, Position state mutations, fill records). For backtests at 1-min × multi-year, the GC pressure is non-trivial. Likely a 1.2–2x speedup from disciplined elimination.
+- **What's needed:** `__slots__` on hot-path classes (Position, Order, Fill); replace per-tick dicts with pre-allocated arrays where shape is known; vectorize position-mark-to-market across the active position set. Invasive — touches engine internals across multiple files. Profile first to confirm allocations are the bottleneck.
+
 ### Strategy-side stop-loss / portfolio circuit breaker
 - **Surfaced by:** user question on 2026-05-27 ("what mechanism is preventing a complete stop loss?"). The crypto-tsmom strategy has no explicit stop-loss — positions exit only when the signal flips negative or realized vol explodes. In a fast crash where the signal hasn't yet rolled, drawdowns are unbounded (capped only at -100%).
 - **Why deferred:** debatable whether a stop-loss helps or hurts a momentum strategy. Adding one whipsaws out of legitimate drawdowns; not adding one accepts tail risk. Worth A/B testing before shipping.
