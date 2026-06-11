@@ -19,6 +19,7 @@ const STATUS_COLORS: Record<ResearchJob["status"], string> = {
 const KIND_COLORS: Record<ResearchJob["kind"], string> = {
   sweep:           "bg-indigo-700 text-indigo-100",
   "walk-forward":  "bg-purple-700 text-purple-100",
+  cpcv:            "bg-teal-700 text-teal-100",
 };
 
 export function ResearchJobRow({ job, onCancel }: Props) {

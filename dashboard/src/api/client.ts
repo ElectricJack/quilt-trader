@@ -29,6 +29,8 @@ import type {
   ActivityRow,
   DeploymentReport,
   DeploymentTrade,
+  CPCVRequest,
+  CPCVJobResponse,
 } from "../types";
 
 // ─── Request body types ────────────────────────────────────────────────────────
@@ -239,7 +241,7 @@ export interface ResearchSession {
 export interface ResearchJob {
   job_id: string;
   session_id: number;
-  kind: "sweep" | "walk-forward";
+  kind: "sweep" | "walk-forward" | "cpcv";
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   progress_pct: number;
   progress_message: string | null;
@@ -1333,6 +1335,13 @@ export const api = {
     return request<GenerateReportResponse>(
       `/api/research/sessions/${sessionId}/report`,
       { method: "POST" },
+    );
+  },
+
+  createCpcvJob(sessionId: number, body: CPCVRequest): Promise<CPCVJobResponse> {
+    return request<CPCVJobResponse>(
+      `/api/research/sessions/${sessionId}/cpcv`,
+      { method: "POST", body: JSON.stringify(body) },
     );
   },
 };

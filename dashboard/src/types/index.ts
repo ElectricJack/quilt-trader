@@ -561,6 +561,75 @@ export interface DeploymentTrade {
   realized_pnl: number | null;
 }
 
+// ── CPCV (Combinatorial Purged Cross-Validation) ──
+
+export interface CPCVRequest {
+  mode: "fixed" | "select";
+  n_groups: number;
+  test_groups_per_split: number;
+  embargo: number;
+  purge_horizon: number;
+  parameter_space?: Record<string, unknown>;
+  search?: "grid" | "random" | "latin" | "tpe";
+  max_trials_per_split?: number;
+  objective?: string;
+  objective_direction?: "maximize" | "minimize";
+  parallelism?: number;
+  seed?: number;
+}
+
+export interface CPCVPathSegment {
+  group: number;
+  split: number;
+  run_id: string;
+}
+
+export interface CPCVSplitResult {
+  index: number;
+  train_groups: number[];
+  test_groups: number[];
+  selected_config: Record<string, unknown> | null;
+  selected_objective: number | null;
+  inner_trial_run_ids: string[];
+  oos_segment_run_ids: Record<string, string>;
+}
+
+export interface CPCVResult {
+  mode: "fixed" | "select";
+  n_groups: number;
+  test_groups_per_split: number;
+  embargo: number;
+  purge_horizon: number;
+  groups: { index: number; start: string; end: string; n_bars: number }[];
+  splits: CPCVSplitResult[];
+  segment_run_ids: string[];
+  paths: CPCVPathSegment[][];
+  summary: {
+    // mode A:
+    segment_sharpes?: number[];
+    mean_segment_sharpe?: number;
+    median_segment_sharpe?: number;
+    std_segment_sharpe?: number;
+    // mode B:
+    path_sharpes?: number[];
+    mean_path_sharpe?: number;
+    median_path_sharpe?: number;
+    std_path_sharpe?: number;
+    deflated_sharpe_ratio?: number;
+    probabilistic_sharpe_zero?: number;
+    // both:
+    bootstrap_ci_lower: number;
+    bootstrap_ci_upper: number;
+  };
+}
+
+export interface CPCVJobResponse {
+  job_id: string;
+  kind: "cpcv";
+  status: "queued";
+  projected_backtest_count: number;
+}
+
 export type ActivityRow = {
   id: string;
   worker_id: string;
