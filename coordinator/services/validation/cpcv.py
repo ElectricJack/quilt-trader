@@ -297,12 +297,17 @@ async def _run_mode_fixed(
     async def _one(group: Group) -> tuple[int, str]:
         async with sem:
             run_id = f"cpcv-{uuid.uuid4().hex[:8]}"
+            embargo_offset = timedelta(days=embargo)  # v1: bars approximated as days
+            test_start = group.start + embargo_offset
+            # guard: test_start must not exceed group.end
+            if test_start > group.end:
+                test_start = group.end
             db.add(BacktestRun(
                 id=run_id, algorithm_id=session.algorithm_id,
                 optimization_session_id=session.id,
                 status="queued",
                 config_overrides=session.base_config or {},
-                date_range_start=group.start,
+                date_range_start=test_start,
                 date_range_end=group.end,
             ))
             db.commit()
@@ -389,7 +394,11 @@ async def _run_mode_select(
             # training). Full multi-window training is on the backlog.
             train_first, train_last = _longest_contiguous_train_run(split.train_groups)
             train_start = groups[train_first].start
-            train_end = groups[train_last].end
+            # purge trims the last purge_horizon bars from the train window
+            train_end_raw = groups[train_last].end
+            train_end = train_end_raw - timedelta(days=purge_horizon)
+            if train_end < train_start:
+                train_end = train_start
             inner = await _run_inner_sweep(
                 db=db, runner_factory=runner_factory,
                 session_id=session.id,
@@ -416,12 +425,15 @@ async def _run_mode_select(
             for g_idx in split.test_groups:
                 rid = f"cpcv-oos-{uuid.uuid4().hex[:8]}"
                 g = groups[g_idx]
+                test_start = g.start + timedelta(days=embargo)
+                if test_start > g.end:
+                    test_start = g.end
                 db.add(BacktestRun(
                     id=rid, algorithm_id=session.algorithm_id,
                     optimization_session_id=session.id,
                     status="queued",
                     config_overrides=inner.winning_config or {},
-                    date_range_start=g.start, date_range_end=g.end,
+                    date_range_start=test_start, date_range_end=g.end,
                 ))
                 db.commit()
                 await runner_factory(rid, bars_cache=bars_cache)

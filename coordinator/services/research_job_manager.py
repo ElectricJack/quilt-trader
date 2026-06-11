@@ -220,6 +220,12 @@ class ResearchJobManager:
 
         if self._sync_sf is None:
             raise RuntimeError("sync_session_factory required for cpcv dispatch")
+        # BarsCache passed for graceful fallback; preload disabled in v1 pending
+        # data_service exposure on ResearchJobManager.  The runner_factory is an
+        # opaque async closure (see coordinator/main.py:_research_runner_factory)
+        # so self._runner_factory does NOT have a .\_ds attribute accessible here.
+        # Backlog: "Wire BacktestBarsCache.preload() in research job manager so
+        # CPCV jobs avoid the disk-load amplification." (see docs/superpowers/backlog.md)
         bars_cache = BacktestBarsCache()
         with self._sync_sf() as db:
             result = await run_cpcv(

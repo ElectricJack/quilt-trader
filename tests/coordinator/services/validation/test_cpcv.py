@@ -1,5 +1,5 @@
 """Integration tests for run_cpcv (modes A and B)."""
-from datetime import date
+from datetime import date, timedelta
 import json
 import pytest
 import pytest_asyncio
@@ -245,3 +245,90 @@ async def test_run_cpcv_mode_select_uses_contiguous_train_window(seeded_session,
         train_first, train_last = _longest_contiguous_train_run(split.train_groups)
         expected_windows.add((groups[train_first].start, groups[train_last].end))
     assert set(captured_windows) == expected_windows
+
+
+@pytest.mark.asyncio
+async def test_run_cpcv_mode_fixed_applies_embargo_to_each_test_window(seeded_session, db_session):
+    """embargo=10 → BacktestRun.date_range_start is group.start + 10 days."""
+    from coordinator.database.models import BacktestRun
+    runner_factory = AsyncMock()
+
+    captured: list = []
+    async def fake_runner(run_id, bars_cache=None):
+        # The orchestrator inserts the row before calling the runner — fetch it.
+        row = db_session.query(BacktestRun).filter_by(id=run_id).one()
+        captured.append((row.date_range_start, row.date_range_end))
+        _complete_run(db_session, run_id, sharpe=0.5)
+        db_session.commit()
+    runner_factory.side_effect = fake_runner
+
+    await run_cpcv(
+        db=db_session, runner_factory=runner_factory,
+        session_id=seeded_session.id,
+        mode="fixed", n_groups=4, test_groups_per_split=1,
+        embargo=10, purge_horizon=0, parallelism=1, bar_count_estimate=400,
+    )
+    # For each of the 4 groups, the captured start should equal group.start + 10 days
+    # (approximate; we just assert the offset is at least applied)
+    from coordinator.services.validation.cpcv import compute_groups
+    expected_groups = compute_groups(
+        timeline_start=seeded_session.date_range_start,
+        timeline_end=seeded_session.date_range_end,
+        bar_count=400, n_groups=4,
+    )
+    expected_starts = {g.start + timedelta(days=10) for g in expected_groups}
+    # SQLite may return datetime.datetime; normalise to date for comparison.
+    actual_starts = {
+        row[0].date() if hasattr(row[0], "date") else row[0]
+        for row in captured
+    }
+    assert actual_starts == expected_starts
+
+
+@pytest.mark.asyncio
+async def test_run_cpcv_mode_select_applies_embargo_to_oos_segments(seeded_session, db_session, monkeypatch):
+    """Mode B test segments get embargo offset on their start dates."""
+    from coordinator.services.validation import cpcv as cpcv_mod
+    from coordinator.services.validation.sweep import InnerSweepResult
+    from coordinator.database.models import BacktestRun
+
+    async def fake_inner_sweep(**kwargs):
+        ids = [f"inner-{uuid.uuid4().hex[:6]}"]
+        return InnerSweepResult(
+            all_run_ids=ids, winning_run_id=ids[0],
+            winning_config={"x": 1}, winning_objective=1.0,
+        )
+    monkeypatch.setattr(cpcv_mod, "_run_inner_sweep", fake_inner_sweep)
+
+    runner_factory = AsyncMock()
+    captured: list = []
+    async def fake_runner(run_id, bars_cache=None):
+        row = db_session.query(BacktestRun).filter_by(id=run_id).one()
+        if row.id.startswith("cpcv-oos-"):
+            captured.append((row.date_range_start, row.date_range_end))
+        _complete_run(db_session, run_id, sharpe=0.5)
+        db_session.commit()
+    runner_factory.side_effect = fake_runner
+
+    EMBARGO = 7
+    await run_cpcv(
+        db=db_session, runner_factory=runner_factory,
+        session_id=seeded_session.id,
+        mode="select", n_groups=4, test_groups_per_split=2,
+        embargo=EMBARGO, purge_horizon=0, parallelism=1, bar_count_estimate=400,
+        parameter_space={"x": [1]}, search="grid", max_trials_per_split=1,
+    )
+    # Every captured OOS window should have date_range_start >= group.start + 7 days
+    from coordinator.services.validation.cpcv import compute_groups
+    expected_groups = compute_groups(
+        timeline_start=seeded_session.date_range_start,
+        timeline_end=seeded_session.date_range_end,
+        bar_count=400, n_groups=4,
+    )
+    expected_starts = {g.start + timedelta(days=EMBARGO) for g in expected_groups}
+    # SQLite may return datetime.datetime; normalise to date for comparison.
+    actual_starts = {
+        row[0].date() if hasattr(row[0], "date") else row[0]
+        for row in captured
+    }
+    assert actual_starts == expected_starts
