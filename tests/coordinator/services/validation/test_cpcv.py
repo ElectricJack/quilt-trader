@@ -4,6 +4,7 @@ import json
 import pytest
 import pytest_asyncio
 import uuid
+from unittest.mock import AsyncMock
 
 from coordinator.database.models import Algorithm, BacktestRun, OptimizationSession
 from coordinator.services.validation.cpcv import run_cpcv
@@ -87,3 +88,41 @@ async def test_run_cpcv_mode_fixed_n4_yields_4_segments(seeded_session, db_sessi
     assert "bootstrap_ci_upper" in result.summary
     # paths empty in mode A
     assert result.paths == []
+
+
+@pytest.mark.asyncio
+async def test_run_cpcv_mode_fixed_median_correct_for_even_n(seeded_session, db_session):
+    """Median of [0.6, 0.8, 1.0, 1.2] is 0.9, not 1.0."""
+    runner_factory = AsyncMock()
+    completed: list[str] = []
+    sharpe_seq = [0.6, 0.8, 1.0, 1.2]
+
+    async def fake_runner(run_id, bars_cache=None):
+        completed.append(run_id)
+        _complete_run(db_session, run_id, sharpe=sharpe_seq[len(completed) - 1])
+        db_session.commit()
+
+    runner_factory.side_effect = fake_runner
+
+    result = await run_cpcv(
+        db=db_session, runner_factory=runner_factory,
+        session_id=seeded_session.id,
+        mode="fixed", n_groups=4, test_groups_per_split=1,
+        embargo=0, purge_horizon=0, parallelism=1, bar_count_estimate=400,
+    )
+    assert result.summary["median_segment_sharpe"] == pytest.approx(0.9)
+
+
+@pytest.mark.asyncio
+async def test_run_cpcv_rejects_select_without_required_params_early(seeded_session, db_session):
+    """mode='select' without parameter_space raises ValueError immediately."""
+    runner_factory = AsyncMock()  # should never be called
+    with pytest.raises(ValueError, match="parameter_space"):
+        await run_cpcv(
+            db=db_session, runner_factory=runner_factory,
+            session_id=seeded_session.id,
+            mode="select",
+            n_groups=4, test_groups_per_split=2,
+            embargo=0, purge_horizon=0, parallelism=1,
+        )
+    runner_factory.assert_not_called()

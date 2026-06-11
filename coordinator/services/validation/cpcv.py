@@ -209,6 +209,12 @@ async def run_cpcv(
     Mode B: for each of C(N, k) splits, runs an inner sweep on train groups,
     selects the best config, evaluates on test groups; reconstructs paths.
     """
+    if mode == "select" and (
+        parameter_space is None or search is None or max_trials_per_split is None
+    ):
+        raise ValueError(
+            "mode='select' requires parameter_space, search, and max_trials_per_split"
+        )
     session = db.query(OptimizationSession).filter_by(id=session_id).one()
     if bar_count_estimate is None:
         # Conservative default: assume 252 bars/year on daily data.
@@ -235,10 +241,6 @@ async def run_cpcv(
             result=result,
         )
     else:
-        if parameter_space is None or search is None or max_trials_per_split is None:
-            raise ValueError(
-                "mode='select' requires parameter_space, search, and max_trials_per_split"
-            )
         await _run_mode_select(
             db=db, runner_factory=runner_factory, session=session,
             groups=groups, embargo=embargo, purge_horizon=purge_horizon,
@@ -305,7 +307,11 @@ async def _run_mode_fixed(
 
     n = len(sharpes)
     mean_sharpe = sum(sharpes) / n if n > 0 else 0.0
-    median_sharpe = sorted(sharpes)[n // 2] if n > 0 else 0.0
+    if n == 0:
+        median_sharpe = 0.0
+    else:
+        s = sorted(sharpes)
+        median_sharpe = s[n // 2] if n % 2 == 1 else (s[n // 2 - 1] + s[n // 2]) / 2.0
     std_sharpe = (sum((s - mean_sharpe) ** 2 for s in sharpes) / max(n - 1, 1)) ** 0.5
 
     ci_lower, ci_upper = 0.0, 0.0
@@ -313,7 +319,7 @@ async def _run_mode_fixed(
         equity_curve = pd.Series((1.0 + pd.Series(concat_returns)).cumprod().values)
         ci = block_bootstrap_sharpe(
             equity_curve,
-            block_size=max(5, len(concat_returns) // 20),
+            block_size=max(20, len(concat_returns) // 20),
             n_resamples=2000,
             confidence=0.95,
             periods_per_year=252,
