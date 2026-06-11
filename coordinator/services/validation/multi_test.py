@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import sqrt, e
 from typing import Literal, Sequence
 
 import numpy as np
+from scipy.stats import norm
 
 
 @dataclass
@@ -164,4 +166,81 @@ def spa_test(
         method="white_reality_check",
         n_strategies=n,
         n_resamples=n_resamples,
+    )
+
+
+_EULER_MASCHERONI = 0.5772156649015329
+
+
+def _annualized_sharpe(returns: np.ndarray, periods_per_year: int) -> float:
+    if returns.std(ddof=1) == 0:
+        return 0.0
+    return float(returns.mean() / returns.std(ddof=1) * sqrt(periods_per_year))
+
+
+def probabilistic_sharpe(
+    returns,
+    sharpe_benchmark: float,
+    periods_per_year: int = 252,
+) -> float:
+    """PSR per Bailey & López de Prado (2014).
+
+    P[SR_true >= sharpe_benchmark | observed return series and its sample SR].
+    Returns a probability in [0, 1].
+    """
+    r = np.asarray(returns, dtype=float)
+    if r.size < 2:
+        return 0.5
+    n = r.size
+    sr_hat = _annualized_sharpe(r, periods_per_year)
+    sr_bench_annual = sharpe_benchmark
+    # Use periods-per-year deannualization so moments are in matching units.
+    sr_hat_unann = sr_hat / sqrt(periods_per_year)
+    sr_bench_unann = sr_bench_annual / sqrt(periods_per_year)
+    skew = float(((r - r.mean()) ** 3).mean() / (r.std(ddof=0) ** 3 + 1e-12))
+    kurt = float(((r - r.mean()) ** 4).mean() / (r.std(ddof=0) ** 4 + 1e-12))
+    denom_sq = 1 - skew * sr_hat_unann + (kurt - 1) / 4 * sr_hat_unann ** 2
+    if denom_sq <= 0:
+        denom_sq = 1e-12
+    numerator = (sr_hat_unann - sr_bench_unann) * sqrt(n - 1)
+    return float(norm.cdf(numerator / sqrt(denom_sq)))
+
+
+def _expected_max_sharpe(n_trials: int, var_of_trial_sharpes: float) -> float:
+    """Bailey & LdP's expected maximum of N iid normal trial Sharpes.
+
+    E[max SR] = sqrt(V[SR]) * ((1 - gamma) * Z^{-1}(1 - 1/N) + gamma * Z^{-1}(1 - 1/(N*e)))
+    """
+    if n_trials <= 1 or var_of_trial_sharpes <= 0:
+        return 0.0
+    gamma = _EULER_MASCHERONI
+    inv1 = norm.ppf(1.0 - 1.0 / n_trials)
+    inv2 = norm.ppf(1.0 - 1.0 / (n_trials * e))
+    return float(sqrt(var_of_trial_sharpes) * ((1 - gamma) * inv1 + gamma * inv2))
+
+
+def deflated_sharpe(
+    sharpes,
+    returns_of_best,
+    n_trials: int,
+    periods_per_year: int = 252,
+) -> float:
+    """Deflated Sharpe Ratio per Bailey & LdP (2014).
+
+    DSR = PSR(SR_hat | SR_benchmark = E[max SR over n_trials])
+
+    `sharpes` is the list of annualized trial Sharpes; the best is identified
+    from it. `returns_of_best` is the return series of the best trial — used to
+    compute skewness and kurtosis for the PSR denominator.
+    `n_trials` is the count of independent trials.
+    """
+    sharpes_arr = np.asarray(sharpes, dtype=float)
+    if sharpes_arr.size == 0:
+        return 0.0
+    var_sr = float(np.var(sharpes_arr, ddof=1)) if sharpes_arr.size > 1 else 0.0
+    expected_max = _expected_max_sharpe(n_trials, var_sr)
+    return probabilistic_sharpe(
+        returns=returns_of_best,
+        sharpe_benchmark=expected_max,
+        periods_per_year=periods_per_year,
     )
