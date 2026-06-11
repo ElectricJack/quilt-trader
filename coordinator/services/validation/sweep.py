@@ -14,7 +14,7 @@ from typing import Any, Callable, Literal, Optional
 # returns an awaitable that executes the run.  The orchestrators are agnostic
 # about which services the factory uses; the CLI / API constructs it once with
 # real services and passes it through.
-RunnerFactory = Callable[[str], Awaitable[None]]
+RunnerFactory = Callable[..., Awaitable[None]]  # (run_id, bars_cache=None)
 
 # Optional callback invoked after each trial / fold completes.
 # Signature: (pct: float, message: str, run_ids: list[str]) -> Awaitable[None]

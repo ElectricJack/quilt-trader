@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 SweepFn = Callable[..., Awaitable[Any]]          # signature of run_sweep
 WalkForwardFn = Callable[..., Awaitable[Any]]    # signature of run_walk_forward
-RunnerFactory = Callable[[str], Awaitable[None]] # (run_id) -> None
+RunnerFactory = Callable[..., Awaitable[None]]  # (run_id, bars_cache=None) -> None
 
 
 class ResearchJobManager:
