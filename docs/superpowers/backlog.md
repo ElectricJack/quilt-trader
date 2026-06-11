@@ -329,47 +329,49 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ## Research Lab dashboard
 
+> **Re-homed by [2026-06-10-algorithm-as-container-design.md](specs/2026-06-10-algorithm-as-container-design.md).** All sub-features below now live at `/algorithms/:id/research` (list) and `/algorithms/:id/research/:session_id` (detail) rather than `/research` and `/research/sessions/:id`. Implementation routes change; user-facing scope is unchanged.
+
 ### Phase 3 — Walk-Forward submission UI
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
-- **Why deferred:** Phases 1+2 deliver session creation + sweep submission. Walk-forward submission is a sister form to `NewSweepModal` with additional fields (train_years, test_years, step_months, objective). The backend (`POST /sessions/{id}/walk-forward`) is fully shipped — only the form is missing.
-- **What's needed:** `NewWalkForwardModal.tsx` mirroring `NewSweepModal.tsx`'s structure, with the four extra fields. Add a "New Walk-Forward" button alongside "New Sweep" on `ResearchSessionDetail.tsx`. Possibly differentiate the job row rendering by `kind` field.
+- **Why deferred:** Phases 1+2 deliver session creation + sweep submission. Walk-forward submission is a sister form to `NewSweepModal` with additional fields (train_years, test_years, step_months, objective). The backend (`POST /algorithms/:id/research/:session_id/walk-forward`) is fully shipped — only the form is missing.
+- **What's needed:** `NewWalkForwardModal.tsx` mirroring `NewSweepModal.tsx`'s structure, with the four extra fields. Add a "New Walk-Forward" button alongside "New Sweep" on `ResearchSessionDetail.tsx` (now mounted at `/algorithms/:id/research/:session_id`). Possibly differentiate the job row rendering by `kind` field.
 
 ### Phase 4 — Sweep results matrix
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
 - **Why deferred:** Phases 1+2 link out from each completed sweep's job row to individual `BacktestRunDetail` pages. The matrix is the "compare 50 trials at once" surface — sortable metric columns, per-config-parameter columns, click-through to single-run detail, possibly faceted filtering. Substantially more product work than per-row linking.
-- **What's needed:** new region on `ResearchSessionDetail.tsx` (third stacked region under header + jobs list) rendering a TanStack table built from the union of all completed runs' metrics + config_overrides. Likely an endpoint extension to bulk-fetch metric summaries for a session's runs in one call.
+- **What's needed:** new region on `ResearchSessionDetail.tsx` (mounted at `/algorithms/:id/research/:session_id`; third stacked region under header + jobs list) rendering a TanStack table built from the union of all completed runs' metrics + config_overrides. Likely an endpoint extension to bulk-fetch metric summaries for a session's runs in one call.
 
 ### Phase 4 or 5 — Walk-forward stitched OOS equity chart
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
 - **Why deferred:** Walk-forward jobs produce concatenated out-of-sample equity (`concatenate_oos_curves()` already on the backend, I9 invariant). Rendering it inline with per-fold boundary markers is its own visualization scope.
-- **What's needed:** chart component using `lightweight-charts` (already a dashboard dep — used by existing equity views). Endpoint to fetch the stitched curve + per-fold boundary timestamps for a completed walk-forward job.
+- **What's needed:** chart component using `lightweight-charts` (already a dashboard dep — used by existing equity views). Endpoint to fetch the stitched curve + per-fold boundary timestamps for a completed walk-forward job (which lives at `/algorithms/:id/research/:session_id`).
 
 ### Phase 5 — In-browser markdown/HTML report viewer
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
-- **Why deferred:** Phases 1+2 surface the file paths from `POST /sessions/{id}/report` in a toast; the user opens them out-of-band. An in-app viewer needs (a) a way for the coord to serve the generated HTML files (currently they're written to `data/research_reports/` and not exposed), (b) a markdown renderer, (c) decisions about navigation back to the session.
-- **What's needed:** static file route serving `data/research_reports/*`, plus a `<ReportViewer>` component that takes the session id, fetches the report HTML, and renders it in a scrollable pane.
+- **Why deferred:** Phases 1+2 surface the file paths from `POST /algorithms/:id/research/:session_id/report` in a toast; the user opens them out-of-band. An in-app viewer needs (a) a way for the coord to serve the generated HTML files (currently they're written to `data/research_reports/` and not exposed), (b) a markdown renderer, (c) decisions about navigation back to the session.
+- **What's needed:** static file route serving `data/research_reports/*`, plus a `<ReportViewer>` component that takes the session id, fetches the report HTML, and renders it in a scrollable pane. Component mounts within `ResearchSessionDetail` at `/algorithms/:id/research/:session_id`.
 
 ### Manifest-derived structured form for JSON config fields
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
 - **Why deferred:** v1 uses `JsonTextField` (textarea + JSON parse validation) for `base_config`, `parameter_space`, and `pre_registered_criteria`. A structured form derived from each algorithm's `config_schema` would render typed inputs — sliders for numeric ranges, dropdowns for enums, multi-select for arrays — eliminating the JSON typing entirely for `base_config`. Significant product work; only partially applicable to `parameter_space` (which references config keys but values are search ranges, not config values).
-- **Swap-in target locked:** [2026-05-30-session-experiment-binding-design.md](specs/2026-05-30-session-experiment-binding-design.md) introduces `<ExperimentConfigEditor>` — a wrapper that today renders three `<JsonTextField>`s side-by-side (base_config | parameter_space | criteria). The follow-up work replaces ONLY this component's internals with per-field rows (each row has a fix-vs-sweep toggle, schema-typed input for the fix mode, range/list editor for the sweep mode). The session modal, the hooks, the API payload, and the entire backend are unchanged. JSON-textarea fallback remains for algorithms whose `config_schema` is unpopulated.
+- **Swap-in target locked:** [2026-05-30-session-experiment-binding-design.md](specs/2026-05-30-session-experiment-binding-design.md) introduces `<ExperimentConfigEditor>` — a wrapper that today renders three `<JsonTextField>`s side-by-side (base_config | parameter_space | criteria). The follow-up work replaces ONLY this component's internals with per-field rows (each row has a fix-vs-sweep toggle, schema-typed input for the fix mode, range/list editor for the sweep mode). The session creation modal (at `/algorithms/:id/research`), the hooks, the API payload, and the entire backend are unchanged. JSON-textarea fallback remains for algorithms whose `config_schema` is unpopulated.
 - **What's needed:** `config_schema → JSON-schema` mapper (or use the schema directly if it's already JSON Schema), per-type input components (number/select/multi-select/bool/string), the fix-vs-sweep toggle UX, range/list editors, validation that every required schema field appears in either base_config or parameter_space.
 
 ### Session deletion / archive
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
-- **Why deferred:** Sessions are immutable pre-registrations of an experiment. There's intentionally no edit/delete in v1. When the session list grows enough to want tidy-up, "archive" (hide from default list, retain the row) is the right pattern — hard delete should probably never exist for research records.
+- **Why deferred:** Sessions are immutable pre-registrations of an experiment. There's intentionally no edit/delete in v1. When the per-algo session list (`/algorithms/:id/research`) grows enough to want tidy-up, "archive" (hide from default list, retain the row) is the right pattern — hard delete should probably never exist for research records.
 
 ### Session list filters / search
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
-- **Why deferred:** With <50 sessions, browse-by-scrolling is fine. Build when the list gets unwieldy.
+- **Why deferred:** With <50 sessions per algorithm, browse-by-scrolling is fine on the per-algo research list at `/algorithms/:id/research`. Build when the per-algo list gets unwieldy.
 
 ### Bulk job operations
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
-- **Why deferred:** Cancel-all-running, retry-failed, etc. — only worth building when someone hits the friction.
+- **Why deferred:** Cancel-all-running, retry-failed, etc. on the per-algo research list (`/algorithms/:id/research`) — only worth building when someone hits the friction.
 
 ### Compare-runs view
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
-- **Why deferred:** Pick N runs and render their metrics + equity curves side-by-side. The natural Phase 6 once the Phase 4 results matrix exists — the matrix is "all runs", compare-view is "this specific subset".
+- **Why deferred:** Pick N runs and render their metrics + equity curves side-by-side within a session at `/algorithms/:id/research/:session_id`. The natural Phase 6 once the Phase 4 results matrix exists — the matrix is "all runs", compare-view is "this specific subset".
 
 ---
 

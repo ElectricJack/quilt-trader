@@ -27,6 +27,21 @@ export interface Worker {
   created_at: string;
 }
 
+export interface AlgorithmSummary {
+  status: "live" | "paper" | "idle";
+  status_source: string | null;
+  headline_sharpe: number | null;
+  headline_sharpe_source: "live_30d" | "last_backtest" | null;
+  equity_sparkline: number[];
+  equity_sparkline_source: "live" | "backtest" | null;
+  counts: {
+    deployments: number;
+    backtests: number;
+    research_sessions: number;
+  };
+  last_activity_at: string | null;
+}
+
 export interface Algorithm {
   id: string;
   repo_url: string;
@@ -45,6 +60,7 @@ export interface Algorithm {
   install_error: string | null;
   installed_at: string | null;
   updated_at: string | null;
+  summary?: AlgorithmSummary;
 }
 
 export interface ParameterSet {

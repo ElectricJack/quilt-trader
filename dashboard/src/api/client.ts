@@ -1284,8 +1284,16 @@ export const api = {
   },
 
   // ── Research / Validation Lab ──
-  listResearchSessions(): Promise<ResearchSession[]> {
-    return request<ResearchSession[]>("/api/research/sessions");
+  listResearchSessions(
+    filters?: { algorithm_id?: string; status?: string; limit?: number },
+  ): Promise<ResearchSession[]> {
+    const params = new URLSearchParams();
+    if (filters?.algorithm_id) params.set("algorithm_id", filters.algorithm_id);
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.limit !== undefined) params.set("limit", String(filters.limit));
+    const qs = params.toString();
+    const url = qs ? `/api/research/sessions?${qs}` : "/api/research/sessions";
+    return request<ResearchSession[]>(url);
   },
   getResearchSession(id: number): Promise<ResearchSession> {
     return request<ResearchSession>(`/api/research/sessions/${id}`);

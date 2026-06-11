@@ -100,7 +100,8 @@ const runsColumns: ColumnDef<AlgorithmRun, unknown>[] = [
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function DeploymentDetail() {
-  const { id = "" } = useParams<{ id: string }>();
+  const params = useParams<{ id?: string; instanceId?: string }>();
+  const id = params.instanceId ?? params.id ?? "";
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const runFilter = searchParams.get("run") ?? "";

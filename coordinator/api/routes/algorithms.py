@@ -257,7 +257,13 @@ async def create_algorithm(body: AlgorithmCreate, db: AsyncSession = Depends(get
 @router.get("/api/algorithms")
 async def list_algorithms(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Algorithm))
-    return [_algo_to_response(a) for a in result.scalars().all()]
+    algos = result.scalars().all()
+    out = []
+    for a in algos:
+        row = _algo_to_response(a)
+        row["summary"] = await _summary_for(a.id, db)
+        out.append(row)
+    return out
 
 
 @router.get("/api/algorithms/{algorithm_id}")
@@ -266,7 +272,9 @@ async def get_algorithm(algorithm_id: str, db: AsyncSession = Depends(get_db)):
     algo = result.scalar_one_or_none()
     if algo is None:
         raise HTTPException(status_code=404, detail="Algorithm not found")
-    return _algo_to_response(algo)
+    row = _algo_to_response(algo)
+    row["summary"] = await _summary_for(algo.id, db)
+    return row
 
 
 @router.get("/api/algorithms/{algorithm_id}/package.tar.gz")
@@ -319,7 +327,17 @@ def _full_name_from_url(repo_url: str) -> str | None:
 
 
 from coordinator.api._ttl_cache import TTLCache
+from coordinator.services.algorithm_summary import AlgorithmSummaryService
+
 _git_status_cache = TTLCache(ttl_seconds=60.0)
+_summary_cache = TTLCache(ttl_seconds=60.0)
+_summary_service = AlgorithmSummaryService()
+
+
+async def _summary_for(algorithm_id: str, db: AsyncSession) -> dict:
+    async def _build():
+        return await _summary_service.build_for(algorithm_id, db)
+    return await _summary_cache.get(algorithm_id, _build)
 
 
 @router.get("/api/algorithms/{algorithm_id}/git-status")

@@ -7,7 +7,7 @@ from datetime import date as _date
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -251,13 +251,21 @@ async def create_session_endpoint(payload: CreateSessionRequest) -> SessionRespo
 
 @router.get("/sessions", response_model=list[SessionResponse])
 async def list_sessions_endpoint(
+    algorithm_id: str | None = Query(None),
+    status: str | None = Query(None, description="Comma-separated status values"),
+    limit: int = Query(200, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ) -> list[SessionResponse]:
-    """List all OptimizationSessions, newest first."""
-    result = await db.execute(
-        select(OptimizationSession).order_by(OptimizationSession.created_at.desc())
-    )
-    sessions = result.scalars().all()
+    """List OptimizationSessions, newest first, optionally filtered."""
+    q = select(OptimizationSession)
+    if algorithm_id:
+        q = q.where(OptimizationSession.algorithm_id == algorithm_id)
+    if status:
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        if statuses:
+            q = q.where(OptimizationSession.status.in_(statuses))
+    q = q.order_by(OptimizationSession.created_at.desc()).limit(limit)
+    sessions = (await db.execute(q)).scalars().all()
     out = []
     for s in sessions:
         cnt_result = await db.execute(

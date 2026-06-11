@@ -33,19 +33,20 @@ interface BacktestTradeRow {
 }
 
 export function BacktestRunDetail() {
-  const { id = "" } = useParams<{ id: string }>();
+  const params = useParams<{ id?: string; runId?: string }>();
+  const runId = params.runId ?? params.id ?? "";
   const navigate = useNavigate();
   const addAlert = useUIStore((s) => s.addAlert);
-  const { data: report } = useBacktestReport(id, { refetchInterval: 2000 });
+  const { data: report } = useBacktestReport(runId, { refetchInterval: 2000 });
   const isRunInflight = inflight(report?.status);
   const liveRefetch = isRunInflight ? 2000 : undefined;
-  const { data: tradesData } = useBacktestTrades(id, 500, 0, { refetchInterval: liveRefetch });
+  const { data: tradesData } = useBacktestTrades(runId, 500, 0, { refetchInterval: liveRefetch });
   const del = useDeleteBacktestRun();
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   async function handleDelete() {
     try {
-      await del.mutateAsync(id);
+      await del.mutateAsync(runId);
       addAlert({ message: "Deleted backtest run.", severity: "success" });
       navigate("/backtests");
     } catch {
