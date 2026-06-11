@@ -38,7 +38,24 @@ class BacktestBarsCache:
             df = loader(source, symbol, timeframe, start, end)
             if df is None or df.empty:
                 continue
-            self._bars[key] = df.sort_index()
+            self._bars[key] = self._normalize(df)
+
+    @staticmethod
+    def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+        """Return a copy with a sorted DatetimeIndex.
+
+        Accepts frames whose index is already a DatetimeIndex (no-op besides sort)
+        OR frames with a `timestamp` column (sets as index, then sorts).
+        """
+        if isinstance(df.index, pd.DatetimeIndex):
+            return df.sort_index()
+        if "timestamp" in df.columns:
+            normalized = df.set_index("timestamp")
+            normalized.index = pd.to_datetime(normalized.index)
+            return normalized.sort_index()
+        raise ValueError(
+            "BacktestBarsCache requires a DatetimeIndex or a 'timestamp' column"
+        )
 
     def get(
         self,

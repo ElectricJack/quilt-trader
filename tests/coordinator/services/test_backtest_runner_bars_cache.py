@@ -47,6 +47,6 @@ async def test_runner_skips_disk_load_when_cache_has_required_bars(monkeypatch):
         bars_cache=cache,
     )
     assert ("polygon", "SPY", "1day") in bars_in
-    assert ("polygon", "QQQ", "1day") not in bars_in or bars_in[("polygon", "QQQ", "1day")] is None
+    assert ("polygon", "QQQ", "1day") not in bars_in
     assert ("polygon", "SPY", "1day") not in disk_calls  # served from cache
     assert ("polygon", "QQQ", "1day") in disk_calls       # fell through to disk

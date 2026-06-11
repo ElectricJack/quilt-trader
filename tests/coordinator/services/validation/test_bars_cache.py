@@ -81,3 +81,32 @@ def test_get_returns_none_when_window_outside_preloaded_range():
     # Window entirely before the preloaded range
     result = cache.get("polygon", "SPY", "1day", date(2024, 1, 1), date(2024, 1, 31))
     assert result is None
+
+
+def test_preload_accepts_timestamp_column_layout():
+    """Frames with a 'timestamp' column and a RangeIndex are normalized."""
+    cache = BacktestBarsCache()
+
+    def loader(_s, _y, _tf, _start, _end):
+        idx = pd.date_range("2024-01-01", "2024-01-31", freq="D")
+        return pd.DataFrame({
+            "timestamp": idx,
+            "open": range(len(idx)), "close": range(len(idx)),
+        })  # RangeIndex, timestamp as column
+
+    cache.preload([("polygon", "SPY", "1day")], date(2024, 1, 1), date(2024, 1, 31), loader)
+    df = cache.get("polygon", "SPY", "1day", date(2024, 1, 10), date(2024, 1, 20))
+    assert df is not None
+    assert len(df) == 11
+    assert isinstance(df.index, pd.DatetimeIndex)
+
+
+def test_preload_rejects_frame_with_neither_layout():
+    """A frame with neither DatetimeIndex nor 'timestamp' column raises."""
+    cache = BacktestBarsCache()
+
+    def loader(_s, _y, _tf, _start, _end):
+        return pd.DataFrame({"open": [1.0, 2.0], "close": [3.0, 4.0]})  # RangeIndex, no timestamp col
+
+    with pytest.raises(ValueError, match="timestamp"):
+        cache.preload([("polygon", "SPY", "1day")], date(2024, 1, 1), date(2024, 1, 31), loader)
