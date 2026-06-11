@@ -135,3 +135,208 @@ def compute_cpcv_splits(n_groups: int, test_groups_per_split: int) -> list[Split
             test_groups=tuple(test_combo),
         ))
     return splits
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator entry point (Tasks 8 + 9)
+# ---------------------------------------------------------------------------
+
+import asyncio
+import uuid
+from typing import Any, Callable, Awaitable
+import pandas as pd
+from sqlalchemy.orm import Session
+
+from coordinator.database.models import BacktestRun, OptimizationSession
+from coordinator.services.validation.bars_cache import BacktestBarsCache
+from coordinator.services.validation.bootstrap import block_bootstrap_sharpe
+
+
+@dataclass
+class SplitResult:
+    """Mode-B per-split execution record (empty for mode A)."""
+    index: int
+    train_groups: tuple[int, ...]
+    test_groups: tuple[int, ...]
+    selected_config: dict | None = None
+    selected_objective: float | None = None
+    inner_trial_run_ids: list[str] = field(default_factory=list)
+    oos_segment_run_ids: dict[int, str] = field(default_factory=dict)
+
+
+@dataclass
+class CPCVResult:
+    """Orchestrator output, serialized into ResearchJob.result JSON."""
+    mode: str
+    n_groups: int
+    test_groups_per_split: int
+    embargo: int
+    purge_horizon: int
+    groups: list[Group] = field(default_factory=list)
+    splits: list[SplitResult] = field(default_factory=list)
+    segment_run_ids: list[str] = field(default_factory=list)   # mode A only
+    paths: list[list[PathSegment]] = field(default_factory=list)  # mode B only
+    summary: dict[str, Any] = field(default_factory=dict)
+
+
+async def run_cpcv(
+    db: Session,
+    runner_factory,
+    *,
+    session_id: int,
+    mode: str,
+    n_groups: int = 6,
+    test_groups_per_split: int = 2,
+    embargo: int = 5,
+    purge_horizon: int = 0,
+    parallelism: int = 1,
+    bar_count_estimate: int | None = None,
+    # mode="select" only:
+    parameter_space: dict | None = None,
+    search: str | None = None,
+    max_trials_per_split: int | None = None,
+    objective: str = "sharpe_ratio",
+    objective_direction: str = "maximize",
+    seed: int = 0,
+    progress_callback: Callable | None = None,
+    bars_cache: "BacktestBarsCache | None" = None,
+) -> CPCVResult:
+    """Run CPCV in mode A (fixed) or mode B (select).
+
+    Mode A: dispatches N backtests with base_config, one per group; reports
+    per-segment Sharpes + bootstrap CI.
+
+    Mode B: for each of C(N, k) splits, runs an inner sweep on train groups,
+    selects the best config, evaluates on test groups; reconstructs paths.
+    """
+    session = db.query(OptimizationSession).filter_by(id=session_id).one()
+    if bar_count_estimate is None:
+        # Conservative default: assume 252 bars/year on daily data.
+        years = (session.date_range_end - session.date_range_start).days / 365.0
+        bar_count_estimate = max(int(years * 252), n_groups * 10)
+
+    groups = compute_groups(
+        timeline_start=session.date_range_start,
+        timeline_end=session.date_range_end,
+        bar_count=bar_count_estimate,
+        n_groups=n_groups,
+    )
+
+    result = CPCVResult(
+        mode=mode, n_groups=n_groups, test_groups_per_split=test_groups_per_split,
+        embargo=embargo, purge_horizon=purge_horizon, groups=groups,
+    )
+
+    if mode == "fixed":
+        await _run_mode_fixed(
+            db=db, runner_factory=runner_factory, session=session,
+            groups=groups, embargo=embargo, parallelism=parallelism,
+            bars_cache=bars_cache, progress_callback=progress_callback,
+            result=result,
+        )
+    else:
+        if parameter_space is None or search is None or max_trials_per_split is None:
+            raise ValueError(
+                "mode='select' requires parameter_space, search, and max_trials_per_split"
+            )
+        await _run_mode_select(
+            db=db, runner_factory=runner_factory, session=session,
+            groups=groups, embargo=embargo, purge_horizon=purge_horizon,
+            parameter_space=parameter_space, search=search,
+            max_trials_per_split=max_trials_per_split,
+            objective=objective, objective_direction=objective_direction,
+            parallelism=parallelism, seed=seed,
+            bars_cache=bars_cache, progress_callback=progress_callback,
+            result=result, test_groups_per_split=test_groups_per_split,
+        )
+    return result
+
+
+async def _run_mode_fixed(
+    *, db, runner_factory, session, groups, embargo,
+    parallelism, bars_cache, progress_callback, result: CPCVResult,
+) -> None:
+    sem = asyncio.Semaphore(parallelism)
+
+    # Track completion order separately from group order
+    group_to_run_id: dict[int, str] = {}
+
+    async def _one(group: Group) -> tuple[int, str]:
+        async with sem:
+            run_id = f"cpcv-{uuid.uuid4().hex[:8]}"
+            db.add(BacktestRun(
+                id=run_id, algorithm_id=session.algorithm_id,
+                optimization_session_id=session.id,
+                status="queued",
+                config_overrides=session.base_config or {},
+                date_range_start=group.start,
+                date_range_end=group.end,
+            ))
+            db.commit()
+            await runner_factory(run_id, bars_cache=bars_cache)
+            return group.index, run_id
+
+    tasks = [_one(g) for g in groups]
+    completed: list[tuple[int, str]] = []
+    for coro in asyncio.as_completed(tasks):
+        group_idx, rid = await coro
+        group_to_run_id[group_idx] = rid
+        completed.append((group_idx, rid))
+        if progress_callback:
+            run_ids_so_far = [r for _, r in completed]
+            progress_callback(
+                len(completed) / len(groups),
+                f"group {len(completed)}/{len(groups)} evaluated",
+                run_ids_so_far,
+            )
+
+    # Ordered by group index for deterministic result
+    result.segment_run_ids = [group_to_run_id[i] for i in range(len(groups))]
+
+    sharpes: list[float] = []
+    concat_returns: list[float] = []
+    for rid in result.segment_run_ids:
+        row = db.query(BacktestRun).filter_by(id=rid).one()
+        sharpes.append(float(row.sharpe_ratio or 0.0))
+        if row.equity_curve:
+            equity = pd.Series([float(p.get("equity", 1.0)) for p in row.equity_curve])
+            rets = equity.pct_change().dropna().tolist()
+            concat_returns.extend(rets)
+
+    n = len(sharpes)
+    mean_sharpe = sum(sharpes) / n if n > 0 else 0.0
+    median_sharpe = sorted(sharpes)[n // 2] if n > 0 else 0.0
+    std_sharpe = (sum((s - mean_sharpe) ** 2 for s in sharpes) / max(n - 1, 1)) ** 0.5
+
+    ci_lower, ci_upper = 0.0, 0.0
+    if concat_returns:
+        equity_curve = pd.Series((1.0 + pd.Series(concat_returns)).cumprod().values)
+        ci = block_bootstrap_sharpe(
+            equity_curve,
+            block_size=max(5, len(concat_returns) // 20),
+            n_resamples=2000,
+            confidence=0.95,
+            periods_per_year=252,
+            seed=0,
+        )
+        ci_lower, ci_upper = ci.lower, ci.upper
+
+    result.summary = {
+        "segment_sharpes": sharpes,
+        "mean_segment_sharpe": mean_sharpe,
+        "median_segment_sharpe": median_sharpe,
+        "std_segment_sharpe": std_sharpe,
+        "bootstrap_ci_lower": ci_lower,
+        "bootstrap_ci_upper": ci_upper,
+    }
+
+
+async def _run_mode_select(
+    *, db, runner_factory, session, groups, embargo, purge_horizon,
+    parameter_space, search, max_trials_per_split,
+    objective, objective_direction,
+    parallelism, seed, bars_cache, progress_callback,
+    result: CPCVResult, test_groups_per_split: int,
+) -> None:
+    """Implemented in Task 9."""
+    raise NotImplementedError("mode='select' implemented in Task 9")
