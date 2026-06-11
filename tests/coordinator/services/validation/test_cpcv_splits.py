@@ -65,3 +65,56 @@ def test_compute_cpcv_splits_rejects_k_too_large():
 def test_compute_cpcv_splits_rejects_k_zero():
     with pytest.raises(ValueError, match="test_groups_per_split"):
         compute_cpcv_splits(n_groups=4, test_groups_per_split=0)
+
+
+from coordinator.services.validation.cpcv import reconstruct_paths
+
+
+def test_reconstruct_paths_n6_k2_yields_5_paths():
+    splits = compute_cpcv_splits(n_groups=6, test_groups_per_split=2)
+    # Stub each split's oos_segment_run_ids: {group: f"run-{split}-{group}"}
+    split_to_run_ids = {
+        s.index: {g: f"run-{s.index}-{g}" for g in s.test_groups}
+        for s in splits
+    }
+    paths = reconstruct_paths(
+        splits=splits,
+        n_groups=6,
+        test_groups_per_split=2,
+        split_to_run_ids=split_to_run_ids,
+    )
+    # C(N-1, k-1) = C(5, 1) = 5
+    assert len(paths) == 5
+    # Each path covers all 6 groups in time order
+    for path in paths:
+        assert [seg.group for seg in path] == [0, 1, 2, 3, 4, 5]
+
+
+def test_reconstruct_paths_each_group_appears_once_per_path():
+    splits = compute_cpcv_splits(n_groups=4, test_groups_per_split=2)
+    split_to_run_ids = {
+        s.index: {g: f"run-{s.index}-{g}" for g in s.test_groups}
+        for s in splits
+    }
+    paths = reconstruct_paths(splits, 4, 2, split_to_run_ids)
+    # C(3, 1) = 3 paths
+    assert len(paths) == 3
+    for path in paths:
+        groups_in_path = {seg.group for seg in path}
+        assert groups_in_path == {0, 1, 2, 3}
+
+
+def test_reconstruct_paths_no_two_paths_use_same_split_for_same_group():
+    """Each cell (group, split) appears in exactly one path."""
+    splits = compute_cpcv_splits(n_groups=6, test_groups_per_split=2)
+    split_to_run_ids = {
+        s.index: {g: f"run-{s.index}-{g}" for g in s.test_groups}
+        for s in splits
+    }
+    paths = reconstruct_paths(splits, 6, 2, split_to_run_ids)
+    seen = set()
+    for path in paths:
+        for seg in path:
+            key = (seg.group, seg.split)
+            assert key not in seen
+            seen.add(key)

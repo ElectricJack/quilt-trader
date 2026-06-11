@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from itertools import combinations
+from math import comb
 from typing import Literal
 
 
@@ -70,6 +71,48 @@ def compute_groups(
         day_cursor += days_in_group
         bar_cursor += bars_in_group
     return groups
+
+
+@dataclass(frozen=True)
+class PathSegment:
+    """One segment within a reconstructed path."""
+    group: int
+    split: int
+    run_id: str
+
+
+def reconstruct_paths(
+    splits: list[Split],
+    n_groups: int,
+    test_groups_per_split: int,
+    split_to_run_ids: dict[int, dict[int, str]],
+) -> list[list[PathSegment]]:
+    """Reconstruct C(N-1, k-1) full backtest paths from per-split test segments.
+
+    Algorithm:
+      - Each group appears as test in exactly C(N-1, k-1) splits.
+      - For path j, group g uses the j-th split-index from g's appearance list.
+      - This yields the invariant: each (group, split) cell appears in exactly one path.
+
+    `split_to_run_ids[split_index][group_index] -> run_id` is the only data
+    needed beyond split/group enumeration.
+    """
+    # For each group: the list of split indices where this group is test (in canonical order).
+    group_splits: dict[int, list[int]] = {g: [] for g in range(n_groups)}
+    for split in splits:
+        for g in split.test_groups:
+            group_splits[g].append(split.index)
+
+    n_paths = comb(n_groups - 1, test_groups_per_split - 1)
+    paths: list[list[PathSegment]] = []
+    for path_idx in range(n_paths):
+        path: list[PathSegment] = []
+        for group_idx in range(n_groups):
+            split_idx = group_splits[group_idx][path_idx]
+            run_id = split_to_run_ids[split_idx][group_idx]
+            path.append(PathSegment(group=group_idx, split=split_idx, run_id=run_id))
+        paths.append(path)
+    return paths
 
 
 def compute_cpcv_splits(n_groups: int, test_groups_per_split: int) -> list[Split]:
