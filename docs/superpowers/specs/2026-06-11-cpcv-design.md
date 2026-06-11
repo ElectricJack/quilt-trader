@@ -218,9 +218,8 @@ class CPCVRequest(BaseModel):
     mode: Literal["fixed", "select"] = "fixed"
     n_groups: int = 6                      # 4..20
     test_groups_per_split: int = 2         # 1..n_groups//2
-    embargo: int = 5                       # 0..group_size
-    embargo_unit: Literal["bars", "fraction"] = "bars"
-    purge_horizon: int = 0                 # mode="select" only
+    embargo: int = 5                       # bars; 0..group_size
+    purge_horizon: int = 0                 # bars; mode="select" only
     # mode="select" only — required when mode is "select":
     parameter_space: dict | None = None
     search: Literal["grid", "random", "latin", "tpe"] | None = None
@@ -255,7 +254,6 @@ quilt research cpcv <session_id>
     [--n-groups 6]
     [--test-groups 2]
     [--embargo 5]
-    [--embargo-unit bars|fraction]
     [--purge-horizon 0]
     [--search random]
     [--max-trials 20]
@@ -279,7 +277,7 @@ On completion, prints to stdout:
 {
   "mode": "select",
   "n_groups": 6, "test_groups_per_split": 2,
-  "embargo": 5, "embargo_unit": "bars", "purge_horizon": 0,
+  "embargo": 5, "purge_horizon": 0,
   "groups": [
     {"index": 0, "start": "2023-01-01T...", "end": "2023-03-15T...", "n_bars": 5040}
   ],
