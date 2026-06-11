@@ -270,7 +270,6 @@ async def test_inner_sweep_returns_winner_and_run_ids(db_session):
         db=db_session,
         runner_factory=runner_factory,
         session_id=1,
-        manifest_path="/tmp/x/quilt.yaml",
         algorithm_id="test-algo",
         date_range_start=date(2024, 1, 1),
         date_range_end=date(2024, 3, 31),
@@ -295,3 +294,5 @@ async def test_inner_sweep_returns_winner_and_run_ids(db_session):
     assert result.winning_config is not None
     assert result.winning_objective is not None
     assert result.winning_run_id in result.all_run_ids
+    assert result.winning_objective == pytest.approx(0.9)
+    assert result.winning_config == {"lookback": 30}
