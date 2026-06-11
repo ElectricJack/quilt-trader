@@ -1,7 +1,9 @@
+import { useParams } from "react-router-dom";
 import type { CPCVResult } from "../../types";
 import { CpcvSummaryCard } from "./CpcvSummaryCard";
 import { CpcvPathDistribution } from "./CpcvPathDistribution";
 import { CpcvSegmentHeatmap } from "./CpcvSegmentHeatmap";
+import { CpcvPathDetail } from "./CpcvPathDetail";
 
 interface Props {
   result: CPCVResult | null;
@@ -10,6 +12,7 @@ interface Props {
 }
 
 export function CpcvResultsPanel({ result, status, progress }: Props) {
+  const { id: algorithmId = "" } = useParams<{ id: string }>();
   if (status === "running" || status === "queued") {
     return (
       <div className="rounded border border-gray-800 bg-gray-900 p-4">
@@ -48,6 +51,15 @@ export function CpcvResultsPanel({ result, status, progress }: Props) {
           <CpcvSegmentHeatmap result={result} />
         </div>
       </div>
+      {result.mode === "select" && result.paths.map((path, i) => (
+        <CpcvPathDetail
+          key={i}
+          algorithmId={algorithmId}
+          path={path}
+          pathIndex={i}
+          pathSharpe={result.summary.path_sharpes?.[i] ?? 0}
+        />
+      ))}
     </div>
   );
 }

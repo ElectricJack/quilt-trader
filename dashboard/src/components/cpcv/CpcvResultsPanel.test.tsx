@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { CpcvResultsPanel } from "./CpcvResultsPanel";
 import type { CPCVResult } from "../../types";
 
@@ -16,12 +17,20 @@ const r: CPCVResult = {
 
 describe("CpcvResultsPanel", () => {
   it("renders summary + distribution + heatmap for mode B", () => {
-    render(<CpcvResultsPanel result={r} status="completed" progress={null} />);
+    render(
+      <MemoryRouter>
+        <CpcvResultsPanel result={r} status="completed" progress={null} />
+      </MemoryRouter>,
+    );
     expect(screen.getByText(/mean path sharpe/i)).toBeInTheDocument();
   });
 
   it("renders progress when status is running", () => {
-    render(<CpcvResultsPanel result={null} status="running" progress={{ pct: 0.42, message: "split 6/15" }} />);
+    render(
+      <MemoryRouter>
+        <CpcvResultsPanel result={null} status="running" progress={{ pct: 0.42, message: "split 6/15" }} />
+      </MemoryRouter>,
+    );
     expect(screen.getByText(/split 6\/15/)).toBeInTheDocument();
   });
 });
