@@ -113,6 +113,15 @@ class SweepResult:
     run_ids: list[str] = field(default_factory=list)
 
 
+@dataclass
+class InnerSweepResult:
+    all_run_ids: list[str] = field(default_factory=list)
+    n_dispatched: int = 0          # total trials launched (= len(configs) for non-tpe)
+    winning_run_id: str | None = None
+    winning_config: dict | None = None
+    winning_objective: float | None = None
+
+
 async def _run_one_backtest(
     db: Any,
     runner_factory: RunnerFactory,
@@ -131,6 +140,7 @@ async def _run_one_backtest(
     base_config: dict[str, Any],
     config: dict[str, Any],          # trial hyperparameters
     config_hash_str: str,
+    bars_cache: "BacktestBarsCache | None" = None,
 ) -> dict[str, Any]:
     """Spawn a single backtest.
 
@@ -163,7 +173,7 @@ async def _run_one_backtest(
     db.commit()  # make row visible to async runner via its own separate connection
 
     run_id = run_row.id
-    await runner_factory(run_id)
+    await runner_factory(run_id, bars_cache=bars_cache)
 
     db.refresh(run_row)  # pull updated status/metrics written by the runner
 
@@ -172,6 +182,165 @@ async def _run_one_backtest(
         "config_hash": config_hash_str,
         "config": config,
     }
+
+
+async def _run_inner_sweep(
+    db: Any,
+    runner_factory: RunnerFactory,
+    *,
+    session_id: int,
+    manifest_path: "str | Path | None",
+    algorithm_id: str,
+    date_range_start: date,
+    date_range_end: date,
+    initial_cash: float,
+    cost_profile: str,
+    benchmark_symbol: str | None,
+    benchmark_source: str | None,
+    mtm_realism: float = 0.0,
+    base_config: dict[str, Any],
+    parameter_space: dict[str, Any],
+    search: Literal["grid", "random", "latin", "tpe"] = "grid",
+    max_trials: int = 50,
+    parallelism: int = 1,
+    seed: int = 0,
+    distributions: Optional[dict[str, str]] = None,
+    objective: str = "sharpe_ratio",
+    objective_direction: Literal["maximize", "minimize"] = "maximize",
+    progress_callback: Optional[ProgressCallback] = None,
+    bars_cache: "BacktestBarsCache | None" = None,
+) -> InnerSweepResult:
+    """The trial-loop body of run_sweep, callable independently.
+
+    Caller supplies date_range_{start,end} so CPCV mode B can call this with a
+    fold-specific train window. Returns the winning config + all run_ids.
+    """
+    if search == "tpe":
+        tpe_result = await _run_sweep_tpe(
+            db, runner_factory,
+            session_id=session_id,
+            algorithm_id=algorithm_id,
+            date_range_start=date_range_start,
+            date_range_end=date_range_end,
+            initial_cash=initial_cash,
+            cost_profile=cost_profile,
+            benchmark_symbol=benchmark_symbol,
+            benchmark_source=benchmark_source,
+            mtm_realism=mtm_realism,
+            base_config=base_config,
+            parameter_space=parameter_space, max_trials=max_trials,
+            seed=seed, distributions=distributions or {},
+            objective=objective, objective_direction=objective_direction,
+            progress_callback=progress_callback,
+            bars_cache=bars_cache,
+        )
+        # Determine the winner from completed run_ids
+        return _select_winner(
+            db, tpe_result.run_ids, objective, objective_direction,
+            n_dispatched=tpe_result.n_configs,
+        )
+
+    if search == "grid":
+        configs = expand_grid(parameter_space)[:max_trials]
+    elif search == "random":
+        configs = sample_random(
+            parameter_space, n=max_trials, seed=seed,
+            distributions=distributions or {},
+        )
+    elif search == "latin":
+        configs = sample_latin_hypercube(
+            parameter_space, n=max_trials, seed=seed,
+            distributions=distributions or {},
+        )
+    else:
+        raise ValueError(f"Unknown search strategy: {search!r}")
+
+    semaphore = asyncio.Semaphore(parallelism)
+
+    async def _bounded(cfg: dict[str, Any]) -> dict[str, Any]:
+        async with semaphore:
+            return await _run_one_backtest(
+                db,
+                runner_factory,
+                session_id=session_id,
+                algorithm_id=algorithm_id,
+                date_range_start=date_range_start,
+                date_range_end=date_range_end,
+                initial_cash=initial_cash,
+                cost_profile=cost_profile,
+                benchmark_symbol=benchmark_symbol,
+                benchmark_source=benchmark_source,
+                mtm_realism=mtm_realism,
+                base_config=base_config,
+                config=cfg,
+                config_hash_str=config_hash(cfg),
+                bars_cache=bars_cache,
+            )
+
+    completed_count = 0
+    total_count = len(configs)
+    run_ids: list[str] = []
+    tasks = [asyncio.create_task(_bounded(c)) for c in configs]
+    for fut in asyncio.as_completed(tasks):
+        result = await fut
+        if "run_id" in result:
+            run_ids.append(result["run_id"])
+        completed_count += 1
+        if progress_callback is not None:
+            pct = completed_count / total_count
+            message = f"Trial {completed_count} of {total_count}"
+            await progress_callback(pct, message, list(run_ids))
+
+    return _select_winner(
+        db, run_ids, objective, objective_direction, n_dispatched=total_count,
+    )
+
+
+def _select_winner(
+    db: Any,
+    run_ids: list[str],
+    objective: str,
+    objective_direction: str,
+    n_dispatched: int | None = None,
+) -> InnerSweepResult:
+    """Given a list of completed run_ids, return an InnerSweepResult with the
+    winning run selected by objective metric and direction.
+
+    n_dispatched: total number of trials launched (may exceed len(run_ids) if
+    some trials did not produce a run_id, e.g. mocked in tests).
+    """
+    from coordinator.database.models import BacktestRun
+
+    effective_n = n_dispatched if n_dispatched is not None else len(run_ids)
+
+    if not run_ids:
+        return InnerSweepResult(all_run_ids=[], n_dispatched=effective_n)
+
+    best_run_id: str | None = None
+    best_config: dict | None = None
+    best_val: float | None = None
+    maximize = objective_direction == "maximize"
+
+    for run_id in run_ids:
+        row = db.query(BacktestRun).filter(BacktestRun.id == run_id).one_or_none()
+        if row is None:
+            continue
+        val = getattr(row, objective, None)
+        if val is None:
+            continue
+        val = float(val)
+        if best_val is None or (maximize and val > best_val) or (not maximize and val < best_val):
+            best_val = val
+            best_run_id = run_id
+            best_config = row.config_overrides
+
+    return InnerSweepResult(
+        all_run_ids=list(run_ids),
+        n_dispatched=effective_n,
+        winning_run_id=best_run_id,
+        winning_config=best_config,
+        winning_objective=best_val,
+    )
 
 
 async def run_sweep(
@@ -223,79 +392,35 @@ async def run_sweep(
     ``progress_callback``, if provided, is called after each trial completes
     with ``(pct, message, run_ids)``.  The final tick has ``pct == 1.0``.
     """
-    if search == "tpe":
-        return await _run_sweep_tpe(
-            db, runner_factory,
-            session_id=session_id,
-            algorithm_id=algorithm_id,
-            date_range_start=date_range_start,
-            date_range_end=date_range_end,
-            initial_cash=initial_cash,
-            cost_profile=cost_profile,
-            benchmark_symbol=benchmark_symbol,
-            benchmark_source=benchmark_source,
-            mtm_realism=mtm_realism,
-            base_config=base_config,
-            parameter_space=parameter_space, max_trials=max_trials,
-            seed=seed, distributions=distributions or {},
-            objective=objective, objective_direction=objective_direction,
-            progress_callback=progress_callback,
-        )
-
-    if search == "grid":
-        configs = expand_grid(parameter_space)[:max_trials]
-    elif search == "random":
-        configs = sample_random(
-            parameter_space, n=max_trials, seed=seed,
-            distributions=distributions or {},
-        )
-    elif search == "latin":
-        configs = sample_latin_hypercube(
-            parameter_space, n=max_trials, seed=seed,
-            distributions=distributions or {},
-        )
-    else:
-        raise ValueError(f"Unknown search strategy: {search!r}")
-
-    semaphore = asyncio.Semaphore(parallelism)
-
-    async def _bounded(cfg: dict[str, Any]) -> dict[str, Any]:
-        async with semaphore:
-            return await _run_one_backtest(
-                db,
-                runner_factory,
-                session_id=session_id,
-                algorithm_id=algorithm_id,
-                date_range_start=date_range_start,
-                date_range_end=date_range_end,
-                initial_cash=initial_cash,
-                cost_profile=cost_profile,
-                benchmark_symbol=benchmark_symbol,
-                benchmark_source=benchmark_source,
-                mtm_realism=mtm_realism,
-                base_config=base_config,
-                config=cfg,
-                config_hash_str=config_hash(cfg),
-            )
-
-    completed_count = 0
-    total_count = len(configs)
-    run_ids: list[str] = []
-    tasks = [asyncio.create_task(_bounded(c)) for c in configs]
-    for fut in asyncio.as_completed(tasks):
-        result = await fut
-        if "run_id" in result:
-            run_ids.append(result["run_id"])
-        completed_count += 1
-        if progress_callback is not None:
-            pct = completed_count / total_count
-            message = f"Trial {completed_count} of {total_count}"
-            await progress_callback(pct, message, list(run_ids))
-
+    inner = await _run_inner_sweep(
+        db=db,
+        runner_factory=runner_factory,
+        session_id=session_id,
+        manifest_path=manifest_path,
+        algorithm_id=algorithm_id,
+        date_range_start=date_range_start,
+        date_range_end=date_range_end,
+        initial_cash=initial_cash,
+        cost_profile=cost_profile,
+        benchmark_symbol=benchmark_symbol,
+        benchmark_source=benchmark_source,
+        mtm_realism=mtm_realism,
+        base_config=base_config,
+        parameter_space=parameter_space,
+        search=search,
+        max_trials=max_trials,
+        parallelism=parallelism,
+        seed=seed,
+        distributions=distributions,
+        objective=objective,
+        objective_direction=objective_direction,
+        progress_callback=progress_callback,
+        bars_cache=None,
+    )
     return SweepResult(
         session_id=session_id,
-        n_configs=len(configs),
-        run_ids=run_ids,
+        n_configs=inner.n_dispatched,
+        run_ids=inner.all_run_ids,
     )
 
 
@@ -321,6 +446,7 @@ async def _run_sweep_tpe(
     objective: str,
     objective_direction: str,
     progress_callback: Optional[ProgressCallback] = None,
+    bars_cache: "BacktestBarsCache | None" = None,
 ) -> SweepResult:
     """Bayesian / Tree-Parzen-Estimator sweep via Optuna.
 
@@ -386,6 +512,7 @@ async def _run_sweep_tpe(
             base_config=base_config,
             config=cfg,
             config_hash_str=config_hash(cfg),
+            bars_cache=bars_cache,
         )
         run_id = result.get("run_id")
         if run_id is None:
