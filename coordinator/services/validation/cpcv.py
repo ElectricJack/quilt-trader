@@ -115,6 +115,35 @@ def reconstruct_paths(
     return paths
 
 
+def _longest_contiguous_train_run(
+    train_groups: tuple[int, ...],
+) -> tuple[int, int]:
+    """Return (first_group_idx, last_group_idx) of the longest contiguous run.
+
+    train_groups is in increasing order (per compute_cpcv_splits canonical
+    sort). Adjacency means consecutive integers. Ties go to the first run.
+
+    Examples:
+        (1, 3) -> (1, 1) — both runs are length 1; first wins
+        (0, 1, 2, 4) -> (0, 2)
+        (0, 2, 3, 4, 5) -> (2, 5)
+    """
+    if not train_groups:
+        raise ValueError("train_groups is empty")
+    best_start, best_end = train_groups[0], train_groups[0]
+    cur_start, cur_end = train_groups[0], train_groups[0]
+    for g in train_groups[1:]:
+        if g == cur_end + 1:
+            cur_end = g
+        else:
+            if (cur_end - cur_start) > (best_end - best_start):
+                best_start, best_end = cur_start, cur_end
+            cur_start, cur_end = g, g
+    if (cur_end - cur_start) > (best_end - best_start):
+        best_start, best_end = cur_start, cur_end
+    return best_start, best_end
+
+
 def compute_cpcv_splits(n_groups: int, test_groups_per_split: int) -> list[Split]:
     """Enumerate every C(N, k) train/test partition over n_groups groups."""
     if test_groups_per_split < 1:
@@ -355,8 +384,12 @@ async def _run_mode_select(
 
     async def _process_split(split: Split) -> SplitResult:
         async with sem:
-            train_start = groups[split.train_groups[0]].start
-            train_end = groups[split.train_groups[-1]].end
+            # v1: take the longest contiguous run of train groups to avoid
+            # spanning across test groups (which would leak test data into
+            # training). Full multi-window training is on the backlog.
+            train_first, train_last = _longest_contiguous_train_run(split.train_groups)
+            train_start = groups[train_first].start
+            train_end = groups[train_last].end
             inner = await _run_inner_sweep(
                 db=db, runner_factory=runner_factory,
                 session_id=session.id,

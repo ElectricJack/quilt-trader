@@ -190,3 +190,58 @@ async def test_run_cpcv_mode_select_n4_k2_yields_paths(seeded_session, db_sessio
     assert len(result.summary["path_sharpes"]) == 3
     assert "deflated_sharpe_ratio" in result.summary
     assert "probabilistic_sharpe_zero" in result.summary
+
+
+@pytest.mark.asyncio
+async def test_run_cpcv_mode_select_uses_contiguous_train_window(seeded_session, db_session, monkeypatch):
+    """For non-contiguous train_groups (e.g., (0, 2, 3) when group 1 is test),
+    the train window passed to _run_inner_sweep spans only the longest contiguous run."""
+    from coordinator.services.validation import cpcv as cpcv_mod
+    from coordinator.services.validation.sweep import InnerSweepResult
+    from coordinator.services.validation.cpcv import compute_cpcv_splits, _longest_contiguous_train_run
+
+    captured_windows: list[tuple] = []
+
+    async def fake_inner_sweep(**kwargs):
+        captured_windows.append((kwargs["date_range_start"], kwargs["date_range_end"]))
+        ids = [f"inner-{uuid.uuid4().hex[:6]}"]
+        return InnerSweepResult(
+            all_run_ids=ids, winning_run_id=ids[0],
+            winning_config={"lookback": 20}, winning_objective=1.0,
+        )
+
+    monkeypatch.setattr(cpcv_mod, "_run_inner_sweep", fake_inner_sweep)
+
+    runner_factory = AsyncMock()
+
+    async def fake_runner(run_id, bars_cache=None):
+        _complete_run(db_session, run_id, sharpe=1.0)
+        db_session.commit()
+    runner_factory.side_effect = fake_runner
+
+    await run_cpcv(
+        db=db_session, runner_factory=runner_factory,
+        session_id=seeded_session.id,
+        mode="select", n_groups=4, test_groups_per_split=2,
+        embargo=0, purge_horizon=0, parallelism=1, bar_count_estimate=400,
+        parameter_space={"lookback": [10]}, search="grid", max_trials_per_split=1,
+    )
+
+    # Verify that for each split with non-contiguous train_groups, the captured
+    # date window matches the expected longest-contiguous-run window rather than
+    # spanning from the first to last train group (which would span test groups).
+    from coordinator.services.validation.cpcv import compute_groups
+    groups = compute_groups(
+        timeline_start=seeded_session.date_range_start,
+        timeline_end=seeded_session.date_range_end,
+        bar_count=400,
+        n_groups=4,
+    )
+    splits = compute_cpcv_splits(n_groups=4, test_groups_per_split=2)
+    # captured_windows are in asyncio.as_completed order (non-deterministic),
+    # so compare as a set of (start, end) tuples.
+    expected_windows = set()
+    for split in splits:
+        train_first, train_last = _longest_contiguous_train_run(split.train_groups)
+        expected_windows.add((groups[train_first].start, groups[train_last].end))
+    assert set(captured_windows) == expected_windows

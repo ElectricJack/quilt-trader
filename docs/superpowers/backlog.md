@@ -388,6 +388,11 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
 - **Why deferred:** Pick N runs and render their metrics + equity curves side-by-side within a session at `/algorithms/:id/research/:session_id`. The natural Phase 6 once the Phase 4 results matrix exists — the matrix is "all runs", compare-view is "this specific subset".
 
+### Multi-window CPCV training (engine accepts disjoint date ranges)
+- **Surfaced by:** CPCV T9 review 2026-06-11. The CPCV mode B inner sweep "trains" on a single contiguous date range — but per LdP's CPCV protocol, the training set is the UNION of all train_groups, which can be non-contiguous in time (when k >= 2). v1 takes the longest contiguous run of train_groups per split, losing some training data.
+- **Why deferred:** the backtest engine doesn't currently accept disjoint date ranges. Adding it requires the engine to support pause/resume at group boundaries, or to run independently on each contiguous segment and aggregate fitness.
+- **What's needed:** EITHER (a) extend `BacktestRunner.run` to accept a list of `(start, end)` segment windows + an aggregator for the fitness metric; OR (b) run the inner sweep separately on each contiguous train segment and average the per-segment objective. Document the change in the CPCV spec.
+
 ---
 
 ## How to use this file

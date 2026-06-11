@@ -118,3 +118,34 @@ def test_reconstruct_paths_no_two_paths_use_same_split_for_same_group():
             key = (seg.group, seg.split)
             assert key not in seen
             seen.add(key)
+
+
+from coordinator.services.validation.cpcv import _longest_contiguous_train_run
+
+
+def test_longest_contiguous_run_single_group():
+    assert _longest_contiguous_train_run((3,)) == (3, 3)
+
+
+def test_longest_contiguous_run_all_contiguous():
+    assert _longest_contiguous_train_run((0, 1, 2, 3)) == (0, 3)
+
+
+def test_longest_contiguous_run_one_gap():
+    """For (1, 3): both runs are length 1; first wins."""
+    assert _longest_contiguous_train_run((1, 3)) == (1, 1)
+
+
+def test_longest_contiguous_run_picks_longer_when_unequal():
+    """For (0, 2, 3, 4): the (2,3,4) run is longer."""
+    assert _longest_contiguous_train_run((0, 2, 3, 4)) == (2, 4)
+
+
+def test_longest_contiguous_run_complex():
+    """For (0, 2, 3, 4, 7, 8): (2,3,4) is longer than (0,) and (7,8)."""
+    assert _longest_contiguous_train_run((0, 2, 3, 4, 7, 8)) == (2, 4)
+
+
+def test_longest_contiguous_run_rejects_empty():
+    with pytest.raises(ValueError, match="empty"):
+        _longest_contiguous_train_run(())
