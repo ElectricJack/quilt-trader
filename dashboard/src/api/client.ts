@@ -250,6 +250,7 @@ export interface ResearchJob {
   started_at: string | null;
   completed_at: string | null;
   created_at: string | null;
+  result?: unknown;
 }
 
 export interface CreateSessionRequest {

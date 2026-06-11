@@ -9,6 +9,8 @@ import {
 import { ResearchSessionSummary } from "../components/ResearchSessionSummary";
 import { ResearchJobRow } from "../components/ResearchJobRow";
 import { NewSweepModal } from "../components/NewSweepModal";
+import { CpcvResultsPanel } from "../components/cpcv/CpcvResultsPanel";
+import type { CPCVResult } from "../types";
 
 export function ResearchSessionDetail() {
   const params = useParams<{ id?: string; sessionId?: string }>();
@@ -70,11 +72,21 @@ export function ResearchSessionDetail() {
           </div>
         )}
         {jobsQ.data?.map((job) => (
-          <ResearchJobRow
-            key={job.job_id}
-            job={job}
-            onCancel={(jobId) => void cancelMut.mutate(jobId)}
-          />
+          <div key={job.job_id} className="space-y-2">
+            <ResearchJobRow
+              job={job}
+              onCancel={(jobId) => void cancelMut.mutate(jobId)}
+            />
+            {job.kind === "cpcv" && (
+              <CpcvResultsPanel
+                result={(job.result as unknown as CPCVResult | null) ?? null}
+                status={job.status}
+                progress={job.progress_pct != null
+                  ? { pct: job.progress_pct, message: job.progress_message ?? "" }
+                  : null}
+              />
+            )}
+          </div>
         ))}
       </div>
 
