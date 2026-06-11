@@ -48,15 +48,22 @@ class BacktestBarsCache:
         start: date,
         end: date,
     ) -> pd.DataFrame | None:
+        """Return rows in [start, end] inclusive, or None if no rows fall in the window.
+
+        Returns None when (source, symbol, timeframe) is not preloaded OR when
+        the preloaded frame has no rows that fall inside the requested window.
+        Callers can use `if result is None` to detect "no usable data".
+        """
         df = self._bars.get((source, symbol, timeframe))
         if df is None:
             return None
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end) + pd.Timedelta(hours=23, minutes=59, seconds=59)
-        return df.loc[start_ts:end_ts]
-
-    def memory_estimate_bytes(self) -> int:
-        return sum(df.memory_usage(deep=True).sum() for df in self._bars.values())
+        result = df.loc[start_ts:end_ts]
+        return result if not result.empty else None
 
     def has(self, source: str, symbol: str, timeframe: str) -> bool:
         return (source, symbol, timeframe) in self._bars
+
+    def memory_estimate_bytes(self) -> int:
+        return sum(df.memory_usage(deep=True).sum() for df in self._bars.values())

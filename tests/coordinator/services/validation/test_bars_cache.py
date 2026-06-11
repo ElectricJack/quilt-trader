@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date
 import pandas as pd
 import pytest
 
@@ -64,3 +64,20 @@ def test_memory_estimate_in_bytes():
     cache = BacktestBarsCache()
     cache._bars[("polygon", "SPY", "1day")] = _df("2024-01-01", "2024-12-31")
     assert cache.memory_estimate_bytes() > 0
+
+
+def test_has_returns_membership_correctly():
+    cache = BacktestBarsCache()
+    cache._bars[("polygon", "SPY", "1day")] = _df("2024-01-01", "2024-12-31")
+    assert cache.has("polygon", "SPY", "1day")
+    assert not cache.has("polygon", "QQQ", "1day")
+    assert not cache.has("alpaca", "SPY", "1day")
+
+
+def test_get_returns_none_when_window_outside_preloaded_range():
+    """Preloaded key but the requested window has no rows -> None (not empty)."""
+    cache = BacktestBarsCache()
+    cache._bars[("polygon", "SPY", "1day")] = _df("2024-06-01", "2024-06-30")
+    # Window entirely before the preloaded range
+    result = cache.get("polygon", "SPY", "1day", date(2024, 1, 1), date(2024, 1, 31))
+    assert result is None
