@@ -126,3 +126,67 @@ async def test_run_cpcv_rejects_select_without_required_params_early(seeded_sess
             embargo=0, purge_horizon=0, parallelism=1,
         )
     runner_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_cpcv_mode_select_n4_k2_yields_paths(seeded_session, db_session, monkeypatch):
+    """Mode B with N=4, k=2 → 6 splits, 3 reconstructed paths."""
+    from coordinator.services.validation import cpcv as cpcv_mod
+    from coordinator.services.validation.sweep import InnerSweepResult
+
+    # Stub the inner sweep so we don't recursively dispatch dozens of backtests.
+    async def fake_inner_sweep(**kwargs):
+        # Return 3 trials worth of run IDs and a synthetic winner.
+        ids = [f"inner-{uuid.uuid4().hex[:6]}" for _ in range(3)]
+        return InnerSweepResult(
+            all_run_ids=ids,
+            winning_run_id=ids[0],
+            winning_config={"lookback": 20},
+            winning_objective=1.2,
+        )
+
+    monkeypatch.setattr(cpcv_mod, "_run_inner_sweep", fake_inner_sweep)
+
+    runner_factory = AsyncMock()
+    test_seg_runs: list[str] = []
+
+    async def fake_runner(run_id, bars_cache=None):
+        test_seg_runs.append(run_id)
+        _complete_run(db_session, run_id, sharpe=0.5 + len(test_seg_runs) * 0.1)
+        db_session.commit()
+
+    runner_factory.side_effect = fake_runner
+
+    result = await run_cpcv(
+        db=db_session,
+        runner_factory=runner_factory,
+        session_id=seeded_session.id,
+        mode="select",
+        n_groups=4,
+        test_groups_per_split=2,
+        embargo=0,
+        purge_horizon=0,
+        parallelism=1,
+        bar_count_estimate=400,
+        parameter_space={"lookback": [10, 20, 30]},
+        search="grid",
+        max_trials_per_split=3,
+        objective="sharpe_ratio",
+        objective_direction="maximize",
+        seed=0,
+    )
+    assert result.mode == "select"
+    # C(4, 2) = 6 splits
+    assert len(result.splits) == 6
+    for split in result.splits:
+        assert split.selected_config == {"lookback": 20}
+        assert len(split.oos_segment_run_ids) == 2
+    # C(3, 1) = 3 paths
+    assert len(result.paths) == 3
+    for path in result.paths:
+        groups_in_path = [seg.group for seg in path]
+        assert sorted(groups_in_path) == [0, 1, 2, 3]
+    assert "path_sharpes" in result.summary
+    assert len(result.summary["path_sharpes"]) == 3
+    assert "deflated_sharpe_ratio" in result.summary
+    assert "probabilistic_sharpe_zero" in result.summary

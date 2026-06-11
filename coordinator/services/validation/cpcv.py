@@ -150,6 +150,8 @@ from sqlalchemy.orm import Session
 from coordinator.database.models import BacktestRun, OptimizationSession
 from coordinator.services.validation.bars_cache import BacktestBarsCache
 from coordinator.services.validation.bootstrap import block_bootstrap_sharpe
+from coordinator.services.validation.sweep import _run_inner_sweep
+from coordinator.services.validation.multi_test import deflated_sharpe, probabilistic_sharpe
 
 
 @dataclass
@@ -344,5 +346,165 @@ async def _run_mode_select(
     parallelism, seed, bars_cache, progress_callback,
     result: CPCVResult, test_groups_per_split: int,
 ) -> None:
-    """Implemented in Task 9."""
-    raise NotImplementedError("mode='select' implemented in Task 9")
+    splits = compute_cpcv_splits(
+        n_groups=len(groups),
+        test_groups_per_split=test_groups_per_split,
+    )
+    sem = asyncio.Semaphore(parallelism)
+    all_run_ids_completed: list[str] = []
+
+    async def _process_split(split: Split) -> SplitResult:
+        async with sem:
+            train_start = groups[split.train_groups[0]].start
+            train_end = groups[split.train_groups[-1]].end
+            inner = await _run_inner_sweep(
+                db=db, runner_factory=runner_factory,
+                session_id=session.id,
+                algorithm_id=session.algorithm_id,
+                date_range_start=train_start, date_range_end=train_end,
+                initial_cash=session.initial_cash,
+                cost_profile=session.cost_profile,
+                benchmark_source=session.benchmark_source,
+                benchmark_symbol=session.benchmark_symbol,
+                mtm_realism=session.mtm_realism,
+                base_config=session.base_config or {},
+                parameter_space=parameter_space,
+                search=search,
+                max_trials=max_trials_per_split,
+                parallelism=1,  # outer split loop handles parallelism
+                seed=seed + split.index,
+                objective=objective,
+                objective_direction=objective_direction,
+                progress_callback=None,
+                bars_cache=bars_cache,
+            )
+
+            oos_runs: dict[int, str] = {}
+            for g_idx in split.test_groups:
+                rid = f"cpcv-oos-{uuid.uuid4().hex[:8]}"
+                g = groups[g_idx]
+                db.add(BacktestRun(
+                    id=rid, algorithm_id=session.algorithm_id,
+                    optimization_session_id=session.id,
+                    status="queued",
+                    config_overrides=inner.winning_config or {},
+                    date_range_start=g.start, date_range_end=g.end,
+                ))
+                db.commit()
+                await runner_factory(rid, bars_cache=bars_cache)
+                oos_runs[g_idx] = rid
+
+            return SplitResult(
+                index=split.index,
+                train_groups=split.train_groups,
+                test_groups=split.test_groups,
+                selected_config=inner.winning_config,
+                selected_objective=inner.winning_objective,
+                inner_trial_run_ids=inner.all_run_ids,
+                oos_segment_run_ids=oos_runs,
+            )
+
+    split_results: list[SplitResult] = []
+    tasks = [_process_split(s) for s in splits]
+    for coro in asyncio.as_completed(tasks):
+        sr = await coro
+        split_results.append(sr)
+        all_run_ids_completed.extend(sr.inner_trial_run_ids)
+        all_run_ids_completed.extend(sr.oos_segment_run_ids.values())
+        if progress_callback:
+            progress_callback(
+                len(split_results) / len(splits),
+                f"split {len(split_results)}/{len(splits)} complete",
+                all_run_ids_completed,
+            )
+
+    # Sort by split index for deterministic output
+    split_results.sort(key=lambda s: s.index)
+    result.splits = split_results
+
+    # Path reconstruction
+    split_to_run_ids = {sr.index: sr.oos_segment_run_ids for sr in split_results}
+    paths = reconstruct_paths(
+        splits=splits,
+        n_groups=len(groups),
+        test_groups_per_split=test_groups_per_split,
+        split_to_run_ids=split_to_run_ids,
+    )
+    result.paths = paths
+
+    # Per-path Sharpe
+    path_sharpes: list[float] = []
+    path_returns_for_dsr: list[float] = []
+    for path in paths:
+        path_returns: list[float] = []
+        for seg in path:
+            row = db.query(BacktestRun).filter_by(id=seg.run_id).one()
+            if row.equity_curve:
+                equity = pd.Series([float(p.get("equity", 1.0)) for p in row.equity_curve])
+                rets = equity.pct_change().dropna().tolist()
+                path_returns.extend(rets)
+        if path_returns:
+            arr = pd.Series(path_returns)
+            std = arr.std(ddof=1)
+            sr = float(arr.mean() / std * (252 ** 0.5)) if std > 0 else 0.0
+            path_sharpes.append(sr)
+        else:
+            path_sharpes.append(0.0)
+
+    # Pick best path (highest Sharpe) for DSR's moment input
+    if path_sharpes:
+        best_idx = max(range(len(path_sharpes)), key=lambda i: path_sharpes[i])
+        best_returns: list[float] = []
+        for seg in paths[best_idx]:
+            row = db.query(BacktestRun).filter_by(id=seg.run_id).one()
+            if row.equity_curve:
+                equity = pd.Series([float(p.get("equity", 1.0)) for p in row.equity_curve])
+                best_returns.extend(equity.pct_change().dropna().tolist())
+        path_returns_for_dsr = best_returns
+
+    n = len(path_sharpes)
+    mean_p = sum(path_sharpes) / n if n > 0 else 0.0
+    if n == 0:
+        median_p = 0.0
+    else:
+        ss = sorted(path_sharpes)
+        median_p = ss[n // 2] if n % 2 == 1 else (ss[n // 2 - 1] + ss[n // 2]) / 2.0
+    std_p = (sum((s - mean_p) ** 2 for s in path_sharpes) / max(n - 1, 1)) ** 0.5
+
+    ci_lower, ci_upper = 0.0, 0.0
+    if path_returns_for_dsr:
+        equity = pd.Series((1.0 + pd.Series(path_returns_for_dsr)).cumprod().values)
+        ci = block_bootstrap_sharpe(
+            equity=equity,
+            block_size=max(20, len(path_returns_for_dsr) // 20),
+            n_resamples=2000, confidence=0.95,
+            periods_per_year=252, seed=seed,
+        )
+        ci_lower, ci_upper = ci.lower, ci.upper
+
+    dsr = 0.0
+    psr_zero = 0.0
+    if path_returns_for_dsr:
+        n_trials = len(splits) * max_trials_per_split
+        dsr = deflated_sharpe(
+            sharpes=path_sharpes,
+            returns_of_best=path_returns_for_dsr,
+            n_trials=n_trials,
+            periods_per_year=252,
+        )
+        psr_zero = probabilistic_sharpe(
+            returns=path_returns_for_dsr,
+            sharpe_benchmark=0.0,
+            periods_per_year=252,
+        )
+
+    result.summary = {
+        "path_sharpes": path_sharpes,
+        "mean_path_sharpe": mean_p,
+        "median_path_sharpe": median_p,
+        "std_path_sharpe": std_p,
+        "bootstrap_ci_lower": ci_lower,
+        "bootstrap_ci_upper": ci_upper,
+        "deflated_sharpe_ratio": dsr,
+        "probabilistic_sharpe_zero": psr_zero,
+    }
