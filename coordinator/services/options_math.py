@@ -35,6 +35,13 @@ def bs_price(
             return max(0.0, S - K)
         return max(0.0, K - S)
 
+    if sigma <= 0 or S <= 0 or K <= 0:
+        # Deterministic (zero-vol) limit: discounted intrinsic, floored at 0.
+        discount = math.exp(-r * T)
+        if option_type == "call":
+            return max(0.0, S - K * discount)
+        return max(0.0, K * discount - S)
+
     d1, d2 = _d1d2(S, K, T, r, sigma)
     discount = math.exp(-r * T)
 
@@ -57,7 +64,11 @@ def bs_iv(
     if price <= 0 or T <= 1e-10 or S <= 0 or K <= 0:
         return None
 
-    intrinsic = max(0.0, S - K) if option_type == "call" else max(0.0, K - S)
+    discount = math.exp(-r * T)
+    if option_type == "call":
+        intrinsic = max(0.0, S - K * discount)
+    else:
+        intrinsic = max(0.0, K * discount - S)
     if price < intrinsic - tol:
         return None
 

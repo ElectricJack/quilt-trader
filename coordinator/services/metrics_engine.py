@@ -53,37 +53,47 @@ class MetricsEngine:
             annual_vol = 0
             sharpe = 0
 
-        # Sortino (downside deviation)
-        downside = [r for r in returns if r < 0]
-        if len(downside) > 1:
-            downside_var = sum(r ** 2 for r in downside) / len(downside)
+        # Sortino — standard definition: downside deviation is the root mean
+        # of min(r, 0)^2 over ALL returns (not just the negative ones).
+        if len(returns) > 1:
+            downside_var = sum(min(r, 0.0) ** 2 for r in returns) / len(returns)
             downside_dev = math.sqrt(downside_var) * math.sqrt(252)
             sortino = (mean_return * 252 - risk_free_rate) / downside_dev if downside_dev > 0 else 0
         else:
             sortino = 0
 
-        # Max drawdown
+        # Max drawdown. Duration is measured peak-to-recovery in bars:
+        # current_dd_start holds the INDEX OF THE PEAK preceding the open
+        # drawdown (None = not in drawdown). Using None as the sentinel keeps
+        # index 0 valid as a peak; an unrecovered drawdown is flushed at the
+        # end of the series.
         peak = equities[0]
+        peak_index = 0
         max_dd_pct = 0
         max_dd_dollars = 0
         max_dd_duration = 0
-        current_dd_start = 0
+        current_dd_start = None
 
         for i, eq in enumerate(equities):
             if eq > peak:
-                if current_dd_start > 0:
-                    dd_dur = i - current_dd_start
-                    max_dd_duration = max(max_dd_duration, dd_dur)
+                if current_dd_start is not None:
+                    max_dd_duration = max(max_dd_duration, i - current_dd_start)
+                    current_dd_start = None
                 peak = eq
-                current_dd_start = 0
+                peak_index = i
             else:
                 dd = (peak - eq) / peak * 100 if peak > 0 else 0
                 dd_abs = peak - eq
                 if dd > max_dd_pct:
                     max_dd_pct = dd
                     max_dd_dollars = dd_abs
-                if current_dd_start == 0:
-                    current_dd_start = i
+                if eq < peak and current_dd_start is None:
+                    current_dd_start = peak_index  # anchor at the actual peak, not the prior point
+
+        if current_dd_start is not None:
+            max_dd_duration = max(
+                max_dd_duration, len(equities) - 1 - current_dd_start
+            )
 
         calmar = annualized / max_dd_pct if max_dd_pct > 0 else 0
 

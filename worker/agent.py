@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import sys
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Optional
 
@@ -42,7 +43,11 @@ class WorkerAgent:
         self._data_client = data_client
         self.router = MessageRouter()
         self._running_instances: dict[str, Any] = {}
-        self._pending_signal_responses: dict[str, asyncio.Future] = {}
+        self._pending_signal_responses: dict[str, deque] = {}
+        # Per-instance chain tail for tick serialization + strong refs so
+        # fire-and-forget tasks aren't garbage-collected mid-flight.
+        self._instance_tick_tails: dict[str, asyncio.Task] = {}
+        self._background_tasks: set[asyncio.Task] = set()
         self.register_handlers()
 
     async def _send(self, data: dict) -> None:
@@ -109,8 +114,11 @@ class WorkerAgent:
         })
 
     async def request_signal_approval(self, instance_id: str, signal: dict) -> dict:
+        # Responses carry no request id, so requests and responses for an
+        # instance pair FIFO; a deque (not a single slot) keeps concurrent
+        # requests from orphaning each other's futures.
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending_signal_responses[instance_id] = fut
+        self._pending_signal_responses.setdefault(instance_id, deque()).append(fut)
         await self._send({"type": "signal_request", "instance_id": instance_id, "signal": signal,
                          "timestamp": datetime.now(timezone.utc).isoformat()})
         try:
@@ -118,7 +126,14 @@ class WorkerAgent:
         except asyncio.TimeoutError:
             return {"approved": False, "reason": "Signal approval timed out"}
         finally:
-            self._pending_signal_responses.pop(instance_id, None)
+            queue = self._pending_signal_responses.get(instance_id)
+            if queue is not None:
+                try:
+                    queue.remove(fut)
+                except ValueError:
+                    pass  # already consumed by _handle_signal_response
+                if not queue:
+                    self._pending_signal_responses.pop(instance_id, None)
 
     async def send_state_checkpoint(self, instance_id: str, state: dict) -> None:
         await self._send({"type": "state_checkpoint", "instance_id": instance_id, "state": state,
@@ -196,8 +211,14 @@ class WorkerAgent:
 
     async def _handle_signal_response(self, message: dict) -> None:
         instance_id = message.get("instance_id")
-        fut = self._pending_signal_responses.get(instance_id)
-        if fut is not None and not fut.done():
+        queue = self._pending_signal_responses.get(instance_id)
+        fut = None
+        while queue:
+            candidate = queue.popleft()
+            if not candidate.done():
+                fut = candidate
+                break
+        if fut is not None:
             fut.set_result(message)
         else:
             logger.warning("Received signal_response for %s with no pending request", instance_id)
@@ -220,8 +241,29 @@ class WorkerAgent:
             if runtime is None:
                 logger.debug("tick_batch entry for unknown instance %s; ignoring", inst_id)
                 continue
-            # Per-instance task: a slow algorithm doesn't block sibling instances.
-            asyncio.create_task(runtime.on_tick_batch_entry(entry))
+            # Entries for ONE instance are chained (strict arrival order);
+            # different instances still run concurrently, so a slow algorithm
+            # doesn't block its siblings.
+            prev = self._instance_tick_tails.get(inst_id)
+            task = asyncio.create_task(
+                self._run_tick_entry_serialized(prev, runtime, entry, inst_id)
+            )
+            self._instance_tick_tails[inst_id] = task
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+    async def _run_tick_entry_serialized(
+        self, prev: "asyncio.Task | None", runtime: Any, entry: dict, inst_id: str,
+    ) -> None:
+        if prev is not None:
+            try:
+                await prev
+            except Exception:
+                pass  # the previous entry's failure was already logged below
+        try:
+            await runtime.on_tick_batch_entry(entry)
+        except Exception:
+            logger.exception("tick_batch entry failed for instance %s", inst_id)
 
     def _has_git(self, repo_root: str) -> bool:
         git_dir = os.path.join(repo_root, ".git")

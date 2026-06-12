@@ -1,5 +1,6 @@
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -98,14 +99,16 @@ class ThetaDataProvider:
             if isinstance(r, dict) and "ms_of_day" in r:
                 bar_date = r.get("date", "")
                 ms = r.get("ms_of_day", 0)
+                # ms_of_day is milliseconds since midnight US/Eastern (wall
+                # clock). timedelta addition on a ZoneInfo-aware datetime is
+                # wall-clock arithmetic, so this also absorbs 24:00 prints
+                # (ms=86400000 → next day 00:00) without crashing.
                 ts = datetime.combine(
-                    date.fromisoformat(str(bar_date)), datetime.min.time(), tzinfo=timezone.utc
-                )
-                ts = ts.replace(
-                    hour=ms // 3600000,
-                    minute=(ms % 3600000) // 60000,
-                    second=(ms % 60000) // 1000,
-                )
+                    date.fromisoformat(str(bar_date)),
+                    datetime.min.time(),
+                    tzinfo=ZoneInfo("America/New_York"),
+                ) + timedelta(milliseconds=ms)
+                ts = ts.astimezone(timezone.utc)
                 bars.append({
                     "timestamp": ts.isoformat(),
                     "open": r.get("open", 0) / 100,

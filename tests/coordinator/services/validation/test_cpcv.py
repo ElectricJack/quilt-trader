@@ -248,8 +248,10 @@ async def test_run_cpcv_mode_select_uses_contiguous_train_window(seeded_session,
 
 
 @pytest.mark.asyncio
-async def test_run_cpcv_mode_fixed_applies_embargo_to_each_test_window(seeded_session, db_session):
-    """embargo=10 → BacktestRun.date_range_start is group.start + 10 days."""
+async def test_run_cpcv_mode_fixed_test_windows_cover_full_groups(seeded_session, db_session):
+    """Test windows are never shrunk: each segment runs over its full group
+    window regardless of embargo (embargo excludes TRAIN data, and mode A
+    has no training)."""
     from coordinator.database.models import BacktestRun
     runner_factory = AsyncMock()
 
@@ -268,15 +270,13 @@ async def test_run_cpcv_mode_fixed_applies_embargo_to_each_test_window(seeded_se
         mode="fixed", n_groups=4, test_groups_per_split=1,
         embargo=10, purge_horizon=0, parallelism=1, bar_count_estimate=400,
     )
-    # For each of the 4 groups, the captured start should equal group.start + 10 days
-    # (approximate; we just assert the offset is at least applied)
     from coordinator.services.validation.cpcv import compute_groups
     expected_groups = compute_groups(
         timeline_start=seeded_session.date_range_start,
         timeline_end=seeded_session.date_range_end,
         bar_count=400, n_groups=4,
     )
-    expected_starts = {g.start + timedelta(days=10) for g in expected_groups}
+    expected_starts = {g.start for g in expected_groups}
     # SQLite may return datetime.datetime; normalise to date for comparison.
     actual_starts = {
         row[0].date() if hasattr(row[0], "date") else row[0]
@@ -286,13 +286,20 @@ async def test_run_cpcv_mode_fixed_applies_embargo_to_each_test_window(seeded_se
 
 
 @pytest.mark.asyncio
-async def test_run_cpcv_mode_select_applies_embargo_to_oos_segments(seeded_session, db_session, monkeypatch):
-    """Mode B test segments get embargo offset on their start dates."""
+async def test_run_cpcv_mode_select_oos_windows_full_size_embargo_on_train(seeded_session, db_session, monkeypatch):
+    """Mode B: OOS test windows start at their group starts (full-size);
+    embargo is applied by shifting the TRAIN window start where a test
+    group immediately precedes it (Lopez de Prado)."""
     from coordinator.services.validation import cpcv as cpcv_mod
     from coordinator.services.validation.sweep import InnerSweepResult
     from coordinator.database.models import BacktestRun
 
+    captured_train_windows: list = []
+
     async def fake_inner_sweep(**kwargs):
+        captured_train_windows.append(
+            (kwargs["date_range_start"], kwargs["date_range_end"])
+        )
         ids = [f"inner-{uuid.uuid4().hex[:6]}"]
         return InnerSweepResult(
             all_run_ids=ids, winning_run_id=ids[0],
@@ -318,17 +325,25 @@ async def test_run_cpcv_mode_select_applies_embargo_to_oos_segments(seeded_sessi
         embargo=EMBARGO, purge_horizon=0, parallelism=1, bar_count_estimate=400,
         parameter_space={"x": [1]}, search="grid", max_trials_per_split=1,
     )
-    # Every captured OOS window should have date_range_start >= group.start + 7 days
     from coordinator.services.validation.cpcv import compute_groups
     expected_groups = compute_groups(
         timeline_start=seeded_session.date_range_start,
         timeline_end=seeded_session.date_range_end,
         bar_count=400, n_groups=4,
     )
-    expected_starts = {g.start + timedelta(days=EMBARGO) for g in expected_groups}
-    # SQLite may return datetime.datetime; normalise to date for comparison.
+    # OOS windows are full-size: starts equal group starts exactly.
+    expected_starts = {g.start for g in expected_groups}
     actual_starts = {
         row[0].date() if hasattr(row[0], "date") else row[0]
         for row in captured
     }
     assert actual_starts == expected_starts
+    # Embargo lands on the train side: any train window whose preceding
+    # group is a test group must start >= that group's end + EMBARGO days.
+    group_starts = sorted(g.start for g in expected_groups)
+    for train_start, _train_end in captured_train_windows:
+        ts = train_start.date() if hasattr(train_start, "date") else train_start
+        if ts not in expected_starts:
+            # shifted start → the shift must be exactly purge(0) + embargo
+            preceding = max(s for s in group_starts if s <= ts)
+            assert ts == preceding + timedelta(days=EMBARGO)

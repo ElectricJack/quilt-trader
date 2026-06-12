@@ -400,6 +400,53 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+## Correctness audit follow-ups (2026-06-11)
+
+> **Deferred from:** [2026-06-11-correctness-audit-findings.md](research/2026-06-11-correctness-audit-findings.md) and its fix plan [2026-06-11-correctness-audit-fixes.md](plans/2026-06-11-correctness-audit-fixes.md). The 22 findings (F1–F20b) were fixed on branch `audit-fixes` with 34 pinning tests. Items below were explicitly scoped out of the fixes or surfaced by the per-task spec/quality reviews. Grouped by module; each is intentionally small.
+
+### Engine / asset services
+- [ ] Non-options callers of `asset_services/base.py::_bar_lookup` still use the inclusive (legacy) cutoff — pass `timeframe_seconds` from equity/crypto `get_price` call sites and pin with tests (residual F1-family seam outside the engine).
+- [ ] `_build_union_clock` keep="first" union rows still mix symbols' OHLC; harmless for fills after F3 (every symbol resolves its own frame) but consider a symbol-tagged clock for observers that read clock-row OHLC.
+- [ ] `bs_greeks` input guard doesn't reject `S <= 0` / `K <= 0` (`options_math.py:~95`) — `math.log(S/K)` raises or returns garbage; add the same positive-finite guard as `bs_price`.
+- [ ] `market_value == 0` is used as an unrealized-PnL "no data" sentinel across asset services — a genuinely worthless option is indistinguishable from missing data. Use `None` sentinel.
+- [ ] Fill loop / `_get_underlying_price` pick the first matching frame in dict order when multiple sources hold a symbol — make selection deterministic (prefer the manifest-declared source).
+- [ ] Option contract bars hardcode the `"1day"` timeframe string at multiple call sites — extract a named constant.
+- [ ] The duration-subtract `searchsorted` cutoff idiom is duplicated 3× across asset services — extract a shared helper.
+
+### Metrics / bootstrap
+- [ ] `metrics_engine` key `max_drawdown_duration_days` holds BARS, not days (label mismatch for intraday curves) — rename or convert.
+- [ ] One-line comment explaining the intentional Sharpe `ddof=1` vs Sortino population-mean denominator asymmetry in `metrics_engine.py`.
+- [ ] `bootstrap._annualized_sharpe` doesn't subtract the risk-free rate, unlike `metrics_engine` — API asymmetry; align or document.
+- [ ] Bootstrap CIs are silently degenerate (zero-width) when `block_size >= n` or the series is empty — emit a warning or a `MetricCI.degenerate` flag.
+- [ ] `bootstrap_metrics` derives block size from `(len(equity)-1)//20` while helpers use `len(returns)//20` — same value, two expressions; unify.
+
+### CPCV / multi-test
+- [ ] Introduce a dedicated `CPCVSegmentMissingError` instead of bare `ValueError` for missing-equity-curve segments (F11) so callers can catch it specifically.
+- [ ] `_run_mode_fixed` retains an unused `embargo` kwarg after F12 (mode A has no train windows) — drop it or document why it's accepted.
+- [ ] Restore the "bars approximated as days" caveat comment in `cpcv.py` group-boundary math.
+- [ ] Zero-width train-window clamp (`train_end < train_start`) deserves a logged warning — a fully-purged train window means the split contributes a meaningless inner sweep.
+- [ ] Mode-B CPCV tests never exercise the train-END purge branch — add a `purge_horizon > 0` case where the train run precedes a test group.
+- [ ] `docs/superpowers/specs/2026-06-11-cpcv-design.md` (lines ~50, 74, 103, 404) still describes the old embargo-on-test semantics superseded by F12 — update or mark superseded.
+- [ ] CLI help text "Embargo bars between train and test" (`sdk/cli/commands/research.py:~285`) is now wrong-sided — embargo excludes train data AFTER the test window.
+- [ ] `multi_test.py` cleanup: comment uses `n` where code uses `n_tested`; Bonferroni uses `<` while BH uses `<=`; refresh the module docstring for the reverse-running-min BH implementation.
+
+### Data layer
+- [ ] `hypothesis` missing from the venv — `tests/coordinator/services/datasets/test_forward_bias.py` cannot collect. Install or vendor the dependency.
+- [ ] `storage.py` dedupe guard `if "knowledge_date" in df.columns` is dead code (normalize always synthesizes the column) — replace with a loud assertion so a future normalize regression fails fast.
+- [ ] Dataset parquet files grow monotonically under append-only bitemporal dedupe — define a compaction/partitioning policy; consider an opt-in `keep="first"`+warn mode for forensic re-downloads.
+- [ ] Extract a shared `US_EASTERN = ZoneInfo("America/New_York")` constant — three call sites construct it inline (theta intraday, tradier daily, +1).
+- [ ] `theta.py::_fetch_eod` still stamps bars at midnight UTC — same F15-class wrong-wall-clock gap fixed for intraday; needs the ET-open treatment.
+
+### Worker
+- [ ] Add a request-id round-trip to the `signal_request`/`signal_response` WebSocket protocol so `worker/agent.py` can retire the per-instance FIFO future-pairing heuristic (F17 fix is correct but ordering-dependent by design).
+- [ ] Prune `_instance_tick_tails` on instance stop (`pop(instance_id, None)` next to the `_running_instances.pop`) — entries currently live for the agent's lifetime.
+- [ ] Tick-chain backpressure: serialized per-instance tick tasks (F18) can queue unboundedly if an algo's `on_tick` is slower than the feed — add a queue-depth metric and a drop/coalesce policy; also drain `_background_tasks` on shutdown and document CancelledError propagation through the chain.
+
+### SDK
+- [ ] `SignalLeg.symbol` is unvalidated (empty string passes); order_type/price cross-field invariants unenforced (LIMIT without `limit_price`, stop prices on MARKET); `Signal` container itself has no validation. F19 fixed quantity/price scalars only.
+
+---
+
 ## How to use this file
 
 When **deferring work** in a new spec:

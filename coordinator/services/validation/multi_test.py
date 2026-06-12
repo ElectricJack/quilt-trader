@@ -63,6 +63,13 @@ def correct(
             return []
         order = sorted(range(n), key=lambda i: raw_p_values[i])
         sorted_p = [raw_p_values[i] for i in order]
+        # BH adjusted p-values: running minimum from the largest rank down
+        # enforces monotonicity (adj[k] = min(adj[k+1], p[k] * n / (k+1))).
+        adjusted_sorted = [0.0] * n
+        running = 1.0
+        for k in range(n - 1, -1, -1):
+            running = min(running, sorted_p[k] * n_tested / (k + 1))
+            adjusted_sorted[k] = min(running, 1.0)
         thresholds = [alpha * (k + 1) / n_tested for k in range(n)]
         # Find largest k where sorted_p[k] <= thresholds[k]
         k_max = -1
@@ -70,12 +77,11 @@ def correct(
             if sorted_p[k] <= thresholds[k]:
                 k_max = k
         significant_set = set(order[: k_max + 1]) if k_max >= 0 else set()
+        corrected_by_index = {order[k]: adjusted_sorted[k] for k in range(n)}
         return [
             CorrectedResult(
                 raw_p=raw_p_values[i],
-                corrected_p=raw_p_values[i] * n_tested / (rank_in_sorted + 1)
-                if (rank_in_sorted := next(idx for idx, j in enumerate(order) if j == i)) is not None
-                else raw_p_values[i],
+                corrected_p=corrected_by_index[i],
                 significant=(i in significant_set),
                 method=method,
             )
