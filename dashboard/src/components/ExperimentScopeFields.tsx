@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useCostProfiles } from "../api/hooks";
 
 interface Props {
   startDate: string;            // ISO YYYY-MM-DD or ""
@@ -39,6 +40,12 @@ export function ExperimentScopeFields(props: Props) {
     benchmarkSymbol, benchmarkSource, mtmRealism,
     onChange, onValidityChange, disabled,
   } = props;
+
+  const { data: costProfiles } = useCostProfiles();
+  const profileOptions = (() => {
+    const base = costProfiles && costProfiles.length > 0 ? costProfiles : ["default"];
+    return costProfile && !base.includes(costProfile) ? [costProfile, ...base] : base;
+  })();
 
   // Notify parent of validity whenever inputs change.
   useEffect(() => {
@@ -99,11 +106,15 @@ export function ExperimentScopeFields(props: Props) {
           <label htmlFor="sf-cost" className="text-sm text-gray-300">
             Cost profile <span className="text-red-400">*</span>
           </label>
-          <input
-            id="sf-cost" type="text" value={costProfile} disabled={disabled}
+          <select
+            id="sf-cost" value={costProfile} disabled={disabled}
             onChange={(e) => emit({ costProfile: e.target.value })}
             className={input}
-          />
+          >
+            {profileOptions.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-2">

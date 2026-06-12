@@ -32,6 +32,7 @@ vi.mock("../api/hooks", async (importOriginal) => {
       ],
       isLoading: false,
     }),
+    useCostProfiles: () => ({ data: ["default"] }),
   };
 });
 

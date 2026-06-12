@@ -32,6 +32,7 @@ from coordinator.services.validation.report import (
     ReportInputs,
     build_html_report,
 )
+from coordinator.services.validation.cost_model import list_profile_names
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -223,6 +224,12 @@ async def _resolve_manifest_path_from_algorithm(
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get("/cost-profiles", response_model=list[str])
+async def list_cost_profiles() -> list[str]:
+    """Names of available cost-model profiles (YAML files on disk)."""
+    return list_profile_names()
 
 
 @router.post("/sessions", response_model=SessionResponse)

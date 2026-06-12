@@ -631,6 +631,17 @@ async def test_list_sessions_status_multi_value(test_client, db_session_factory,
 
 
 @pytest.mark.asyncio
+async def test_list_cost_profiles_returns_yaml_names(test_app):
+    from httpx import ASGITransport, AsyncClient
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as ac:
+        r = await ac.get("/api/research/cost-profiles")
+    assert r.status_code == 200
+    names = r.json()
+    assert isinstance(names, list)
+    assert "default" in names
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_limit(test_client, db_session_factory, seeded_algorithm):
     async with db_session_factory() as s:
         for i in range(7):

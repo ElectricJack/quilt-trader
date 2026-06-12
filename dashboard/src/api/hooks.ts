@@ -1370,6 +1370,16 @@ export function useWebSocketTopic<T = unknown>(topic: string | null): T | null {
   return latest;
 }
 
+// ── Cost Profiles ──
+
+export function useCostProfiles() {
+  return useQuery({
+    queryKey: ["cost-profiles"] as const,
+    queryFn: () => api.listCostProfiles(),
+    staleTime: 5 * 60_000,
+  });
+}
+
 // ── CPCV ──
 
 export function useCreateCpcvJob() {

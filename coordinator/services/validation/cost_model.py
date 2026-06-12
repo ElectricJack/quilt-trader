@@ -48,3 +48,7 @@ def load_named_profile(name: str) -> CostModelProfile:
     if not path.exists():
         raise FileNotFoundError(f"Cost profile not found: {path}")
     return CostModelProfile.from_yaml(path)
+
+
+def list_profile_names() -> list[str]:
+    return sorted(p.stem for p in _PROFILES_DIR.glob("*.yaml"))

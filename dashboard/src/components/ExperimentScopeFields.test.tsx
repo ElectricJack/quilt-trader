@@ -2,6 +2,11 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ExperimentScopeFields } from "./ExperimentScopeFields";
 
+vi.mock("../api/hooks", async () => {
+  const actual = await vi.importActual<object>("../api/hooks");
+  return { ...actual, useCostProfiles: () => ({ data: ["default", "ibkr"] }) };
+});
+
 const baseProps = {
   startDate: "",
   endDate: "",
@@ -128,5 +133,11 @@ describe("ExperimentScopeFields", () => {
       />,
     );
     expect(onValidityChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("renders cost profile as a select fed by the cost-profiles endpoint", () => {
+    render(<ExperimentScopeFields {...baseProps} />);
+    const select = screen.getByLabelText(/cost profile/i);
+    expect(select.tagName).toBe("SELECT");
   });
 });

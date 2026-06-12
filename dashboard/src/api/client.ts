@@ -1346,6 +1346,10 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
     );
   },
+
+  listCostProfiles(): Promise<string[]> {
+    return request<string[]>("/api/research/cost-profiles");
+  },
 };
 
 // ── U5: live subscriptions + compare ──
