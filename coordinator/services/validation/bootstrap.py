@@ -40,6 +40,9 @@ def _max_drawdown(equity_arr: np.ndarray) -> float:
 
 def _block_resample(returns: np.ndarray, block_size: int, rng: np.random.Generator) -> np.ndarray:
     n = returns.size
+    if n == 0:
+        return returns
+    block_size = min(block_size, n)  # short series: cap at series length
     n_blocks = int(np.ceil(n / block_size))
     starts = rng.integers(0, n - block_size + 1, size=n_blocks)
     out = np.concatenate([returns[s : s + block_size] for s in starts])
