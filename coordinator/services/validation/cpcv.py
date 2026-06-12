@@ -297,17 +297,15 @@ async def _run_mode_fixed(
     async def _one(group: Group) -> tuple[int, str]:
         async with sem:
             run_id = f"cpcv-{uuid.uuid4().hex[:8]}"
-            embargo_offset = timedelta(days=embargo)  # v1: bars approximated as days
-            test_start = group.start + embargo_offset
-            # guard: test_start must not exceed group.end
-            if test_start > group.end:
-                test_start = group.end
+            # Test windows are NEVER shrunk (Lopez de Prado): purge/embargo
+            # exclude TRAIN data near test boundaries, and mode A has no
+            # training — every group is evaluated over its full window.
             db.add(BacktestRun(
                 id=run_id, algorithm_id=session.algorithm_id,
                 optimization_session_id=session.id,
                 status="queued",
                 config_overrides=session.base_config or {},
-                date_range_start=test_start,
+                date_range_start=group.start,
                 date_range_end=group.end,
             ))
             db.commit()
@@ -398,9 +396,16 @@ async def _run_mode_select(
             # training). Full multi-window training is on the backlog.
             train_first, train_last = _longest_contiguous_train_run(split.train_groups)
             train_start = groups[train_first].start
-            # purge trims the last purge_horizon bars from the train window
-            train_end_raw = groups[train_last].end
-            train_end = train_end_raw - timedelta(days=purge_horizon)
+            train_end = groups[train_last].end
+            # Purge: trim the train END where a test group immediately
+            # follows (train labels near the boundary overlap test data).
+            if (train_last + 1) in split.test_groups:
+                train_end = train_end - timedelta(days=purge_horizon)
+            # Purge + embargo: push the train START forward where a test
+            # group immediately precedes — embargo excludes TRAIN data
+            # after the test window (test windows stay full-size).
+            if (train_first - 1) in split.test_groups:
+                train_start = train_start + timedelta(days=purge_horizon + embargo)
             if train_end < train_start:
                 train_end = train_start
             inner = await _run_inner_sweep(
@@ -429,15 +434,14 @@ async def _run_mode_select(
             for g_idx in split.test_groups:
                 rid = f"cpcv-oos-{uuid.uuid4().hex[:8]}"
                 g = groups[g_idx]
-                test_start = g.start + timedelta(days=embargo)
-                if test_start > g.end:
-                    test_start = g.end
+                # Full-size test window: embargo is applied to the train
+                # window (above), never to the test window.
                 db.add(BacktestRun(
                     id=rid, algorithm_id=session.algorithm_id,
                     optimization_session_id=session.id,
                     status="queued",
                     config_overrides=inner.winning_config or {},
-                    date_range_start=test_start, date_range_end=g.end,
+                    date_range_start=g.start, date_range_end=g.end,
                 ))
                 db.commit()
                 await runner_factory(rid, bars_cache=bars_cache)
