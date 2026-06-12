@@ -75,7 +75,15 @@ class DatasetService:
 
         id_cols = [c for c in self._id_columns_after_rename(spec) if c in df.columns]
         if id_cols:
-            df = df.drop_duplicates(subset=id_cols, keep="last")
+            # Bitemporal append-only semantics: a restatement (same logical id,
+            # later knowledge_date) must ADD a row, never replace the original
+            # observation — otherwise as-of reads leak revised values back in
+            # time. keep="last" now only collapses true re-ingests of the SAME
+            # observation.
+            dedupe_cols = list(id_cols)
+            if "knowledge_date" in df.columns and "knowledge_date" not in dedupe_cols:
+                dedupe_cols.append("knowledge_date")
+            df = df.drop_duplicates(subset=dedupe_cols, keep="last")
 
         df = df.sort_values(["event_date", "knowledge_date"]).reset_index(drop=True)
 
