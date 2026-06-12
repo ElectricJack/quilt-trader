@@ -102,6 +102,12 @@ class TickProcessor:
                     order_result = self._broker.submit_order(
                         symbol=leg.symbol, side=leg.signal_type.value, quantity=leg.quantity,
                         order_type=leg.order_type.value, limit_price=leg.limit_price, stop_price=leg.stop_price)
+                    # The order changed account state: drop cached
+                    # positions/balances so the next read is fresh
+                    # (CachingBrokerAdapter docstring contract). hasattr guard:
+                    # bare adapters (MockBrokerAdapter et al.) have no cache.
+                    if hasattr(self._broker, "invalidate"):
+                        self._broker.invalidate()
                     result.trade_results.append(TradeResult(signal=signal, order_result=order_result))
                     # Emit trade_executed activity event for each leg filled
                     if hasattr(self._coordinator, "send_activity_event"):
