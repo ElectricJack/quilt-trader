@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ResearchJob } from "../api/client";
+import { fmtDateTime } from "../lib/formatNumbers";
 
 interface Props {
   job: ResearchJob;
@@ -82,13 +83,13 @@ export function ResearchJobRow({ job, algorithmId, onCancel }: Props) {
           {job.started_at && (
             <div>
               <span className="text-gray-500">started:</span>{" "}
-              <span className="text-gray-300">{job.started_at}</span>
+              <span className="text-gray-300">{fmtDateTime(job.started_at)}</span>
             </div>
           )}
           {job.completed_at && (
             <div>
               <span className="text-gray-500">completed:</span>{" "}
-              <span className="text-gray-300">{job.completed_at}</span>
+              <span className="text-gray-300">{fmtDateTime(job.completed_at)}</span>
             </div>
           )}
           {job.error_message && (

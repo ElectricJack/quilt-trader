@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Microscope, Plus } from "lucide-react";
 import { useResearchSessions } from "../hooks/useResearchSessions";
 import { NewSessionModal } from "../components/NewSessionModal";
+import { fmtDate } from "../lib/formatNumbers";
 
 interface ResearchProps {
   algorithmId?: string;
@@ -74,7 +75,7 @@ export function Research({ algorithmId }: ResearchProps = {}) {
                     {s.hypothesis.length > 80 ? s.hypothesis.slice(0, 80) + "…" : s.hypothesis}
                   </td>
                   <td className="px-4 py-2 text-right">{s.n_runs}</td>
-                  <td className="px-4 py-2 text-gray-500">{s.created_at}</td>
+                  <td className="px-4 py-2 text-gray-500">{fmtDate(s.created_at)}</td>
                 </tr>
               ))}
             </tbody>

@@ -4,6 +4,7 @@ import { useAlgorithm, useBacktestRuns, useDeployments } from "../api/hooks";
 import { useResearchSessions } from "../hooks/useResearchSessions";
 import { AlgorithmKpiRow } from "../components/AlgorithmKpiRow";
 import { RunBacktestModal } from "../components/RunBacktestModal";
+import { fmtPct, fmtNum, fmtDate } from "../lib/formatNumbers";
 
 export function AlgorithmHub() {
   const { id = "" } = useParams<{ id: string }>();
@@ -58,9 +59,9 @@ export function AlgorithmHub() {
                     </Link>
                   </td>
                   <td className="px-2 py-1 text-gray-400">{r.status}</td>
-                  <td className="px-2 py-1 text-gray-400">{r.sharpe_ratio?.toFixed(2) ?? "—"}</td>
-                  <td className="px-2 py-1 text-gray-400">{r.cagr != null ? `${(r.cagr * 100).toFixed(1)}%` : "—"}</td>
-                  <td className="px-2 py-1 text-gray-500">{r.completed_at ?? "—"}</td>
+                  <td className="px-2 py-1 text-gray-400">{fmtNum(r.sharpe_ratio)}</td>
+                  <td className="px-2 py-1 text-gray-400">{fmtPct(r.cagr)}</td>
+                  <td className="px-2 py-1 text-gray-500">{fmtDate(r.completed_at)}</td>
                 </tr>
               ))}
             </tbody>
