@@ -1,9 +1,17 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Microscope, Plus } from "lucide-react";
+import type { ResearchSession } from "../api/client";
 import { useResearchSessions } from "../hooks/useResearchSessions";
 import { NewSessionModal } from "../components/NewSessionModal";
 import { fmtDate } from "../lib/formatNumbers";
+
+const SESSION_STATUS_COLORS: Record<ResearchSession["status"], string> = {
+  open:      "bg-gray-700 text-gray-300",
+  running:   "bg-blue-700 text-blue-100",
+  completed: "bg-green-700 text-green-100",
+  failed:    "bg-red-700 text-red-100",
+};
 
 interface ResearchProps {
   algorithmId?: string;
@@ -29,7 +37,11 @@ export function Research({ algorithmId }: ResearchProps = {}) {
       </div>
 
       {q.isLoading && <div className="text-gray-400 text-sm">Loading…</div>}
-      {q.error && <div className="text-red-400 text-sm">Failed to load sessions</div>}
+      {q.error && (
+        <div className="text-red-400 text-sm">
+          Failed to load sessions{q.error instanceof Error ? `: ${q.error.message}` : ""}
+        </div>
+      )}
 
       {q.data && q.data.length === 0 && (
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-10 text-center">
@@ -70,7 +82,11 @@ export function Research({ algorithmId }: ResearchProps = {}) {
                   <td className="px-4 py-2 text-gray-400 font-mono text-xs whitespace-nowrap">
                     {s.date_range_start} → {s.date_range_end}
                   </td>
-                  <td className="px-4 py-2">{s.status}</td>
+                  <td className="px-4 py-2">
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded ${SESSION_STATUS_COLORS[s.status] ?? "bg-gray-700 text-gray-300"}`}>
+                      {s.status}
+                    </span>
+                  </td>
                   <td className="px-4 py-2 text-gray-400 truncate max-w-md" title={s.hypothesis}>
                     {s.hypothesis.length > 80 ? s.hypothesis.slice(0, 80) + "…" : s.hypothesis}
                   </td>
