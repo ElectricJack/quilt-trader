@@ -43,6 +43,12 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
 
   if (!open) return null;
 
+  const dirty =
+    name.trim() !== "" ||
+    algorithmId !== "" ||
+    hypothesis.trim() !== "" ||
+    notes.trim() !== "";
+
   const canSubmit =
     name.trim().length > 0 &&
     algorithmId !== "" &&
@@ -75,7 +81,11 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} aria-hidden="true" />
+      <div
+          className="absolute inset-0 bg-black/70"
+          onClick={() => { if (!dirty) onClose(); }}
+          aria-hidden="true"
+        />
       <div className="relative z-10 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-5xl mx-auto flex flex-col max-h-[90vh]">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 shrink-0">
           <h2 className="text-xl font-bold text-white">New Research Session</h2>
