@@ -1,6 +1,8 @@
 import { useState, useMemo } from "react";
 import { X } from "lucide-react";
 import { useCreateCpcvJob } from "../api/hooks";
+import { useUIStore } from "../stores/ui";
+import { JsonTextField } from "./JsonTextField";
 import type { CPCVRequest } from "../types/index";
 
 interface Props {
@@ -26,6 +28,7 @@ function projectedBacktests(req: CPCVRequest): number {
 
 export function NewCpcvModal({ open, sessionId, onClose }: Props) {
   const mut = useCreateCpcvJob();
+  const addAlert = useUIStore((s) => s.addAlert);
   const [mode, setMode] = useState<"fixed" | "select">("fixed");
   const [nGroups, setNGroups] = useState(6);
   const [k, setK] = useState(2);
@@ -33,7 +36,8 @@ export function NewCpcvModal({ open, sessionId, onClose }: Props) {
   const [purge, setPurge] = useState(0);
   const [search, setSearch] = useState<"grid" | "random" | "latin" | "tpe">("random");
   const [maxTrials, setMaxTrials] = useState(20);
-  const [paramSpaceJson, setParamSpaceJson] = useState("{}");
+  const [paramSpace, setParamSpace] = useState<Record<string, unknown> | null>({});
+  const [paramSpaceValid, setParamSpaceValid] = useState(true);
 
   const req: CPCVRequest = useMemo(() => {
     const r: CPCVRequest = {
@@ -43,10 +47,10 @@ export function NewCpcvModal({ open, sessionId, onClose }: Props) {
     if (mode === "select") {
       r.search = search;
       r.max_trials_per_split = maxTrials;
-      try { r.parameter_space = JSON.parse(paramSpaceJson); } catch { /* ignore */ }
+      r.parameter_space = paramSpace ?? {};
     }
     return r;
-  }, [mode, nGroups, k, embargo, purge, search, maxTrials, paramSpaceJson]);
+  }, [mode, nGroups, k, embargo, purge, search, maxTrials, paramSpace]);
 
   const projected = projectedBacktests(req);
 
@@ -155,14 +159,14 @@ export function NewCpcvModal({ open, sessionId, onClose }: Props) {
                   className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 w-full"
                 />
               </div>
-              <div className="col-span-2 space-y-1">
-                <label htmlFor="cpcv-param-space" className="text-sm text-gray-300">Parameter space (JSON)</label>
-                <textarea
-                  id="cpcv-param-space"
-                  value={paramSpaceJson}
-                  onChange={e => setParamSpaceJson(e.target.value)}
+              <div className="col-span-2">
+                <JsonTextField
+                  label="Parameter space (JSON)"
+                  value={paramSpace}
+                  onChange={setParamSpace}
+                  onError={(hasErr) => setParamSpaceValid(!hasErr)}
                   rows={4}
-                  className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 w-full font-mono text-xs"
+                  placeholder='{"lookback": [20, 50, 100]}'
                 />
               </div>
             </div>
@@ -180,10 +184,21 @@ export function NewCpcvModal({ open, sessionId, onClose }: Props) {
           </button>
           <button
             onClick={async () => {
-              await mut.mutateAsync({ sessionId, body: req });
-              onClose();
+              try {
+                await mut.mutateAsync({ sessionId, body: req });
+                addAlert({
+                  message: `CPCV job queued (${projected} projected backtests).`,
+                  severity: "success",
+                });
+                onClose();
+              } catch (e) {
+                addAlert({
+                  message: `Failed to queue CPCV job: ${e instanceof Error ? e.message : "unknown error"}`,
+                  severity: "error",
+                });
+              }
             }}
-            disabled={mut.isPending}
+            disabled={mut.isPending || (mode === "select" && !paramSpaceValid)}
             className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {mut.isPending ? "Queuing…" : "Submit"}
