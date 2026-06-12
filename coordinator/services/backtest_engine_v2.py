@@ -810,8 +810,13 @@ class BacktestEngine:
                 close_qty = min(fill.quantity, abs(ps.quantity))
                 realized = (ps.avg_price - fill.fill_price) * close_qty * multiplier - fill.fees
                 fill.realized_pnl = realized
+                remainder = fill.quantity - close_qty
                 ps.quantity += fill.quantity
-                if ps.quantity == 0:
+                if remainder > 0:
+                    # Crossed through zero: the residual is a NEW long whose
+                    # basis is this fill's price, not the old short basis.
+                    ps.avg_price = fill.fill_price
+                elif ps.quantity == 0:
                     ps.avg_price = 0.0
                 cash -= notional + fill.fees
             else:
@@ -829,8 +834,13 @@ class BacktestEngine:
                 close_qty = min(fill.quantity, ps.quantity)
                 realized = (fill.fill_price - ps.avg_price) * close_qty * multiplier - fill.fees
                 fill.realized_pnl = realized
+                remainder = fill.quantity - close_qty
                 ps.quantity -= fill.quantity
-                if ps.quantity == 0:
+                if remainder > 0:
+                    # Crossed through zero: the residual is a NEW short whose
+                    # basis is this fill's price, not the old long basis.
+                    ps.avg_price = fill.fill_price
+                elif ps.quantity == 0:
                     ps.avg_price = 0.0
                 cash += notional - fill.fees
             else:
