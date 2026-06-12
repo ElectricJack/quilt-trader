@@ -11,6 +11,22 @@ interface Props {
   onCreated: (sessionId: number) => void;
 }
 
+const DEFAULT_CONFIG = {
+  base_config: {} as Record<string, unknown> | null,
+  parameter_space: null as Record<string, unknown> | null,
+  pre_registered_criteria: null as Record<string, unknown> | null,
+};
+
+const DEFAULT_SCOPE = {
+  date_range_start: "",
+  date_range_end: "",
+  initial_cash: 10000,
+  cost_profile: "default",
+  benchmark_symbol: null as string | null,
+  benchmark_source: null as string | null,
+  mtm_realism: 0.0,
+};
+
 export function NewSessionModal({ open, onClose, onCreated }: Props) {
   const algos = useAlgorithms();
   const mut = useCreateResearchSession();
@@ -23,21 +39,9 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
     base_config: Record<string, unknown> | null;
     parameter_space: Record<string, unknown> | null;
     pre_registered_criteria: Record<string, unknown> | null;
-  }>({
-    base_config: {},
-    parameter_space: null,
-    pre_registered_criteria: null,
-  });
+  }>(DEFAULT_CONFIG);
   const [configValid, setConfigValid] = useState(false);
-  const [scope, setScope] = useState({
-    date_range_start: "",
-    date_range_end: "",
-    initial_cash: 10000,
-    cost_profile: "default",
-    benchmark_symbol: null as string | null,
-    benchmark_source: null as string | null,
-    mtm_realism: 0.0,
-  });
+  const [scope, setScope] = useState(DEFAULT_SCOPE);
   const [scopeValid, setScopeValid] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -47,7 +51,9 @@ export function NewSessionModal({ open, onClose, onCreated }: Props) {
     name.trim() !== "" ||
     algorithmId !== "" ||
     hypothesis.trim() !== "" ||
-    notes.trim() !== "";
+    notes.trim() !== "" ||
+    JSON.stringify(config) !== JSON.stringify(DEFAULT_CONFIG) ||
+    JSON.stringify(scope) !== JSON.stringify(DEFAULT_SCOPE);
 
   const canSubmit =
     name.trim().length > 0 &&

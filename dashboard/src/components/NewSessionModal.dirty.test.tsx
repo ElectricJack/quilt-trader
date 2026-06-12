@@ -51,4 +51,12 @@ describe("NewSessionModal backdrop guard", () => {
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("ignores backdrop clicks when only the scope was edited", () => {
+    const onClose = vi.fn();
+    const { container } = renderModal(onClose);
+    fireEvent.change(screen.getByLabelText(/initial cash/i), { target: { value: "50000" } });
+    fireEvent.click(backdrop(container));
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
