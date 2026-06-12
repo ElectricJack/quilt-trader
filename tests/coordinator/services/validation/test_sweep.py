@@ -241,3 +241,58 @@ async def test_tpe_skips_runs_with_missing_objective(db_session):
     )
     # All 3 trials ran (we still get run_ids) but optuna's record shows them as failed
     assert result.n_configs == 3
+
+
+# ---- _run_inner_sweep helper ----
+
+import pytest
+from coordinator.services.validation.sweep import _run_inner_sweep, InnerSweepResult
+
+
+@pytest.mark.asyncio
+async def test_inner_sweep_returns_winner_and_run_ids(db_session):
+    """_run_inner_sweep performs a trial loop and reports the winning config."""
+    from coordinator.database.models import BacktestRun
+    from datetime import date
+
+    # Assign ascending sharpe values so winner is deterministic
+    sharpe_sequence = [0.5, 0.7, 0.9]
+    call_count = [0]
+
+    async def runner_factory(run_id, bars_cache=None):
+        row = db_session.query(BacktestRun).filter(BacktestRun.id == run_id).one()
+        row.sharpe_ratio = sharpe_sequence[call_count[0]]
+        row.status = "completed"
+        call_count[0] += 1
+        db_session.commit()
+
+    result = await _run_inner_sweep(
+        db=db_session,
+        runner_factory=runner_factory,
+        session_id=1,
+        algorithm_id="test-algo",
+        date_range_start=date(2024, 1, 1),
+        date_range_end=date(2024, 3, 31),
+        initial_cash=100_000,
+        cost_profile="default",
+        benchmark_source=None,
+        benchmark_symbol=None,
+        mtm_realism=0.0,
+        base_config={},
+        parameter_space={"lookback": [10, 20, 30]},
+        search="grid",
+        max_trials=3,
+        parallelism=1,
+        seed=42,
+        objective="sharpe_ratio",
+        objective_direction="maximize",
+        progress_callback=None,
+        bars_cache=None,
+    )
+    assert isinstance(result, InnerSweepResult)
+    assert len(result.all_run_ids) == 3
+    assert result.winning_config is not None
+    assert result.winning_objective is not None
+    assert result.winning_run_id in result.all_run_ids
+    assert result.winning_objective == pytest.approx(0.9)
+    assert result.winning_config == {"lookback": 30}

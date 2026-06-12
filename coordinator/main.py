@@ -528,11 +528,14 @@ def create_app(
         from coordinator.database.session import get_session_factory as _get_sync_session_factory
         from coordinator.api.websocket import manager as _ws_manager
 
-        async def _research_runner_factory(run_id: str) -> None:
+        async def _research_runner_factory(
+            run_id: str,
+            bars_cache: "BacktestBarsCache | None" = None,
+        ) -> None:
             runner = getattr(container, "backtest_runner", None)
             if runner is None:
                 raise RuntimeError("backtest_runner not initialized")
-            await runner.run(run_id)
+            await runner.run(run_id, bars_cache=bars_cache)
 
         async def _broadcast_research_update(payload: dict) -> None:
             await _ws_manager.broadcast_to_dashboards(

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import date as _date
+from math import comb
 from pathlib import Path
 from typing import Any, Literal
 
@@ -123,6 +124,28 @@ class WalkForwardRequest(BaseModel):
     parallelism: int = 1
 
     model_config = {"extra": "forbid"}
+
+
+class CPCVRequest(BaseModel):
+    mode: Literal["fixed", "select"] = "fixed"
+    n_groups: int = Field(default=6, ge=4, le=20)
+    test_groups_per_split: int = Field(default=2, ge=1)
+    embargo: int = Field(default=5, ge=0)
+    purge_horizon: int = Field(default=0, ge=0)
+    parameter_space: dict | None = None
+    search: Literal["grid", "random", "latin", "tpe"] | None = None
+    max_trials_per_split: int | None = Field(default=None, ge=1)
+    objective: str | None = None
+    objective_direction: Literal["maximize", "minimize"] | None = None
+    parallelism: int | None = Field(default=None, ge=1)
+    seed: int | None = None
+
+
+class CPCVJobResponse(BaseModel):
+    job_id: str
+    kind: Literal["cpcv"]
+    status: Literal["queued"]
+    projected_backtest_count: int
 
 
 class JobResponse(BaseModel):
@@ -408,6 +431,49 @@ async def walk_forward_endpoint(
         raise HTTPException(404, str(e))
     job = await mgr.get_job(job_id)
     return JobResponse(**job)
+
+
+@router.post("/sessions/{session_id}/cpcv", status_code=202, response_model=CPCVJobResponse)
+async def submit_cpcv(
+    session_id: int,
+    body: CPCVRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CPCVJobResponse:
+    session = (
+        await db.execute(select(OptimizationSession).where(OptimizationSession.id == session_id))
+    ).scalar_one_or_none()
+    if session is None:
+        raise HTTPException(404, f"session {session_id} not found")
+
+    if body.test_groups_per_split > body.n_groups // 2:
+        raise HTTPException(400, f"test_groups_per_split ({body.test_groups_per_split}) must be <= n_groups // 2")
+
+    if body.mode == "select":
+        missing: list[str] = []
+        if body.parameter_space is None:
+            missing.append("parameter_space")
+        if body.search is None:
+            missing.append("search")
+        if body.max_trials_per_split is None:
+            missing.append("max_trials_per_split")
+        if missing:
+            raise HTTPException(400, f"mode='select' requires: {', '.join(missing)}")
+
+    n_splits = comb(body.n_groups, body.test_groups_per_split)
+    if body.mode == "fixed":
+        projected = body.n_groups
+    else:
+        projected = n_splits * (body.max_trials_per_split + body.test_groups_per_split)
+
+    mgr = _get_research_job_manager()
+    payload = body.model_dump()
+    job_id = await mgr.create_cpcv_job(session_id=session_id, request_payload=payload)
+    return CPCVJobResponse(
+        job_id=job_id,
+        kind="cpcv",
+        status="queued",
+        projected_backtest_count=projected,
+    )
 
 
 @router.get(

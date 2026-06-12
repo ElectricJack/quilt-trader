@@ -7,6 +7,7 @@ import { ExperimentConfigEditor } from "./ExperimentConfigEditor";
 interface Props {
   session: ResearchSession;
   onNewSweep: () => void;
+  onNewCpcv?: () => void;
   onGenerateReport: () => void;
   reportPending: boolean;
 }
@@ -19,7 +20,7 @@ const STATUS_COLORS: Record<ResearchSession["status"], string> = {
 };
 
 export function ResearchSessionSummary({
-  session, onNewSweep, onGenerateReport, reportPending,
+  session, onNewSweep, onNewCpcv, onGenerateReport, reportPending,
 }: Props) {
   const [hypExpanded, setHypExpanded] = useState(false);
   const canReport = session.n_runs > 0;
@@ -67,6 +68,12 @@ export function ResearchSessionSummary({
             className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-1.5 rounded">
             New Sweep
           </button>
+          {onNewCpcv && (
+            <button onClick={onNewCpcv}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-1.5 rounded">
+              New CPCV
+            </button>
+          )}
         </div>
       </div>
 

@@ -277,6 +277,78 @@ def cmd_walk_forward(ctx, session_id, train_years, test_years, step_months, obje
             click.echo(f"Walk-forward {job_id} status: {status}")
 
 
+@research_group.command("cpcv")
+@click.argument("session_id", type=int)
+@click.option("--mode", type=click.Choice(["fixed", "select"]), default="fixed", help="fixed | select")
+@click.option("--n-groups", type=int, default=6, help="Total number of CPCV groups.")
+@click.option("--test-groups", type=int, default=2, help="Test groups per split.")
+@click.option("--embargo", type=int, default=5, help="Embargo bars between train and test.")
+@click.option("--purge-horizon", type=int, default=0, help="Purge horizon bars.")
+@click.option("--search", type=click.Choice(["grid", "random", "latin", "tpe"]), default=None, help="Search strategy (required for mode=select).")
+@click.option("--parameter-space", default=None, help='JSON parameter space for mode=select, e.g., \'{"k": [10, 20]}\'. May also be a path to a JSON or YAML file.')
+@click.option("--max-trials", type=int, default=None, help="Max trials per split (mode=select).")
+@click.option("--objective", default=None, help="Objective metric (mode=select).")
+@click.option("--objective-direction", type=click.Choice(["maximize", "minimize"]), default=None, help="Objective direction (mode=select).")
+@click.option("--parallelism", type=int, default=None, help="Backtest parallelism.")
+@click.option("--seed", type=int, default=0, help="Random seed.")
+@click.option("--no-wait", is_flag=True, default=False, help="Print job_id and exit without polling.")
+@click.pass_context
+def cmd_cpcv(ctx, session_id, mode, n_groups, test_groups, embargo, purge_horizon,
+             search, parameter_space, max_trials, objective, objective_direction,
+             parallelism, seed, no_wait):
+    """Submit a Combinatorial Purged Cross-Validation (CPCV) job to a research session."""
+    if mode == "select" and parameter_space is None:
+        click.echo("error: --parameter-space is required when --mode=select", err=True)
+        raise SystemExit(2)
+
+    payload: dict = {
+        "mode": mode,
+        "n_groups": n_groups,
+        "test_groups_per_split": test_groups,
+        "embargo": embargo,
+        "purge_horizon": purge_horizon,
+        "seed": seed,
+    }
+    if mode == "select":
+        if search is not None:
+            payload["search"] = search
+        if max_trials is not None:
+            payload["max_trials_per_split"] = max_trials
+        if objective is not None:
+            payload["objective"] = objective
+        if objective_direction is not None:
+            payload["objective_direction"] = objective_direction
+        payload["parameter_space"] = _parse_json_or_yaml_or_file(parameter_space)
+    if parallelism is not None:
+        payload["parallelism"] = parallelism
+
+    async def go():
+        c = _client(ctx)
+        try:
+            job = await c.post(f"/api/research/sessions/{session_id}/cpcv", json=payload)
+            click.echo(f"queued: {job['job_id']} (projected {job['projected_backtest_count']} backtests)")
+            if no_wait:
+                return job
+            return await _poll_job(c, session_id, job["job_id"])
+        finally:
+            await c.aclose()
+
+    body = _run(go())
+    if ctx.obj.get("json_mode"):
+        print_json(body)
+    else:
+        status = body.get("status")
+        job_id = body["job_id"]
+        if status == "completed":
+            click.echo(f"CPCV {job_id} completed: {len(body.get('run_ids', []))} runs.")
+        elif status == "failed":
+            click.echo(f"CPCV {job_id} failed: {body.get('error_message')}", err=True)
+        elif status == "cancelled":
+            click.echo(f"CPCV {job_id} cancelled.")
+        else:
+            click.echo(f"CPCV {job_id} status: {status}")
+
+
 @research_group.command("report")
 @click.option("--session-id", type=int, required=True)
 @click.option("--out-dir", default="data/research_reports")

@@ -9,6 +9,9 @@ import {
 import { ResearchSessionSummary } from "../components/ResearchSessionSummary";
 import { ResearchJobRow } from "../components/ResearchJobRow";
 import { NewSweepModal } from "../components/NewSweepModal";
+import { NewCpcvModal } from "../components/NewCpcvModal";
+import { CpcvResultsPanel } from "../components/cpcv/CpcvResultsPanel";
+import type { CPCVResult } from "../types";
 
 export function ResearchSessionDetail() {
   const params = useParams<{ id?: string; sessionId?: string }>();
@@ -18,6 +21,7 @@ export function ResearchSessionDetail() {
   const cancelMut = useCancelResearchJob(sessionId ?? 0);
   const reportMut = useGenerateResearchReport(sessionId ?? 0);
   const [sweepOpen, setSweepOpen] = useState(false);
+  const [cpcvOpen, setCpcvOpen] = useState(false);
   const [reportMsg, setReportMsg] = useState<string | null>(null);
 
   if (sessionQ.isLoading) {
@@ -44,6 +48,7 @@ export function ResearchSessionDetail() {
       <ResearchSessionSummary
         session={session}
         onNewSweep={() => setSweepOpen(true)}
+        onNewCpcv={() => setCpcvOpen(true)}
         reportPending={reportMut.isPending}
         onGenerateReport={async () => {
           setReportMsg(null);
@@ -70,11 +75,21 @@ export function ResearchSessionDetail() {
           </div>
         )}
         {jobsQ.data?.map((job) => (
-          <ResearchJobRow
-            key={job.job_id}
-            job={job}
-            onCancel={(jobId) => void cancelMut.mutate(jobId)}
-          />
+          <div key={job.job_id} className="space-y-2">
+            <ResearchJobRow
+              job={job}
+              onCancel={(jobId) => void cancelMut.mutate(jobId)}
+            />
+            {job.kind === "cpcv" && (
+              <CpcvResultsPanel
+                result={(job.result as unknown as CPCVResult | null) ?? null}
+                status={job.status}
+                progress={job.progress_pct != null
+                  ? { pct: job.progress_pct, message: job.progress_message ?? "" }
+                  : null}
+              />
+            )}
+          </div>
         ))}
       </div>
 
@@ -82,6 +97,11 @@ export function ResearchSessionDetail() {
         open={sweepOpen}
         sessionId={sessionId ?? 0}
         onClose={() => setSweepOpen(false)}
+      />
+      <NewCpcvModal
+        open={cpcvOpen}
+        sessionId={sessionId ?? 0}
+        onClose={() => setCpcvOpen(false)}
       />
     </div>
   );

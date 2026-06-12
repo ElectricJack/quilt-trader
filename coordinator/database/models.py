@@ -505,7 +505,7 @@ class ResearchJob(Base):
     session_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("optimization_sessions.id"), nullable=False, index=True,
     )
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # sweep | walk-forward
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # sweep | walk-forward | cpcv
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     # queued | running | completed | failed | cancelled
 
@@ -513,6 +513,7 @@ class ResearchJob(Base):
     progress_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     request_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     run_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

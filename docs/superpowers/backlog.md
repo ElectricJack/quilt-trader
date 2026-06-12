@@ -388,6 +388,16 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Deferred from:** [2026-05-30-research-lab-dashboard-design.md](specs/2026-05-30-research-lab-dashboard-design.md)
 - **Why deferred:** Pick N runs and render their metrics + equity curves side-by-side within a session at `/algorithms/:id/research/:session_id`. The natural Phase 6 once the Phase 4 results matrix exists — the matrix is "all runs", compare-view is "this specific subset".
 
+### Wire BacktestBarsCache.preload() in research job manager
+- **Surfaced by:** CPCV correctness review 2026-06-10.
+- **Why deferred:** `_dispatch_cpcv` in `research_job_manager.py` constructs `BacktestBarsCache()` but cannot call `.preload()` because the `runner_factory` stored on `ResearchJobManager` is an opaque async closure — it wraps `container.backtest_runner.run` but doesn't expose `_ds` (the `DataService` reference). Wiring preload requires either (a) passing `data_service` as a constructor parameter on `ResearchJobManager`, or (b) adding a dedicated `preload_fn` parameter. The cache works as a graceful no-op fallback in v1, so CPCV jobs simply re-load bars from disk for each backtest instead of serving them from the shared cache.
+- **What's needed:** Add a `data_service` (or `preload_fn: Callable`) parameter to `ResearchJobManager.__init__`. In `_dispatch_cpcv`, before calling `run_cpcv`, call `bars_cache.preload(requirements, start, end, loader)` using `Algorithm.assets` to enumerate `(source, symbol, timeframe)` triples. Yields near-zero per-backtest I/O cost inside CPCV jobs — currently each of the N×C(N,k) backtests pays a full disk-load.
+
+### Multi-window CPCV training (engine accepts disjoint date ranges)
+- **Surfaced by:** CPCV T9 review 2026-06-11. The CPCV mode B inner sweep "trains" on a single contiguous date range — but per LdP's CPCV protocol, the training set is the UNION of all train_groups, which can be non-contiguous in time (when k >= 2). v1 takes the longest contiguous run of train_groups per split, losing some training data.
+- **Why deferred:** the backtest engine doesn't currently accept disjoint date ranges. Adding it requires the engine to support pause/resume at group boundaries, or to run independently on each contiguous segment and aggregate fitness.
+- **What's needed:** EITHER (a) extend `BacktestRunner.run` to accept a list of `(start, end)` segment windows + an aggregator for the fitness metric; OR (b) run the inner sweep separately on each contiguous train segment and average the per-segment objective. Document the change in the CPCV spec.
+
 ---
 
 ## How to use this file

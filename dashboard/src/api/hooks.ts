@@ -5,7 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "./client";
-import type { Deployment } from "../types";
+import type { Deployment, CPCVRequest } from "../types";
 import { wsManager } from "./websocket";
 import type {
   AccountCreate,
@@ -1366,4 +1366,17 @@ export function useWebSocketTopic<T = unknown>(topic: string | null): T | null {
   }, [topic]);
 
   return latest;
+}
+
+// ── CPCV ──
+
+export function useCreateCpcvJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, body }: { sessionId: number; body: CPCVRequest }) =>
+      api.createCpcvJob(sessionId, body),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: keys.researchJobs(vars.sessionId) });
+    },
+  });
 }

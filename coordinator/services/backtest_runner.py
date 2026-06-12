@@ -27,6 +27,7 @@ from coordinator.services.backtest_engine_v2 import (
 )
 from coordinator.services.backtest_tick_context import BacktestTickContext, timeframe_to_seconds
 from coordinator.services.asset_services.registry import get_default_registry
+from coordinator.services.validation.bars_cache import BacktestBarsCache
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,29 @@ class BacktestRunner:
             await session.commit()
             return count
 
-    async def run(self, run_id: str) -> None:
+    def _load_bars_with_cache_then_disk(
+        self,
+        requirements: list[tuple[str, str, str]],
+        start,
+        end,
+        bars: dict,
+        bars_cache: BacktestBarsCache | None,
+    ) -> None:
+        """Populate `bars` for each (source, symbol, timeframe) requirement.
+
+        Checks bars_cache first; falls through to disk via _load_bar_series.
+        """
+        for source, symbol, timeframe in requirements:
+            if bars_cache is not None:
+                cached = bars_cache.get(source, symbol, timeframe, start, end)
+                if cached is not None and not cached.empty:
+                    bars[(source, symbol, timeframe)] = cached
+                    continue
+            df = _load_bar_series(self._ds, source, symbol, timeframe)
+            if df is not None and not df.empty:
+                bars[(source, symbol, timeframe)] = df
+
+    async def run(self, run_id: str, bars_cache: BacktestBarsCache | None = None) -> None:
         from coordinator.database.models import Algorithm, BacktestRun
 
         async with self._sf() as session:
@@ -335,14 +358,22 @@ class BacktestRunner:
                 await session.commit()
 
             # Build context
+            requirements = [
+                (dep.get("source") or "polygon", dep.get("symbol"), dep.get("timeframe") or "1min")
+                for dep in deps
+                if dep.get("symbol")
+            ]
             bars: dict[tuple, pd.DataFrame] = {}
-            for dep in deps:
-                symbol = dep.get("symbol")
-                if not symbol:
-                    continue
-                source = dep.get("source") or "polygon"
-                timeframe = dep.get("timeframe") or "1min"
-                df = _load_bar_series(self._ds, source, symbol, timeframe)
+            self._load_bars_with_cache_then_disk(
+                requirements=requirements,
+                start=date_range_start,
+                end=date_range_end,
+                bars=bars,
+                bars_cache=bars_cache,
+            )
+            # Validate all requirements are present, then filter to warmup window.
+            for source, symbol, timeframe in requirements:
+                df = bars.get((source, symbol, timeframe))
                 if df is None or getattr(df, "empty", False):
                     raise RuntimeError(
                         f"Missing data for {symbol} {timeframe} {source}"
