@@ -50,10 +50,8 @@ def _annualized_sortino(returns: np.ndarray, periods_per_year: int = 252) -> flo
     if returns.size == 0:
         return 0.0
     mu = float(np.mean(returns))
-    downside = returns[returns < 0]
-    if downside.size == 0:
-        return 0.0
-    sigma_d = float(np.std(downside, ddof=1))
+    # Standard downside deviation: root mean of min(r, 0)^2 over ALL returns.
+    sigma_d = float(np.sqrt(np.mean(np.minimum(returns, 0.0) ** 2)))
     if sigma_d == 0:
         return 0.0
     return mu / sigma_d * np.sqrt(periods_per_year)

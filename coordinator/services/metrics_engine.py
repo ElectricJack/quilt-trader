@@ -53,10 +53,10 @@ class MetricsEngine:
             annual_vol = 0
             sharpe = 0
 
-        # Sortino (downside deviation)
-        downside = [r for r in returns if r < 0]
-        if len(downside) > 1:
-            downside_var = sum(r ** 2 for r in downside) / len(downside)
+        # Sortino — standard definition: downside deviation is the root mean
+        # of min(r, 0)^2 over ALL returns (not just the negative ones).
+        if len(returns) > 1:
+            downside_var = sum(min(r, 0.0) ** 2 for r in returns) / len(returns)
             downside_dev = math.sqrt(downside_var) * math.sqrt(252)
             sortino = (mean_return * 252 - risk_free_rate) / downside_dev if downside_dev > 0 else 0
         else:
