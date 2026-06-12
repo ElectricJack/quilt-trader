@@ -158,11 +158,13 @@ class BacktestEngine:
                 # Pure scraper-driven algo: fall back to the original clock.
                 real_clock = clock_series
             # Always preserve original clock_source / clock_symbol for pass-2.
-            # _run_internal uses clock_symbol to decide whether to use the clock
-            # bar directly for fill resolution (sym == clock_symbol) or look up
-            # the symbol's own bars from the cache (sym != clock_symbol).
-            # Using "_union" here would force all fills through the cache lookup
-            # path, causing fills to resolve against the wrong bar.
+            # The union clock is built from a synthetic "_union" identifier that
+            # does not correspond to any real provider symbol and would not
+            # resolve via the asset registry. Keeping the original values ensures
+            # _run_internal (and any downstream market-data fallback paths) still
+            # has valid provider context. Fill resolution no longer special-cases
+            # the clock symbol — every symbol resolves its own bar frame via the
+            # asset registry regardless of whether it is the clock symbol.
             real_source, real_symbol = clock_source, clock_symbol
 
             # Reset tick-time state so pass-2 starts from scratch.
