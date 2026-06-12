@@ -62,28 +62,36 @@ class MetricsEngine:
         else:
             sortino = 0
 
-        # Max drawdown
+        # Max drawdown. Duration is measured peak-to-recovery in bars:
+        # current_dd_start holds the INDEX OF THE PEAK preceding the open
+        # drawdown (None = not in drawdown). Using None as the sentinel keeps
+        # index 0 valid as a peak; an unrecovered drawdown is flushed at the
+        # end of the series.
         peak = equities[0]
         max_dd_pct = 0
         max_dd_dollars = 0
         max_dd_duration = 0
-        current_dd_start = 0
+        current_dd_start = None
 
         for i, eq in enumerate(equities):
             if eq > peak:
-                if current_dd_start > 0:
-                    dd_dur = i - current_dd_start
-                    max_dd_duration = max(max_dd_duration, dd_dur)
+                if current_dd_start is not None:
+                    max_dd_duration = max(max_dd_duration, i - current_dd_start)
+                    current_dd_start = None
                 peak = eq
-                current_dd_start = 0
             else:
                 dd = (peak - eq) / peak * 100 if peak > 0 else 0
                 dd_abs = peak - eq
                 if dd > max_dd_pct:
                     max_dd_pct = dd
                     max_dd_dollars = dd_abs
-                if current_dd_start == 0:
-                    current_dd_start = i
+                if eq < peak and current_dd_start is None:
+                    current_dd_start = i - 1  # the prior point was the peak
+
+        if current_dd_start is not None:
+            max_dd_duration = max(
+                max_dd_duration, len(equities) - 1 - current_dd_start
+            )
 
         calmar = annualized / max_dd_pct if max_dd_pct > 0 else 0
 
