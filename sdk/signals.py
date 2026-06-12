@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -52,6 +54,21 @@ class SignalLeg:
 
     def __post_init__(self) -> None:
         _validate_asset_type(self.asset_type)
+        q = self.quantity
+        if not isinstance(q, (int, float)) or isinstance(q, bool) \
+                or not math.isfinite(q) or q <= 0:
+            raise ValueError(
+                f"quantity must be a positive finite number, got {q!r}"
+            )
+        for name, px in (("limit_price", self.limit_price),
+                         ("stop_price", self.stop_price)):
+            if px is None:
+                continue
+            if not isinstance(px, (int, float)) or isinstance(px, bool) \
+                    or not math.isfinite(px) or px <= 0:
+                raise ValueError(
+                    f"{name} must be a positive finite number when set, got {px!r}"
+                )
 
     def to_dict(self) -> dict:
         return {
