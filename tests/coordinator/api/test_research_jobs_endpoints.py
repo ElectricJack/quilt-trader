@@ -202,6 +202,31 @@ async def test_get_job_404_for_unknown_id(test_app):
 
 
 @pytest.mark.asyncio
+async def test_get_job_returns_request_payload_and_result(test_app):
+    """GET /jobs/{id} must serialize request_payload and result so the
+    dashboard can identify jobs and render CPCV results."""
+    from coordinator.api.dependencies import get_container
+
+    container = get_container()
+    session_id = await _seed_session(container)
+    async with container.session_factory() as s:
+        s.add(ResearchJob(
+            id="jp", session_id=session_id, kind="sweep", status="completed",
+            request_payload={"search": "grid", "max_trials": 50},
+            result={"best_objective": 1.23},
+            run_ids=[],
+        ))
+        await s.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as ac:
+        r = await ac.get(f"/api/research/sessions/{session_id}/jobs/jp")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["request_payload"] == {"search": "grid", "max_trials": 50}
+    assert body["result"] == {"best_objective": 1.23}
+
+
+@pytest.mark.asyncio
 async def test_get_job_404_when_session_mismatch(test_app):
     """A job belonging to a different session returns 404 (not 200 with leaked row)."""
     from coordinator.api.dependencies import get_container

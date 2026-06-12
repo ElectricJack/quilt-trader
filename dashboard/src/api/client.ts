@@ -251,6 +251,7 @@ export interface ResearchJob {
   completed_at: string | null;
   created_at: string | null;
   result?: unknown;
+  request_payload?: Record<string, unknown> | null;
 }
 
 export interface CreateSessionRequest {

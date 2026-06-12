@@ -156,6 +156,8 @@ class JobResponse(BaseModel):
     progress_pct: float = 0.0
     progress_message: str | None = None
     run_ids: list[str] = []
+    request_payload: dict | None = None
+    result: Any = None
     error_message: str | None = None
     started_at: str | None = None
     completed_at: str | None = None

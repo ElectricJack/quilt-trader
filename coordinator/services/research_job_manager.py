@@ -378,6 +378,7 @@ def _row_to_dict(row: ResearchJob) -> dict:
         "progress_pct": row.progress_pct,
         "progress_message": row.progress_message,
         "run_ids": row.run_ids or [],
+        "request_payload": row.request_payload,
         "result": row.result,
         "error_message": row.error_message,
         "started_at": row.started_at.isoformat() if row.started_at else None,

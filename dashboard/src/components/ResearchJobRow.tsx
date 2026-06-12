@@ -80,6 +80,17 @@ export function ResearchJobRow({ job, algorithmId, onCancel }: Props) {
             <span className="text-gray-500">job_id:</span>{" "}
             <code className="text-gray-300">{job.job_id}</code>
           </div>
+          {job.request_payload && Object.keys(job.request_payload).length > 0 && (
+            <div>
+              <span className="text-gray-500">request:</span>{" "}
+              <code className="text-gray-300 break-all">
+                {Object.entries(job.request_payload)
+                  .filter(([key]) => key !== "manifest_path")
+                  .map(([key, v]) => `${key}=${JSON.stringify(v)}`)
+                  .join("  ")}
+              </code>
+            </div>
+          )}
           {job.started_at && (
             <div>
               <span className="text-gray-500">started:</span>{" "}
