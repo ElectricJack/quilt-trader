@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ResearchSession } from "../api/client";
 import { ExperimentConfigEditor } from "./ExperimentConfigEditor";
+import { SESSION_STATUS_COLORS } from "../lib/statusColors";
 
 interface Props {
   session: ResearchSession;
@@ -11,13 +12,6 @@ interface Props {
   onGenerateReport: () => void;
   reportPending: boolean;
 }
-
-const STATUS_COLORS: Record<ResearchSession["status"], string> = {
-  open: "bg-gray-700 text-gray-300",
-  running: "bg-blue-700 text-blue-100",
-  completed: "bg-green-700 text-green-100",
-  failed: "bg-red-700 text-red-100",
-};
 
 export function ResearchSessionSummary({
   session, onNewSweep, onNewCpcv, onGenerateReport, reportPending,
@@ -31,7 +25,7 @@ export function ResearchSessionSummary({
         <div className="min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-2xl font-bold text-white truncate">{session.name}</h1>
-            <span className={`text-xs font-medium px-2 py-0.5 rounded ${STATUS_COLORS[session.status]}`}>
+            <span className={`text-xs font-medium px-2 py-0.5 rounded ${SESSION_STATUS_COLORS[session.status]}`}>
               {session.status}
             </span>
             <Link
