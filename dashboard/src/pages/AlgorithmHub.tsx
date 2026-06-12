@@ -7,7 +7,7 @@ import { RunBacktestModal } from "../components/RunBacktestModal";
 
 export function AlgorithmHub() {
   const { id = "" } = useParams<{ id: string }>();
-  const { data: algo } = useAlgorithm(id);
+  const { data: algo, isLoading } = useAlgorithm(id);
   const { data: runs = [] } = useBacktestRuns({ algorithm_id: id, limit: 5 });
   const { data: sessions = [] } = useResearchSessions({
     algorithm_id: id,
@@ -17,7 +17,8 @@ export function AlgorithmHub() {
   const { data: deployments = [] } = useDeployments({ algorithm_id: id });
   const [runBacktestOpen, setRunBacktestOpen] = useState(false);
 
-  if (!algo) return null;
+  if (isLoading) return <p className="text-sm text-gray-400">Loading…</p>;
+  if (!algo) return <p className="text-sm text-gray-400">Algorithm not found.</p>;
   const s = algo.summary;
 
   return (

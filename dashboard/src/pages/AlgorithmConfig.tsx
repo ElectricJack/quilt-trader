@@ -6,11 +6,12 @@ import { RunBacktestModal } from "../components/RunBacktestModal";
 
 export function AlgorithmConfig() {
   const { id = "" } = useParams<{ id: string }>();
-  const { data: algo } = useAlgorithm(id);
+  const { data: algo, isLoading } = useAlgorithm(id);
   const [backtestOpen, setBacktestOpen] = useState(false);
   const [backtestPreloadSetId, setBacktestPreloadSetId] = useState<string>();
 
-  if (!algo) return null;
+  if (isLoading) return <p className="text-sm text-gray-400">Loading…</p>;
+  if (!algo) return <p className="text-sm text-gray-400">Algorithm not found.</p>;
 
   return (
     <div className="space-y-6">
