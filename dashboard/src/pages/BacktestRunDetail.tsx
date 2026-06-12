@@ -44,7 +44,8 @@ export function BacktestRunDetail() {
   const { data: report } = useBacktestReport(runId, { refetchInterval: 2000 });
   const isRunInflight = inflight(report?.status);
   const liveRefetch = isRunInflight ? 2000 : undefined;
-  const { data: tradesData } = useBacktestTrades(runId, 500, 0, { refetchInterval: liveRefetch });
+  const [tradesLimit, setTradesLimit] = useState(500);
+  const { data: tradesData } = useBacktestTrades(runId, tradesLimit, 0, { refetchInterval: liveRefetch });
   const del = useDeleteBacktestRun();
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -180,6 +181,16 @@ export function BacktestRunDetail() {
               </tbody>
             </table>
           </div>
+          {trades.length < totalTrades && (
+            <div className="px-3 py-2 border-t border-gray-800 text-center">
+              <button
+                onClick={() => setTradesLimit((l) => l + 500)}
+                className="text-xs text-indigo-400 hover:text-indigo-300"
+              >
+                Load more ({trades.length} of {totalTrades} shown)
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
