@@ -20,18 +20,22 @@ const sessions = [
   { id: 7, name: "vol-target-sweep", kind: "sweep", status: "open", progress: 0.5 },
 ];
 
+let mockRuns: any[] = recentRuns;
+let mockSessions: any[] = sessions;
+let mockDeployments: any[] = [];
+
 vi.mock("../api/hooks", async () => {
   const actual = await vi.importActual<any>("../api/hooks");
   return {
     ...actual,
     useAlgorithm: () => ({ data: algo }),
-    useBacktestRuns: (_params: any) => ({ data: recentRuns, isLoading: false }),
-    useDeployments: (_params: any) => ({ data: [], isLoading: false }),
+    useBacktestRuns: (_params: any) => ({ data: mockRuns, isLoading: false }),
+    useDeployments: (_params: any) => ({ data: mockDeployments, isLoading: false }),
   };
 });
 
 vi.mock("../hooks/useResearchSessions", () => ({
-  useResearchSessions: (_params: any) => ({ data: sessions, isLoading: false }),
+  useResearchSessions: (_params: any) => ({ data: mockSessions, isLoading: false }),
 }));
 
 function renderAt() {
@@ -47,8 +51,20 @@ function renderAt() {
   );
 }
 
+function renderHub() {
+  mockRuns = [];
+  mockSessions = [];
+  mockDeployments = [];
+  return renderAt();
+}
+
 describe("AlgorithmHub – recent backtests", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRuns = recentRuns;
+    mockSessions = sessions;
+    mockDeployments = [];
+  });
 
   it("renders up to 5 recent backtests with link to view all", () => {
     renderAt();
@@ -62,5 +78,26 @@ describe("AlgorithmHub – recent backtests", () => {
     renderAt();
     expect(screen.getByText("vol-target-sweep")).toBeInTheDocument();
     expect(screen.getByText(/50%|0\.5/)).toBeInTheDocument();
+  });
+});
+
+describe("AlgorithmHub – empty states", () => {
+  it("offers a Run Backtest action in the empty backtests state", () => {
+    renderHub();
+    expect(
+      screen.getByRole("button", { name: /run your first backtest/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("links to the research tab from the empty research state", () => {
+    renderHub();
+    expect(
+      screen.getByRole("link", { name: /start a research session/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not instruct an unavailable deploy action", () => {
+    renderHub();
+    expect(screen.queryByText(/deploy this algorithm to start trading/i)).toBeNull();
   });
 });

@@ -47,7 +47,15 @@ export function AlgorithmHub() {
           </Link>
         </div>
         {runs.length === 0 ? (
-          <p className="text-sm text-gray-500">No backtests yet.</p>
+          <p className="text-sm text-gray-500">
+            No backtests yet.{" "}
+            <button
+              onClick={() => setRunBacktestOpen(true)}
+              className="text-indigo-400 hover:text-indigo-300"
+            >
+              Run your first backtest →
+            </button>
+          </p>
         ) : (
           <table className="w-full text-sm">
             <tbody>
@@ -77,7 +85,12 @@ export function AlgorithmHub() {
           </Link>
         </div>
         {sessions.length === 0 ? (
-          <p className="text-sm text-gray-500">No active research sessions.</p>
+          <p className="text-sm text-gray-500">
+            No active research sessions.{" "}
+            <Link to={`/algorithms/${id}/research`} className="text-indigo-400 hover:text-indigo-300">
+              Start a research session →
+            </Link>
+          </p>
         ) : (
           <ul className="space-y-2">
             {sessions.slice(0, 5).map((sess: any) => (
@@ -109,7 +122,10 @@ export function AlgorithmHub() {
         </div>
         {deployments.length === 0 ? (
           <p className="text-sm text-gray-500">
-            No deployments. Deploy this algorithm to start trading.
+            No deployments yet.{" "}
+            <Link to={`/algorithms/${id}/deployments`} className="text-indigo-400 hover:text-indigo-300">
+              View deployments →
+            </Link>
           </p>
         ) : (
           <table className="w-full text-sm">
