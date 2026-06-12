@@ -290,8 +290,8 @@ class BacktestEngine:
                             sim_time, Signal(legs=[po.leg]), "day_expired"
                         )
                         continue
-                # Resolve the fill bar: prefer the SYMBOL's own data over the
-                # clock bar. The clock may be a different symbol (multi-asset
+                # Resolve the fill bar: every symbol prefers its OWN data over
+                # the clock bar. The clock may be a different symbol (multi-asset
                 # algo) or synthetic (scraper-only algo with no market deps).
                 # The bars cache is keyed by provider-specific symbol (e.g.
                 # "BTC-USD" for yfinance) while leg.symbol is the algorithm-
@@ -299,31 +299,40 @@ class BacktestEngine:
                 # registry to match.
                 fill_bar = bar
                 sym = po.leg.symbol
-                if sym != clock_symbol:
-                    svc_for_sym = self._asset_registry.get_service(sym)
-                    for (src, s, tf), df in ctx._bars.items():
-                        if df.empty:
-                            continue
-                        resolved = svc_for_sym.resolve_symbol(sym, src)
-                        if s != sym and s != resolved:
-                            continue
-                        cache_key = id(df)
-                        if cache_key not in self._ts_cache:
-                            ts_col = pd.to_datetime(df["timestamp"])
-                            if ts_col.dt.tz is not None:
-                                ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
-                            # pandas 3.0 datetime64[us] default — force ns
-                            ns = ts_col.values.astype("datetime64[ns]").view("int64")
-                            closes = df["close"].values.astype(float)
-                            self._ts_cache[cache_key] = (ns, closes)
-                        ns, _ = self._ts_cache[cache_key]
-                        cutoff = pd.Timestamp(sim_time)
-                        if cutoff.tz is not None:
-                            cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-                        idx = np.searchsorted(ns, cutoff.value, side="right") - 1
-                        if idx >= 0:
-                            fill_bar = df.iloc[idx]
-                        break
+                # Every symbol resolves its OWN frame — including the clock
+                # symbol: in union-clock mode the clock row at a timestamp may
+                # carry ANOTHER symbol's OHLC (drop_duplicates keep="first" in
+                # _build_union_clock), so the clock row is only a fallback.
+                svc_for_sym = self._asset_registry.get_service(sym)
+                for (src, s, tf), df in ctx._bars.items():
+                    if df.empty:
+                        continue
+                    resolved = svc_for_sym.resolve_symbol(sym, src)
+                    if s != sym and s != resolved:
+                        continue
+                    cache_key = id(df)
+                    if cache_key not in self._ts_cache:
+                        ts_col = pd.to_datetime(df["timestamp"])
+                        if ts_col.dt.tz is not None:
+                            ts_col = ts_col.dt.tz_convert("UTC").dt.tz_localize(None)
+                        # pandas 3.0 datetime64[us] default — force ns
+                        ns = ts_col.values.astype("datetime64[ns]").view("int64")
+                        closes = df["close"].values.astype(float)
+                        self._ts_cache[cache_key] = (ns, closes)
+                    ns, _ = self._ts_cache[cache_key]
+                    cutoff = pd.Timestamp(sim_time)
+                    if cutoff.tz is not None:
+                        cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                    # Last bar whose interval has elapsed at sim_time. Since
+                    # sim_time = current_bar.timestamp + duration, for the
+                    # symbol's own frame this selects the bar stamped at the
+                    # CURRENT tick — i.e. the documented "next bar after the
+                    # signal" — never a later one.
+                    duration_ns = int(timeframe_to_seconds(tf)) * 1_000_000_000
+                    idx = np.searchsorted(ns, cutoff.value - duration_ns, side="right") - 1
+                    if idx >= 0:
+                        fill_bar = df.iloc[idx]
+                    break
                 # Try to fill against THIS bar
                 po.fill_attempted = True
                 fill, advance_for_stop = self._try_fill(
@@ -588,6 +597,9 @@ class BacktestEngine:
                 cutoff = pd.Timestamp(ctx._sim_time_now)
                 if cutoff.tz is not None:
                     cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+                # 1day contract bars are stamped at open; exclude the bar
+                # whose interval has not elapsed at sim_time.
+                cutoff = cutoff - pd.Timedelta(seconds=timeframe_to_seconds("1day"))
                 visible = df[ts <= cutoff]
                 if not visible.empty:
                     bar = visible.iloc[-1]
@@ -913,7 +925,10 @@ class BacktestEngine:
             cutoff = pd.Timestamp(sim_time)
             if cutoff.tz is not None:
                 cutoff = cutoff.tz_convert("UTC").tz_localize(None)
-            idx = np.searchsorted(ns, cutoff.value, side="right") - 1
+            # A bar stamped at T (open time) is only known at T + duration:
+            # exclude bars whose interval has not elapsed at sim_time.
+            duration_ns = int(timeframe_to_seconds(tf)) * 1_000_000_000
+            idx = np.searchsorted(ns, cutoff.value - duration_ns, side="right") - 1
             if idx >= 0:
                 return float(closes[idx])
             return 0.0  # sim_time precedes symbol's first bar
