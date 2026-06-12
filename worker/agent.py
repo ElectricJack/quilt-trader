@@ -44,6 +44,10 @@ class WorkerAgent:
         self.router = MessageRouter()
         self._running_instances: dict[str, Any] = {}
         self._pending_signal_responses: dict[str, deque] = {}
+        # Per-instance chain tail for tick serialization + strong refs so
+        # fire-and-forget tasks aren't garbage-collected mid-flight.
+        self._instance_tick_tails: dict[str, asyncio.Task] = {}
+        self._background_tasks: set[asyncio.Task] = set()
         self.register_handlers()
 
     async def _send(self, data: dict) -> None:
@@ -237,8 +241,29 @@ class WorkerAgent:
             if runtime is None:
                 logger.debug("tick_batch entry for unknown instance %s; ignoring", inst_id)
                 continue
-            # Per-instance task: a slow algorithm doesn't block sibling instances.
-            asyncio.create_task(runtime.on_tick_batch_entry(entry))
+            # Entries for ONE instance are chained (strict arrival order);
+            # different instances still run concurrently, so a slow algorithm
+            # doesn't block its siblings.
+            prev = self._instance_tick_tails.get(inst_id)
+            task = asyncio.create_task(
+                self._run_tick_entry_serialized(prev, runtime, entry, inst_id)
+            )
+            self._instance_tick_tails[inst_id] = task
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+    async def _run_tick_entry_serialized(
+        self, prev: "asyncio.Task | None", runtime: Any, entry: dict, inst_id: str,
+    ) -> None:
+        if prev is not None:
+            try:
+                await prev
+            except Exception:
+                pass  # the previous entry's failure was already logged below
+        try:
+            await runtime.on_tick_batch_entry(entry)
+        except Exception:
+            logger.exception("tick_batch entry failed for instance %s", inst_id)
 
     def _has_git(self, repo_root: str) -> bool:
         git_dir = os.path.join(repo_root, ".git")
