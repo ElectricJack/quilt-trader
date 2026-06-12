@@ -268,7 +268,10 @@ export function DeploymentDetail() {
 
       {/* Run filter dropdown — placed ABOVE the KPI row.
           NOTE: currently only filters the trades table; see TODO above. */}
-      <div className="flex justify-end">
+      <div className="flex items-center justify-end gap-2">
+        <span className="text-xs text-gray-500">
+          Filter applies to the trades table only — KPIs and charts show lifetime data
+        </span>
         <select
           value={runFilter}
           onChange={(e) => {

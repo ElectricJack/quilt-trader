@@ -403,8 +403,14 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 ## Dashboard
 
 ### Deploy-from-parameter-set flow
-- **Deferred 2026-06-12** (UX fixes): the dashboard has no deployment-creation flow at all; the dead per-row "Deploy" button in `ParameterSetsSection` was removed.
+- **Deferred from:** [2026-06-12-algorithm-section-ux-fixes.md](plans/2026-06-12-algorithm-section-ux-fixes.md)
+- **Why deferred:** the dashboard has no deployment-creation flow at all; the dead per-row "Deploy" button in `ParameterSetsSection` was removed as part of UX cleanup.
 - **What's needed:** a `CreateDeployment` modal (pick account/worker, preload the parameter set's `config_values`) wired to `POST /api/deployments`.
+
+### Per-run deployment reports
+- **Deferred from:** [2026-06-12-algorithm-section-ux-fixes.md](plans/2026-06-12-algorithm-section-ux-fixes.md)
+- **Why deferred:** `/api/deployments/:id/report` does not accept a `run_id` filter, so the dashboard run-filter dropdown only narrows the trades table (now labeled as such). Real fix: backend report endpoint accepts `?run_id=`, computing KPIs/charts from that run's fills only; then pass `runFilter` through in `DeploymentDetail.tsx` (see `TODO(M6.4-known-limitation)`).
+- **What's needed:** extend the report endpoint to accept an optional `run_id` query param; scope KPI/chart/metrics computation to that run's fills. Update `useDeploymentReport` hook to forward `run_id`. Remove the scope-note span in `DeploymentDetail.tsx` and wire the filter into the report call.
 
 ---
 
