@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dt_time, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Awaitable, Callable
 
 PageCallback = Callable[[int, int, "float | None"], Awaitable[None]]
@@ -113,11 +114,13 @@ class TradierProvider:
 
         bars = [
             {
+                # Open-time stamp convention: US-equity daily bars open at
+                # 09:30 America/New_York, converted to UTC.
                 "timestamp": datetime.combine(
                     date.fromisoformat(r["date"]),
-                    datetime.min.time(),
-                    tzinfo=timezone.utc,
-                ).isoformat(),
+                    dt_time(9, 30),
+                    tzinfo=ZoneInfo("America/New_York"),
+                ).astimezone(timezone.utc).isoformat(),
                 "open": r["open"],
                 "high": r["high"],
                 "low": r["low"],
