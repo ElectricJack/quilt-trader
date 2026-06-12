@@ -53,8 +53,12 @@ def _bar_lookup(
 
     Bars are stamped at OPEN time: a bar stamped T with duration d is only
     known at T + d. Pass the bar duration as ``timeframe_seconds`` to exclude
-    the not-yet-elapsed bar (0.0 preserves the legacy inclusive behavior for
-    callers that have no timeframe available).
+    the not-yet-elapsed bar.
+
+    WARNING: the 0.0 default reproduces the legacy one-bar look-ahead
+    (F7-class bug); pass the real bar duration whenever the timeframe is
+    known. Equity/crypto/index callers currently rely on the default pending
+    backlog migration.
 
     Handles tz-naive and tz-aware timestamps on either side by normalizing
     both to UTC-naive before comparing. Returns None if df is empty or no
@@ -70,7 +74,7 @@ def _bar_lookup(
         cutoff = cutoff.tz_convert("UTC").tz_localize(None)
     # pandas 3.0 datetime64[us] default — force ns before viewing as int64
     ns = ts.values.astype("datetime64[ns]").view("int64")
-    cutoff_ns = cutoff.value - int(timeframe_seconds) * 1_000_000_000
+    cutoff_ns = cutoff.value - int(round(timeframe_seconds * 1_000_000_000))
     idx = int(np.searchsorted(ns, cutoff_ns, side="right")) - 1
     if idx < 0:
         return None

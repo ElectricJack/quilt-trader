@@ -19,6 +19,7 @@ from coordinator.services.asset_services.base import (
     _bar_lookup,
 )
 from coordinator.services.asset_services.equity import EquityAssetService
+from coordinator.services.backtest_tick_context import timeframe_to_seconds
 from coordinator.services.chain_builder import parse_occ_symbol
 
 
@@ -215,9 +216,6 @@ class OptionsAssetService:
     ) -> Optional[float]:
         if ctx is None or not hasattr(ctx, "_bars"):
             return None
-        # Local import: asset_services must not import backtest modules at
-        # module load (circular-import risk).
-        from coordinator.services.backtest_tick_context import timeframe_to_seconds
         for (_src, sym, tf), df in ctx._bars.items():
             if sym == underlying:
                 return _bar_lookup(
