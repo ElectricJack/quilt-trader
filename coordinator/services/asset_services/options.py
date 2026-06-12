@@ -131,10 +131,12 @@ class OptionsAssetService:
     def compute_unrealized_pnl(
         self, symbol: str, quantity: float, avg_price: float, market_value: float,
     ) -> float:
-        cost = avg_price * abs(quantity) * self.get_multiplier()
-        if market_value > 0 and cost > 0:
-            return market_value - cost
-        return 0.0
+        if quantity == 0 or market_value == 0:
+            return 0.0
+        # Signed cost basis: negative for shorts, so shorts profit when
+        # market_value (also negative) rises toward zero.
+        cost = avg_price * quantity * self.get_multiplier()
+        return market_value - cost
 
     def risk_contribution(
         self, symbol: str, market_value: float,
@@ -174,7 +176,10 @@ class OptionsAssetService:
 
         underlying_price = self._get_underlying_price(parsed["underlying"], sim_time, ctx)
         if underlying_price is None:
-            underlying_price = parsed["strike"]
+            raise ValueError(
+                f"Cannot settle expired option {symbol}: no underlying price "
+                f"available for {parsed['underlying']} at {sim_time}"
+            )
 
         if parsed["option_type"] == "call":
             intrinsic = max(0.0, underlying_price - parsed["strike"])
