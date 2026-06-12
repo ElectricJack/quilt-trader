@@ -5,6 +5,7 @@ import type { ResearchJob } from "../api/client";
 
 interface Props {
   job: ResearchJob;
+  algorithmId?: string;
   onCancel: (jobId: string) => void;
 }
 
@@ -22,7 +23,7 @@ const KIND_COLORS: Record<ResearchJob["kind"], string> = {
   cpcv:            "bg-teal-700 text-teal-100",
 };
 
-export function ResearchJobRow({ job, onCancel }: Props) {
+export function ResearchJobRow({ job, algorithmId, onCancel }: Props) {
   const [expanded, setExpanded] = useState(false);
   const canCancel = job.status === "queued" || job.status === "running";
   const pct = Math.round(job.progress_pct * 100);
@@ -102,7 +103,7 @@ export function ResearchJobRow({ job, onCancel }: Props) {
                 {job.run_ids.map((rid) => (
                   <Link
                     key={rid}
-                    to={`/backtest-runs/${rid}`}
+                    to={algorithmId ? `/algorithms/${algorithmId}/backtests/${rid}` : `/backtest-runs/${rid}`}
                     className="text-indigo-400 hover:text-indigo-300 text-xs px-2 py-0.5 border border-indigo-900 rounded"
                   >
                     {rid}

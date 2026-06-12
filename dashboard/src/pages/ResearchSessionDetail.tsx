@@ -16,6 +16,8 @@ import type { CPCVResult } from "../types";
 export function ResearchSessionDetail() {
   const params = useParams<{ id?: string; sessionId?: string }>();
   const sessionId = (params.sessionId ?? params.id) ? parseInt((params.sessionId ?? params.id)!, 10) : null;
+  // On /algorithms/:id/research/:sessionId, params.id is the algorithm id.
+  const algoIdFromRoute = params.sessionId ? params.id : undefined;
   const sessionQ = useResearchSession(sessionId);
   const jobsQ = useResearchJobs(sessionId);
   const cancelMut = useCancelResearchJob(sessionId ?? 0);
@@ -31,7 +33,7 @@ export function ResearchSessionDetail() {
     return (
       <div className="bg-gray-900 border border-red-900 rounded-lg p-6 text-red-400">
         Session not found.
-        <Link to="/research" className="ml-3 text-indigo-400 hover:text-indigo-300">
+        <Link to={algoIdFromRoute ? `/algorithms/${algoIdFromRoute}/research` : "/algorithms"} className="ml-3 text-indigo-400 hover:text-indigo-300">
           ← back to sessions
         </Link>
       </div>
@@ -41,7 +43,10 @@ export function ResearchSessionDetail() {
 
   return (
     <div className="space-y-4">
-      <Link to="/research" className="text-sm text-gray-400 hover:text-gray-200 flex items-center gap-1">
+      <Link
+        to={`/algorithms/${session.algorithm_id}/research`}
+        className="text-sm text-gray-400 hover:text-gray-200 flex items-center gap-1"
+      >
         <ArrowLeft size={14} /> Back to sessions
       </Link>
 
@@ -78,6 +83,7 @@ export function ResearchSessionDetail() {
           <div key={job.job_id} className="space-y-2">
             <ResearchJobRow
               job={job}
+              algorithmId={session.algorithm_id}
               onCancel={(jobId) => void cancelMut.mutate(jobId)}
             />
             {job.kind === "cpcv" && (

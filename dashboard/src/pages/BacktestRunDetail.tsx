@@ -35,6 +35,10 @@ interface BacktestTradeRow {
 export function BacktestRunDetail() {
   const params = useParams<{ id?: string; runId?: string }>();
   const runId = params.runId ?? params.id ?? "";
+  // On the scoped route /algorithms/:id/backtests/:runId, params.id is the
+  // algorithm id; on legacy /backtest-runs/:id it is the run id.
+  const algoId = params.runId ? params.id : undefined;
+  const backHref = algoId ? `/algorithms/${algoId}/backtests` : "/algorithms";
   const navigate = useNavigate();
   const addAlert = useUIStore((s) => s.addAlert);
   const { data: report } = useBacktestReport(runId, { refetchInterval: 2000 });
@@ -48,7 +52,7 @@ export function BacktestRunDetail() {
     try {
       await del.mutateAsync(runId);
       addAlert({ message: "Deleted backtest run.", severity: "success" });
-      navigate("/backtests");
+      navigate(backHref);
     } catch {
       addAlert({ message: "Failed to delete backtest run.", severity: "error" });
       setDeleteOpen(false);
@@ -68,7 +72,7 @@ export function BacktestRunDetail() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link to="/backtests" className="text-gray-400 hover:text-white">
+          <Link to={backHref} className="text-gray-400 hover:text-white">
             <ChevronLeft size={20} />
           </Link>
           <h1 className="text-xl font-bold">Backtest Run</h1>

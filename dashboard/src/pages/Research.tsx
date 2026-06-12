@@ -61,7 +61,7 @@ export function Research({ algorithmId }: ResearchProps = {}) {
               {q.data.map((s) => (
                 <tr
                   key={s.id}
-                  onClick={() => nav(`/research/sessions/${s.id}`)}
+                  onClick={() => nav(algorithmId ? `/algorithms/${algorithmId}/research/${s.id}` : `/research/sessions/${s.id}`)}
                   className="border-t border-gray-800 cursor-pointer hover:bg-gray-800/50 text-gray-200"
                 >
                   <td className="px-4 py-2 font-medium">{s.name}</td>
@@ -85,7 +85,10 @@ export function Research({ algorithmId }: ResearchProps = {}) {
       <NewSessionModal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
-        onCreated={(id) => { setModalOpen(false); nav(`/research/sessions/${id}`); }}
+        onCreated={(id) => {
+          setModalOpen(false);
+          nav(algorithmId ? `/algorithms/${algorithmId}/research/${id}` : `/research/sessions/${id}`);
+        }}
       />
     </div>
   );
