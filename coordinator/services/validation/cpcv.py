@@ -336,10 +336,14 @@ async def _run_mode_fixed(
     for rid in result.segment_run_ids:
         row = db.query(BacktestRun).filter_by(id=rid).one()
         sharpes.append(float(row.sharpe_ratio or 0.0))
-        if row.equity_curve:
-            equity = pd.Series([float(p.get("equity", 1.0)) for p in row.equity_curve])
-            rets = equity.pct_change().dropna().tolist()
-            concat_returns.extend(rets)
+        if not row.equity_curve:
+            raise ValueError(
+                f"CPCV segment run {rid} completed without an equity_curve; "
+                "refusing to aggregate with silently dropped segments"
+            )
+        equity = pd.Series([float(p.get("equity", 1.0)) for p in row.equity_curve])
+        rets = equity.pct_change().dropna().tolist()
+        concat_returns.extend(rets)
 
     n = len(sharpes)
     mean_sharpe = sum(sharpes) / n if n > 0 else 0.0
@@ -484,10 +488,14 @@ async def _run_mode_select(
         path_returns: list[float] = []
         for seg in path:
             row = db.query(BacktestRun).filter_by(id=seg.run_id).one()
-            if row.equity_curve:
-                equity = pd.Series([float(p.get("equity", 1.0)) for p in row.equity_curve])
-                rets = equity.pct_change().dropna().tolist()
-                path_returns.extend(rets)
+            if not row.equity_curve:
+                raise ValueError(
+                    f"CPCV path segment run {seg.run_id} has no equity_curve; "
+                    "refusing to compute a silently degraded path Sharpe"
+                )
+            equity = pd.Series([float(p.get("equity", 1.0)) for p in row.equity_curve])
+            rets = equity.pct_change().dropna().tolist()
+            path_returns.extend(rets)
         if path_returns:
             arr = pd.Series(path_returns)
             std = arr.std(ddof=1)
