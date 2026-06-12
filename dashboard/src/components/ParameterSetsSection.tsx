@@ -18,7 +18,6 @@ interface Props {
   algorithmId: string;
   manifestConfig: Array<{ name: string; type: string; default?: unknown }>;
   onBacktest: (setId: string) => void;
-  onDeploy: () => void;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -149,10 +148,9 @@ interface RowProps {
   isBest: boolean;
   onDeleteClick: () => void;
   onBacktest: (setId: string) => void;
-  onDeploy: () => void;
 }
 
-function ParameterSetRow({ ps, isBest, onDeleteClick, onBacktest, onDeploy }: RowProps) {
+function ParameterSetRow({ ps, isBest, onDeleteClick, onBacktest }: RowProps) {
   const bb = ps.best_backtest;
   const sharpe = bb?.sharpe_ratio ?? null;
   const ret = bb?.total_return ?? null;
@@ -187,12 +185,6 @@ function ParameterSetRow({ ps, isBest, onDeleteClick, onBacktest, onDeploy }: Ro
             Backtest
           </button>
           <button
-            onClick={onDeploy}
-            className="text-xs text-gray-400 hover:text-gray-200 transition-colors"
-          >
-            Deploy
-          </button>
-          <button
             onClick={onDeleteClick}
             className="text-red-500 hover:text-red-400 transition-colors"
             title="Delete parameter set"
@@ -207,7 +199,7 @@ function ParameterSetRow({ ps, isBest, onDeleteClick, onBacktest, onDeploy }: Ro
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function ParameterSetsSection({ algorithmId, manifestConfig, onBacktest, onDeploy }: Props) {
+export function ParameterSetsSection({ algorithmId, manifestConfig, onBacktest }: Props) {
   const addAlert = useUIStore((s) => s.addAlert);
   const { data: parameterSets = [] } = useParameterSets(algorithmId);
   const { mutateAsync: deleteParameterSet } = useDeleteParameterSet(algorithmId);
@@ -276,6 +268,16 @@ export function ParameterSetsSection({ algorithmId, manifestConfig, onBacktest, 
     }
   }
 
+  // ─── Best set by Sharpe ───────────────────────────────────────────────────
+
+  const bestId = parameterSets.reduce<{ id: string | null; sharpe: number }>(
+    (acc, ps) => {
+      const s = ps.best_backtest?.sharpe_ratio;
+      return s != null && s > acc.sharpe ? { id: ps.id, sharpe: s } : acc;
+    },
+    { id: null, sharpe: -Infinity },
+  ).id;
+
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
@@ -343,14 +345,13 @@ export function ParameterSetsSection({ algorithmId, manifestConfig, onBacktest, 
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
-              {parameterSets.map((ps, i) => (
+              {parameterSets.map((ps) => (
                 <ParameterSetRow
                   key={ps.id}
                   ps={ps}
-                  isBest={i === 0}
+                  isBest={ps.id === bestId}
                   onDeleteClick={() => setDeleteTarget(ps.id)}
                   onBacktest={onBacktest}
-                  onDeploy={onDeploy}
                 />
               ))}
             </tbody>

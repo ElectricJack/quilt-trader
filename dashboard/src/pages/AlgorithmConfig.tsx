@@ -42,9 +42,6 @@ export function AlgorithmConfig() {
           setBacktestPreloadSetId(setId);
           setBacktestOpen(true);
         }}
-        onDeploy={() => {
-          // TODO: Navigate to deploy flow if needed
-        }}
       />
 
       <section>

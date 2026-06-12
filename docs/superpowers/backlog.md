@@ -400,6 +400,14 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+## Dashboard
+
+### Deploy-from-parameter-set flow
+- **Deferred 2026-06-12** (UX fixes): the dashboard has no deployment-creation flow at all; the dead per-row "Deploy" button in `ParameterSetsSection` was removed.
+- **What's needed:** a `CreateDeployment` modal (pick account/worker, preload the parameter set's `config_values`) wired to `POST /api/deployments`.
+
+---
+
 ## Correctness audit follow-ups (2026-06-11)
 
 > **Deferred from:** [2026-06-11-correctness-audit-findings.md](research/2026-06-11-correctness-audit-findings.md) and its fix plan [2026-06-11-correctness-audit-fixes.md](plans/2026-06-11-correctness-audit-fixes.md). The 22 findings (F1–F20b) were fixed on branch `audit-fixes` with 34 pinning tests. Items below were explicitly scoped out of the fixes or surfaced by the per-task spec/quality reviews. Grouped by module; each is intentionally small.
