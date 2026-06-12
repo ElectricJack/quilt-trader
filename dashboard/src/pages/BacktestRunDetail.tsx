@@ -21,6 +21,7 @@ import { ReturnsDistributionSlot } from "../components/report/ReturnsDistributio
 import { RollingMetricsSlot } from "../components/report/RollingMetricsSlot";
 import { fmtPct, fmtInt, fmtNum } from "../lib/formatNumbers";
 
+const TRADES_PAGE_SIZE = 500;
 const INFLIGHT_STATUSES = ["queued", "downloading_data", "running"];
 function inflight(status: string | undefined | null): boolean {
   return !!status && INFLIGHT_STATUSES.includes(status);
@@ -44,7 +45,7 @@ export function BacktestRunDetail() {
   const { data: report } = useBacktestReport(runId, { refetchInterval: 2000 });
   const isRunInflight = inflight(report?.status);
   const liveRefetch = isRunInflight ? 2000 : undefined;
-  const [tradesLimit, setTradesLimit] = useState(500);
+  const [tradesLimit, setTradesLimit] = useState(TRADES_PAGE_SIZE);
   const { data: tradesData } = useBacktestTrades(runId, tradesLimit, 0, { refetchInterval: liveRefetch });
   const del = useDeleteBacktestRun();
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -184,7 +185,7 @@ export function BacktestRunDetail() {
           {trades.length < totalTrades && (
             <div className="px-3 py-2 border-t border-gray-800 text-center">
               <button
-                onClick={() => setTradesLimit((l) => l + 500)}
+                onClick={() => setTradesLimit((l) => l + TRADES_PAGE_SIZE)}
                 className="text-xs text-indigo-400 hover:text-indigo-300"
               >
                 Load more ({trades.length} of {totalTrades} shown)

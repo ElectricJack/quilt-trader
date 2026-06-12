@@ -3,6 +3,7 @@ import {
   useQuery,
   useMutation,
   useQueryClient,
+  keepPreviousData,
 } from "@tanstack/react-query";
 import { api } from "./client";
 import type { Deployment, CPCVRequest } from "../types";
@@ -1157,6 +1158,7 @@ export function useBacktestTrades(
     queryFn: () => api.getBacktestTrades(id, { limit, offset }),
     enabled: !!id,
     refetchInterval: opts?.refetchInterval,
+    placeholderData: keepPreviousData,
   });
 }
 
