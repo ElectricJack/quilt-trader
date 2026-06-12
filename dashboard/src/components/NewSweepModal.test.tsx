@@ -16,16 +16,25 @@ vi.mock("../api/client", () => ({
   },
 }));
 
-function wrap(ui: React.ReactNode) {
+const addAlert = vi.fn();
+vi.mock("../stores/ui", () => ({
+  useUIStore: (sel: (s: { addAlert: typeof addAlert }) => unknown) => sel({ addAlert }),
+}));
+
+function renderModal(open = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{ui}</QueryClientProvider>;
+  return render(
+    <QueryClientProvider client={qc}>
+      <NewSweepModal open={open} sessionId={7} onClose={() => {}} />
+    </QueryClientProvider>,
+  );
 }
 
 describe("NewSweepModal", () => {
-  beforeEach(() => sweepFn.mockClear());
+  beforeEach(() => { sweepFn.mockClear(); addAlert.mockClear(); });
 
   it("renders only the 4 execution fields (no algorithm/base_config/parameter_space)", () => {
-    render(wrap(<NewSweepModal open={true} sessionId={7} onClose={() => {}} />));
+    renderModal();
     expect(screen.getByLabelText(/search/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/max trials/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/parallelism/i)).toBeInTheDocument();
@@ -36,7 +45,7 @@ describe("NewSweepModal", () => {
   });
 
   it("submit body has only execution params", async () => {
-    render(wrap(<NewSweepModal open={true} sessionId={7} onClose={() => {}} />));
+    renderModal();
     fireEvent.change(screen.getByLabelText(/max trials/i), { target: { value: "10" } });
     fireEvent.click(screen.getByRole("button", { name: /start sweep/i }));
     await waitFor(() => expect(sweepFn).toHaveBeenCalled());
@@ -53,10 +62,20 @@ describe("NewSweepModal", () => {
   });
 
   it("search-strategy select reflects selection", async () => {
-    render(wrap(<NewSweepModal open={true} sessionId={7} onClose={() => {}} />));
+    renderModal();
     fireEvent.change(screen.getByLabelText(/search/i), { target: { value: "tpe" } });
     fireEvent.click(screen.getByRole("button", { name: /start sweep/i }));
     await waitFor(() => expect(sweepFn).toHaveBeenCalled());
     expect(sweepFn.mock.calls[0][1].search).toBe("tpe");
+  });
+
+  it("shows a success toast after the sweep is queued", async () => {
+    renderModal();
+    fireEvent.click(screen.getByRole("button", { name: /start sweep/i }));
+    await waitFor(() =>
+      expect(addAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ severity: "success" }),
+      ),
+    );
   });
 });

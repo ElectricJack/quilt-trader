@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import { useCreateResearchSweep } from "../hooks/useResearchMutations";
+import { useUIStore } from "../stores/ui";
 
 interface Props {
   open: boolean;
@@ -10,6 +11,7 @@ interface Props {
 
 export function NewSweepModal({ open, sessionId, onClose }: Props) {
   const mut = useCreateResearchSweep(sessionId);
+  const addAlert = useUIStore((s) => s.addAlert);
   const [search, setSearch] = useState<"grid" | "random" | "latin" | "tpe">("grid");
   const [maxTrials, setMaxTrials] = useState(50);
   const [parallelism, setParallelism] = useState(1);
@@ -24,6 +26,7 @@ export function NewSweepModal({ open, sessionId, onClose }: Props) {
       await mut.mutateAsync({
         search, max_trials: maxTrials, parallelism, seed,
       });
+      addAlert({ message: "Sweep queued.", severity: "success" });
       onClose();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "Failed to start sweep");
