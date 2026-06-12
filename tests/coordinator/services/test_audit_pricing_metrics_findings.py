@@ -217,6 +217,19 @@ def test_f9_max_dd_duration_flushes_open_trailing_drawdown():
     assert metrics["max_drawdown_duration_days"] == 3
 
 
+def test_f9_max_dd_duration_measures_from_peak_across_plateau():
+    """F9 follow-up: with a flat plateau at the peak, current_dd_start must
+    point at the PEAK index, not the immediately prior plateau point.
+    Curve [100, 100, 90]: peak at index 0, unrecovered at index 2 -> 2 bars.
+    Buggy: anchors at index 1 -> reports 1.
+    """
+    metrics = MetricsEngine.compute(
+        equity_curve=_curve([100.0, 100.0, 90.0]),
+        positions=[],
+    )
+    assert metrics["max_drawdown_duration_days"] == 2
+
+
 # ---------------------------------------------------------------------------
 # F10 — bootstrap _block_resample crashes for short series
 # ---------------------------------------------------------------------------

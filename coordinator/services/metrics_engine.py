@@ -68,6 +68,7 @@ class MetricsEngine:
         # index 0 valid as a peak; an unrecovered drawdown is flushed at the
         # end of the series.
         peak = equities[0]
+        peak_index = 0
         max_dd_pct = 0
         max_dd_dollars = 0
         max_dd_duration = 0
@@ -79,6 +80,7 @@ class MetricsEngine:
                     max_dd_duration = max(max_dd_duration, i - current_dd_start)
                     current_dd_start = None
                 peak = eq
+                peak_index = i
             else:
                 dd = (peak - eq) / peak * 100 if peak > 0 else 0
                 dd_abs = peak - eq
@@ -86,7 +88,7 @@ class MetricsEngine:
                     max_dd_pct = dd
                     max_dd_dollars = dd_abs
                 if eq < peak and current_dd_start is None:
-                    current_dd_start = i - 1  # the prior point was the peak
+                    current_dd_start = peak_index  # anchor at the actual peak, not the prior point
 
         if current_dd_start is not None:
             max_dd_duration = max(
