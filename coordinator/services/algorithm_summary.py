@@ -18,10 +18,17 @@ from coordinator.database.models import (
 from coordinator.api.serialization import to_iso_utc
 
 
+def _point_value(p: dict) -> float:
+    v = p.get("portfolio_value")
+    if v is None:
+        v = p.get("equity", 0.0)
+    return float(v) if v is not None else 0.0
+
+
 def _downsample(curve: list[dict], target: int = 60) -> list[float]:
     if not curve:
         return []
-    points = [float(p.get("equity", 0.0)) for p in curve]
+    points = [_point_value(p) for p in curve]
     if len(points) <= target:
         return points
     step = len(points) / target

@@ -173,6 +173,31 @@ async def test_sparkline_downsampled_to_60(async_session_factory):
 
 
 @pytest.mark.asyncio
+async def test_sparkline_reads_portfolio_value_key(async_session_factory):
+    """Backtest equity curves store points as {portfolio_value: ...}; the
+    sparkline must use that key, not the legacy "equity" alias, or every
+    sparkline collapses to a flat zero line."""
+    async with async_session_factory() as s:
+        algo = _make_algo(s)
+        s.add(BacktestRun(
+            id="r-1", algorithm_id=algo.id, status="completed",
+            equity_curve=[
+                {"timestamp": "2024-01-01", "portfolio_value": 100000.0 + i, "cash": 0.0}
+                for i in range(120)
+            ],
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            date_range_start=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            date_range_end=datetime(2025, 12, 31, tzinfo=timezone.utc),
+        ))
+        await s.commit()
+        svc = AlgorithmSummaryService()
+        summary = await svc.build_for(algo.id, s)
+
+    assert summary["equity_sparkline"][0] == 100000.0
+    assert summary["equity_sparkline"][-1] >= 100100.0
+
+
+@pytest.mark.asyncio
 async def test_counts_and_last_activity(async_session_factory):
     async with async_session_factory() as s:
         algo = _make_algo(s)

@@ -175,7 +175,12 @@ def _algo_to_response(algo: Algorithm) -> dict:
 def _downsample(curve: list[dict], target: int = 20) -> list[float]:
     if not curve:
         return []
-    points = [float(p.get("equity", 0.0)) for p in curve]
+    def _val(p: dict) -> float:
+        v = p.get("portfolio_value")
+        if v is None:
+            v = p.get("equity", 0.0)
+        return float(v) if v is not None else 0.0
+    points = [_val(p) for p in curve]
     if len(points) <= target:
         return points
     step = len(points) / target
