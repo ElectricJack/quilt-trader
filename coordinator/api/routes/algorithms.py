@@ -21,6 +21,7 @@ from coordinator.api.serialization import to_iso_utc
 from coordinator.database.models import (
     Account,
     Algorithm,
+    AlgorithmDeploymentReport,
     AlgorithmInstance,
     AlgorithmRun,
     BacktestComparison,
@@ -196,14 +197,24 @@ async def _enrich_instance(inst: AlgorithmInstance, db: AsyncSession) -> dict:
         select(Account).where(Account.id == inst.account_id)
     )).scalar_one_or_none()
 
-    # Latest run's equity curve, downsampled
-    run = (await db.execute(
-        select(AlgorithmRun)
-        .where(AlgorithmRun.instance_id == inst.id)
-        .order_by(AlgorithmRun.run_number.desc())
-        .limit(1)
+    # Live equity curve: prefer the deployment report (kept fresh by the
+    # live finalizer); fall back to the latest AlgorithmRun in case a
+    # future writer populates it.
+    report_curve = (await db.execute(
+        select(AlgorithmDeploymentReport.equity_curve).where(
+            AlgorithmDeploymentReport.deployment_id == inst.id
+        )
     )).scalar_one_or_none()
-    sparkline = _downsample(run.equity_curve or []) if run else None
+    if report_curve:
+        sparkline = _downsample(report_curve)
+    else:
+        run = (await db.execute(
+            select(AlgorithmRun)
+            .where(AlgorithmRun.instance_id == inst.id)
+            .order_by(AlgorithmRun.run_number.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        sparkline = _downsample(run.equity_curve or []) if run else None
 
     # Today's P&L from trade_log (realized only — unrealized delta is hard without per-tick snapshots)
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)

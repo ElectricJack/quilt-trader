@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import sessionmaker
 
 from coordinator.database.models import (
-    Account, Base, Algorithm, AlgorithmInstance, AlgorithmRun,
-    BacktestRun, OptimizationSession,
+    Account, AlgorithmDeploymentReport, Base, Algorithm, AlgorithmInstance,
+    AlgorithmRun, BacktestRun, OptimizationSession,
 )
 from coordinator.services.algorithm_summary import AlgorithmSummaryService
 
@@ -170,6 +170,44 @@ async def test_sparkline_downsampled_to_60(async_session_factory):
     assert len(summary["equity_sparkline"]) == 60
     assert summary["equity_sparkline"][0] == 0.0
     assert summary["equity_sparkline"][-1] >= 480.0
+
+
+@pytest.mark.asyncio
+async def test_sparkline_uses_live_deployment_report_for_running_instance(async_session_factory):
+    """When the algorithm has a running instance, the sparkline must come
+    from its AlgorithmDeploymentReport (which the live finalizer keeps
+    fresh) rather than falling back to the latest backtest. AlgorithmRun
+    rows are never populated for live runs, so without this the live algo
+    showed a stale or wrong sparkline."""
+    async with async_session_factory() as s:
+        algo = _make_algo(s)
+        acct = _make_account(s, environment="live")
+        inst = AlgorithmInstance(
+            id=f"i-{uuid.uuid4().hex[:6]}", algorithm_id=algo.id,
+            account_id=acct.id, worker_id="w-1", status="running",
+        )
+        s.add(inst)
+        s.add(BacktestRun(
+            id="r-bt", algorithm_id=algo.id, status="completed",
+            equity_curve=[{"timestamp": "2024-01-01", "portfolio_value": 100000.0}],
+            created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            date_range_start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            date_range_end=datetime(2024, 12, 31, tzinfo=timezone.utc),
+        ))
+        await s.flush()
+        s.add(AlgorithmDeploymentReport(
+            deployment_id=inst.id,
+            equity_curve=[
+                {"timestamp": "2026-05-21T00:00:00", "portfolio_value": 1252.9},
+                {"timestamp": "2026-05-22T00:00:00", "portfolio_value": 1277.13},
+            ],
+        ))
+        await s.commit()
+        svc = AlgorithmSummaryService()
+        summary = await svc.build_for(algo.id, s)
+
+    assert summary["equity_sparkline_source"] == "live"
+    assert summary["equity_sparkline"] == [1252.9, 1277.13]
 
 
 @pytest.mark.asyncio

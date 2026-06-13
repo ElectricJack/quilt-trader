@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from coordinator.database.models import (
     Account,
     Algorithm,
+    AlgorithmDeploymentReport,
     AlgorithmInstance,
     AlgorithmRun,
     BacktestRun,
@@ -124,9 +125,22 @@ class AlgorithmSummaryService:
             headline_sharpe = float(latest_bt.sharpe_ratio)
             headline_sharpe_source = "last_backtest"
 
+        live_report_curve: list[dict] | None = None
+        if active is not None:
+            live_report_curve = (
+                await db.execute(
+                    select(AlgorithmDeploymentReport.equity_curve).where(
+                        AlgorithmDeploymentReport.deployment_id == active.id
+                    )
+                )
+            ).scalar_one_or_none()
+
         sparkline: list[float] = []
         sparkline_source: str | None = None
-        if latest_run is not None and latest_run.equity_curve:
+        if live_report_curve:
+            sparkline = _downsample(live_report_curve, target=60)
+            sparkline_source = "live"
+        elif latest_run is not None and latest_run.equity_curve:
             sparkline = _downsample(latest_run.equity_curve, target=60)
             sparkline_source = "live"
         elif latest_bt is not None and latest_bt.equity_curve:
