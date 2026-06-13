@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { AlgorithmsGrid } from "./AlgorithmsGrid";
@@ -23,6 +23,16 @@ const algos = [
       equity_sparkline: [], equity_sparkline_source: null,
       counts: { deployments: 0, backtests: 8, research_sessions: 0 },
       last_activity_at: "2026-06-05T00:00:00Z",
+    },
+  },
+  {
+    id: "a-3", name: "zeta-mean-revert", version: "0.3.1",
+    summary: {
+      status: "idle", status_source: null,
+      headline_sharpe: 0.4, headline_sharpe_source: "last_backtest",
+      equity_sparkline: [], equity_sparkline_source: null,
+      counts: { deployments: 0, backtests: 3, research_sessions: 0 },
+      last_activity_at: "2026-06-01T00:00:00Z",
     },
   },
 ];
@@ -59,11 +69,32 @@ describe("AlgorithmsGrid", () => {
     expect(screen.getByText("alpha-picks")).toBeInTheDocument();
   });
 
-  it("sorts by name when selected", () => {
+  it("sorts by name within each group when selected", () => {
     renderGrid();
     fireEvent.change(screen.getByLabelText(/sort/i), { target: { value: "name" } });
-    const names = screen.getAllByRole("link").map((n) => n.textContent ?? "");
+    const allHeading = screen.getByRole("heading", { name: /all algorithms/i });
+    const allSection = allHeading.parentElement as HTMLElement;
+    const names = within(allSection).getAllByRole("link").map((n) => n.textContent ?? "");
     expect(names[0]).toContain("alpha-picks");
-    expect(names[1]).toContain("crypto-tsmom");
+    expect(names[1]).toContain("zeta-mean-revert");
+  });
+
+  it("groups running algos in a Running section above the rest", () => {
+    renderGrid();
+    expect(screen.getByRole("heading", { name: /running/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /all algorithms/i })).toBeInTheDocument();
+    const sections = screen.getAllByRole("heading");
+    const runningIdx = sections.findIndex((h) => /running/i.test(h.textContent ?? ""));
+    const allIdx = sections.findIndex((h) => /all algorithms/i.test(h.textContent ?? ""));
+    expect(runningIdx).toBeLessThan(allIdx);
+    expect(screen.getByText("crypto-tsmom")).toBeInTheDocument();
+    expect(screen.getByText("alpha-picks")).toBeInTheDocument();
+  });
+
+  it("hides the Running heading when no algo is live or paper", () => {
+    renderGrid();
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: "alpha" } });
+    expect(screen.queryByRole("heading", { name: /running/i })).not.toBeInTheDocument();
+    expect(screen.getByText("alpha-picks")).toBeInTheDocument();
   });
 });

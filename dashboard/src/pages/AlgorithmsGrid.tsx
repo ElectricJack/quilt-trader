@@ -56,6 +56,21 @@ export function AlgorithmsGrid() {
     return sortFor(filtered, sort);
   }, [data, search, sort]);
 
+  const running = useMemo(
+    () => view.filter((a: any) => {
+      const st = a.summary?.status;
+      return st === "live" || st === "paper";
+    }),
+    [view],
+  );
+  const others = useMemo(
+    () => view.filter((a: any) => {
+      const st = a.summary?.status;
+      return st !== "live" && st !== "paper";
+    }),
+    [view],
+  );
+
   async function handleInstall(formData: InstallForm) {
     try {
       await installFromUrl(formData.repo_url);
@@ -123,10 +138,31 @@ export function AlgorithmsGrid() {
           {view.length === 0 ? (
             <p className="text-sm text-gray-500">No algorithms match your search.</p>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {view.map((a: any) => (
-                <AlgorithmCard key={a.id} algorithm={a} />
-              ))}
+            <div className="space-y-5">
+              {running.length > 0 && (
+                <section>
+                  <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                    Running <span className="text-gray-500">({running.length})</span>
+                  </h2>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {running.map((a: any) => (
+                      <AlgorithmCard key={a.id} algorithm={a} />
+                    ))}
+                  </div>
+                </section>
+              )}
+              {others.length > 0 && (
+                <section>
+                  <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                    All algorithms <span className="text-gray-500">({others.length})</span>
+                  </h2>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {others.map((a: any) => (
+                      <AlgorithmCard key={a.id} algorithm={a} />
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           )}
         </>

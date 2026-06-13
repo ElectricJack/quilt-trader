@@ -8,6 +8,7 @@ from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from coordinator.database.models import (
+    Account,
     Algorithm,
     AlgorithmInstance,
     AlgorithmRun,
@@ -27,12 +28,19 @@ def _downsample(curve: list[dict], target: int = 60) -> list[float]:
     return [points[int(i * step)] for i in range(target)]
 
 
-def _pick_status_instance(instances: list[AlgorithmInstance]) -> AlgorithmInstance | None:
-    for status in ("live", "paper"):
-        for inst in instances:
-            if (inst.status or "").lower() == status:
-                return inst
-    return None
+def _pick_active_instance(
+    pairs: list[tuple[AlgorithmInstance, str | None]],
+) -> tuple[AlgorithmInstance | None, str | None]:
+    """Pick a running instance, preferring a live broker account over paper.
+
+    Returns (instance, environment) or (None, None) when no instance is
+    currently running.
+    """
+    for env in ("live", "paper"):
+        for inst, inst_env in pairs:
+            if (inst.status or "").lower() == "running" and (inst_env or "").lower() == env:
+                return inst, env
+    return None, None
 
 
 class AlgorithmSummaryService:
@@ -42,13 +50,17 @@ class AlgorithmSummaryService:
     """
 
     async def build_for(self, algorithm_id: str, db: AsyncSession) -> dict[str, Any]:
-        instances = (
+        instance_rows = (
             await db.execute(
-                select(AlgorithmInstance).where(
-                    AlgorithmInstance.algorithm_id == algorithm_id
-                )
+                select(AlgorithmInstance, Account.environment)
+                .join(Account, AlgorithmInstance.account_id == Account.id, isouter=True)
+                .where(AlgorithmInstance.algorithm_id == algorithm_id)
             )
-        ).scalars().all()
+        ).all()
+        instance_pairs: list[tuple[AlgorithmInstance, str | None]] = [
+            (row[0], row[1]) for row in instance_rows
+        ]
+        instances = [inst for inst, _ in instance_pairs]
 
         backtests_count = (
             await db.execute(
@@ -66,12 +78,12 @@ class AlgorithmSummaryService:
             )
         ).scalar_one()
 
-        active = _pick_status_instance(instances)
+        active, active_env = _pick_active_instance(instance_pairs)
         if active is None:
             status = "idle"
             status_source = None
         else:
-            status = (active.status or "idle").lower()
+            status = active_env or "idle"
             status_source = active.id
 
         latest_run = (

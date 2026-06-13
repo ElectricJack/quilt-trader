@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import sessionmaker
 
 from coordinator.database.models import (
-    Base, Algorithm, AlgorithmInstance, AlgorithmRun,
+    Account, Base, Algorithm, AlgorithmInstance, AlgorithmRun,
     BacktestRun, OptimizationSession,
 )
 from coordinator.services.algorithm_summary import AlgorithmSummaryService
@@ -39,6 +39,20 @@ def _make_algo(s, **kw):
     return algo
 
 
+def _make_account(s, environment="paper", **kw):
+    acct = Account(
+        id=kw.pop("id", f"acct-{uuid.uuid4().hex[:6]}"),
+        name=kw.pop("name", f"acct-{environment}"),
+        broker_type=kw.pop("broker_type", "alpaca"),
+        environment=environment,
+        credentials="{}",
+        supported_asset_types=["us_equity"],
+        **kw,
+    )
+    s.add(acct)
+    return acct
+
+
 @pytest.mark.asyncio
 async def test_idle_algorithm_no_data(async_session_factory):
     async with async_session_factory() as s:
@@ -56,16 +70,40 @@ async def test_idle_algorithm_no_data(async_session_factory):
 
 
 @pytest.mark.asyncio
+async def test_running_instance_on_live_account_reports_live(async_session_factory):
+    """A running instance on a live broker account makes the algorithm 'live',
+    not 'idle'. Regression for the bug where _pick_status_instance compared
+    instance.status to 'live'/'paper' even though the DB stores 'running'.
+    """
+    async with async_session_factory() as s:
+        algo = _make_algo(s)
+        acct = _make_account(s, environment="live")
+        live = AlgorithmInstance(
+            id=f"i-{uuid.uuid4().hex[:6]}", algorithm_id=algo.id,
+            account_id=acct.id, worker_id="w-1", status="running",
+        )
+        s.add(live)
+        await s.commit()
+        svc = AlgorithmSummaryService()
+        summary = await svc.build_for(algo.id, s)
+
+    assert summary["status"] == "live"
+    assert summary["status_source"] == live.id
+
+
+@pytest.mark.asyncio
 async def test_live_status_promoted_over_paper(async_session_factory):
     async with async_session_factory() as s:
         algo = _make_algo(s)
+        paper_acct = _make_account(s, environment="paper")
+        live_acct = _make_account(s, environment="live")
         s.add(AlgorithmInstance(
             id=f"i-{uuid.uuid4().hex[:6]}", algorithm_id=algo.id,
-            account_id="acct-1", worker_id="w-1", status="paper",
+            account_id=paper_acct.id, worker_id="w-1", status="running",
         ))
         live = AlgorithmInstance(
             id=f"i-{uuid.uuid4().hex[:6]}", algorithm_id=algo.id,
-            account_id="acct-2", worker_id="w-1", status="live",
+            account_id=live_acct.id, worker_id="w-1", status="running",
         )
         s.add(live)
         await s.commit()
@@ -75,6 +113,25 @@ async def test_live_status_promoted_over_paper(async_session_factory):
     assert summary["status"] == "live"
     assert summary["status_source"] == live.id
     assert summary["counts"]["deployments"] == 2
+
+
+@pytest.mark.asyncio
+async def test_stopped_instance_on_live_account_is_idle(async_session_factory):
+    """A live-account instance that is not currently running shouldn't promote
+    the algorithm to live."""
+    async with async_session_factory() as s:
+        algo = _make_algo(s)
+        acct = _make_account(s, environment="live")
+        s.add(AlgorithmInstance(
+            id=f"i-{uuid.uuid4().hex[:6]}", algorithm_id=algo.id,
+            account_id=acct.id, worker_id="w-1", status="stopped",
+        ))
+        await s.commit()
+        svc = AlgorithmSummaryService()
+        summary = await svc.build_for(algo.id, s)
+
+    assert summary["status"] == "idle"
+    assert summary["status_source"] is None
 
 
 @pytest.mark.asyncio
@@ -151,9 +208,10 @@ async def test_live_sharpe_overrides_backtest(async_session_factory):
     """When a live instance reports sharpe_30d, that wins over last backtest sharpe."""
     async with async_session_factory() as s:
         algo = _make_algo(s)
+        acct = _make_account(s, environment="live")
         s.add(AlgorithmInstance(
             id=f"i-{uuid.uuid4().hex[:6]}", algorithm_id=algo.id,
-            account_id="acct-1", worker_id="w-1", status="live",
+            account_id=acct.id, worker_id="w-1", status="running",
             lifetime_metrics={"sharpe_30d": 2.1},
         ))
         s.add(BacktestRun(
