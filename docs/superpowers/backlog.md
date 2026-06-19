@@ -461,6 +461,37 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 
 ---
 
+## Algorithms
+
+> Deferred from [2026-06-19-congress-copytrading-design.md](specs/2026-06-19-congress-copytrading-design.md). The v1 algorithm is equities long-only, stateless, and reuses the shipped `fmp.house_disclosures` / `fmp.senate_disclosures` datasets.
+
+### Auto-download price bars for newly-disclosed symbols (congress-copytrader)
+- **Deferred from:** [2026-06-19-congress-copytrading-design.md](specs/2026-06-19-congress-copytrading-design.md)
+- **Why deferred:** the copy-trader's universe is dynamic — it trades whatever symbols Congress discloses — but a backtest needs OHLCV bars present for each. v1 skips-and-logs any symbol with no price data; closing the loop is a manual "read the logs, queue via `DataGoal`/`quilt data`" workflow.
+- **What's needed:** a hook that, on "skip: no price data", auto-queues a bars download (or a `DataGoal`) for the missing symbol over the algo's date range. This is the `DatasetGoal`/auto-fetch territory already noted under Data acquisition.
+
+### Historical disclosure backfill / paid-tier FMP for deep backtests (congress-copytrader)
+- **Deferred from:** [2026-06-19-congress-copytrading-design.md](specs/2026-06-19-congress-copytrading-design.md)
+- **Why deferred:** free-tier FMP `*-latest` is a shallow firehose with limited history, so multi-year copy-trading backtests are data-limited. v1 documents this rather than solving it.
+- **What's needed:** either a paid-tier FMP plan unlocking deeper history/pagination on the disclosure endpoints, or a one-time historical backfill of congressional disclosures from an alternate source into the bitemporal datasets.
+
+### Per-member account-balance refinement beyond disclosed-portfolio proxy (congress-copytrader)
+- **Deferred from:** [2026-06-19-congress-copytrading-design.md](specs/2026-06-19-congress-copytrading-design.md)
+- **Why deferred:** v1 estimates a member's "account balance" (the normalization denominator) as their total net disclosed holdings — self-contained and backtestable now, but it conflates "rarely trades" with "small portfolio." A real per-member net-worth source (OpenSecrets / Quiver-style) would be more accurate but is a new, likely paid, data integration.
+- **What's needed:** an external per-member net-worth dataset feeding `book_m`, plus a reconciliation policy for net worth vs. tradable brokerage balance.
+
+### Per-member track-record weighting (congress-copytrader)
+- **Deferred from:** [2026-06-19-congress-copytrading-design.md](specs/2026-06-19-congress-copytrading-design.md)
+- **Why deferred:** v1 treats every whitelisted member's conviction equally (after per-book normalization). Up-weighting members with historically strong returns is appealing but needs a realized-PnL attribution model per member, which is its own subsystem.
+- **What's needed:** a per-member historical performance estimator (mark disclosed trades to market over time) feeding a multiplier on `share_{m,s}`.
+
+### Options / short-side mirroring of Congress positions (congress-copytrader)
+- **Deferred from:** [2026-06-19-congress-copytrading-design.md](specs/2026-06-19-congress-copytrading-design.md)
+- **Why deferred:** v1 is equities long-only. Members disclose options activity and there's a thesis for shorting names they exit, but both add asset-type and risk complexity not yet warranted.
+- **What's needed:** extend the basket model to emit options legs / short signals, with the corresponding risk guardrails.
+
+---
+
 ## How to use this file
 
 When **deferring work** in a new spec:
