@@ -2,45 +2,58 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a `congress-copytrader` algorithm package that mirrors a configurable whitelist of Congress members, weighting each name by combined share-of-portfolio conviction, rebalanced daily.
+**Goal:** Build a `congress-copytrader` algorithm in **its own standalone git repository** at `/home/jkern/dev/congress-copytrader/` (parallel to quilt-trader, like the other algo repos), mirroring a configurable whitelist of Congress members, weighting each name by combined share-of-portfolio conviction, rebalanced daily.
 
-**Architecture:** A single-file algorithm package (`data/packages/congress-copytrader/algorithm.py`). The worker's package loader (`worker/package_cache.py::load_algorithm_class`) loads the entry file via `spec_from_file_location` and deliberately does **not** add the package dir to `sys.path` — so sibling-module imports do not work and there are no multi-file packages in this repo. Therefore all logic lives in one file as module-level **pure functions** (parse, weight, order) plus the `CongressCopyTrader(QuiltAlgorithm)` orchestration class. The pure functions are unit-tested by loading the file via `importlib` (they only depend on `pandas` and `sdk.signals`, both importable from the repo root). `on_tick` is a stateless pure recomputation over the bitemporal `fmp.house_disclosures` / `fmp.senate_disclosures` datasets read through `ctx.dataset()`.
+**Architecture:** A standalone single-file algorithm repo. The repo root holds `quilt.yaml`, `algorithm.py`, `requirements.txt`, `README.md`, `.gitignore`, and a `tests/` package — matching the convention of the sibling repos `/home/jkern/dev/quilt-crypto-tsmom` and `/home/jkern/dev/alpha-picks-rebalancer`. Because the repo lives outside quilt-trader, `algorithm.py` resolves the SDK with the established idiom at the top of the file: `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` (repo root) followed by `sys.path.insert(0, "/home/jkern/dev/quilt-trader")` (the SDK). All logic lives in one file as module-level **pure functions** (parse, weight, order) plus the `CongressCopyTrader(QuiltAlgorithm)` orchestration class — a single file is sufficient, so we don't split into a `lib/`. `on_tick` is a stateless pure recomputation over the bitemporal `fmp.house_disclosures` / `fmp.senate_disclosures` datasets read through `ctx.dataset()`.
 
-**Tech Stack:** Python 3.12, pandas, the Quilt SDK (`sdk.algorithm.QuiltAlgorithm`, `sdk.signals`), pytest. Spec: `docs/superpowers/specs/2026-06-19-congress-copytrading-design.md`.
+**Tech Stack:** Python 3.12, pandas, the Quilt SDK (`sdk.algorithm.QuiltAlgorithm`, `sdk.signals`), pytest. Spec: `/home/jkern/dev/quilt-trader/docs/superpowers/specs/2026-06-19-congress-copytrading-design.md`.
 
 **Conventions:**
-- Run Python/pytest with the repo venv: `.venv/bin/python -m pytest ...` from `/home/jkern/dev/quilt-trader`.
+- The new repo is at `/home/jkern/dev/congress-copytrader/` and is **its own git repository** (`git init`). All commits in this plan happen there, NOT in quilt-trader. Each command block `cd`s into the repo first.
+- Run Python/pytest with **quilt-trader's venv** (it already has pandas, pytest, and the SDK importable): `/home/jkern/dev/quilt-trader/.venv/bin/python -m pytest ...`, invoked from the standalone repo directory.
+- `algorithm.py` and the test `conftest.py` both insert the repo root and `/home/jkern/dev/quilt-trader` onto `sys.path` so `import sdk...` and `import algorithm` resolve — this mirrors `quilt-crypto-tsmom/algorithm.py` and its `tests/test_algorithm.py`.
 - The manifest `data:` block only accepts `type ∈ {scraper, csv, json, parquet}` (`sdk/manifest.py:211`). Datasets resolve via the coordinator registry independent of the manifest, so the manifest has **no** `data:` block — `ctx.dataset("fmp.house_disclosures")` is called directly.
 
 ---
 
 ## File Map
 
+All paths below are relative to the standalone repo root `/home/jkern/dev/congress-copytrader/`.
+
 | File | Responsibility |
 |------|----------------|
-| `data/packages/congress-copytrader/quilt.yaml` | Manifest: metadata, `bar:1day` trigger, config params, SPY anchor asset. |
-| `data/packages/congress-copytrader/algorithm.py` | Pure functions (`parse_amount_midpoint`, `signed_amount`, `parse_members`, `compute_target_weights`, `compute_orders`, `OrderDelta`) + `CongressCopyTrader` class. |
-| `data/packages/congress-copytrader/requirements.txt` | Empty (pandas already available). |
-| `tests/packages/congress_copytrader/conftest.py` | Loads `algorithm.py` by file path via `importlib`; exposes an `algo_mod` fixture. |
-| `tests/packages/congress_copytrader/test_parsing.py` | Tests for `parse_amount_midpoint`, `signed_amount`, `parse_members`. |
-| `tests/packages/congress_copytrader/test_weights.py` | Tests for `compute_target_weights` (normalization, floor, cap). |
-| `tests/packages/congress_copytrader/test_orders.py` | Tests for `compute_orders` (sizing, churn band, exit). |
-| `tests/packages/congress_copytrader/test_algorithm.py` | Integration test: `CongressCopyTrader.on_tick` against a fake `TickContext`. |
-| `tests/packages/congress_copytrader/test_manifest.py` | Manifest parses and validates clean. |
+| `quilt.yaml` | Manifest: metadata, `bar:1day` trigger, config params, SPY anchor asset. |
+| `algorithm.py` | `sys.path` idiom + pure functions (`parse_amount_midpoint`, `signed_amount`, `parse_members`, `compute_target_weights`, `compute_orders`, `OrderDelta`) + `CongressCopyTrader` class. |
+| `requirements.txt` | `pandas>=2.0` and `pytest>=8.0`. |
+| `README.md` | Short description + how to run tests. |
+| `.gitignore` | Ignore `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.venv/`, `data/`, `*.parquet`, `.DS_Store`. |
+| `tests/__init__.py` | Marks `tests/` a package (so pytest puts the repo root on `sys.path`). |
+| `tests/conftest.py` | Inserts repo root + quilt-trader on `sys.path`; exposes an `algo_mod` fixture that `import algorithm`. |
+| `tests/test_parsing.py` | Tests for `parse_amount_midpoint`, `signed_amount`, `parse_members`. |
+| `tests/test_weights.py` | Tests for `compute_target_weights` (normalization, floor, cap). |
+| `tests/test_orders.py` | Tests for `compute_orders` (sizing, churn band, exit). |
+| `tests/test_algorithm.py` | Integration test: `CongressCopyTrader.on_tick` against a fake `TickContext`. |
+| `tests/test_manifest.py` | Manifest parses and validates clean. |
 
 ---
 
-### Task 1: Scaffold the package and manifest
+### Task 1: Initialize the standalone repo, manifest, and scaffold
 
-**Files:**
-- Create: `data/packages/congress-copytrader/quilt.yaml`
-- Create: `data/packages/congress-copytrader/requirements.txt`
-- Create: `data/packages/congress-copytrader/algorithm.py` (minimal class stub so the manifest validates)
-- Create: `tests/packages/congress_copytrader/test_manifest.py`
+**Files (in `/home/jkern/dev/congress-copytrader/`):**
+- Create: `quilt.yaml`, `requirements.txt`, `README.md`, `.gitignore`
+- Create: `algorithm.py` (minimal class stub so the manifest validates)
+- Create: `tests/__init__.py`, `tests/conftest.py`, `tests/test_manifest.py`
+
+- [ ] **Step 0: Create the repo directory and initialize git**
+
+```bash
+mkdir -p /home/jkern/dev/congress-copytrader/tests
+cd /home/jkern/dev/congress-copytrader && git init
+```
 
 - [ ] **Step 1: Write the manifest**
 
-Create `data/packages/congress-copytrader/quilt.yaml`:
+Create `/home/jkern/dev/congress-copytrader/quilt.yaml`:
 
 ```yaml
 name: congress-copytrader
@@ -86,18 +99,63 @@ assets:
     source: polygon
 ```
 
-- [ ] **Step 2: Write the empty requirements file**
+- [ ] **Step 2: Write requirements, README, and .gitignore**
 
-Create `data/packages/congress-copytrader/requirements.txt` (empty file, zero bytes).
+Create `/home/jkern/dev/congress-copytrader/requirements.txt`:
 
-- [ ] **Step 3: Write a minimal algorithm stub**
+```
+pandas>=2.0
+pytest>=8.0
+```
 
-Create `data/packages/congress-copytrader/algorithm.py`:
+Create `/home/jkern/dev/congress-copytrader/README.md`:
+
+```markdown
+# congress-copytrader
+
+A QuiltTrader algorithm that mirrors a configurable whitelist of members of
+Congress. Each disclosed position is expressed as a percentage of that member's
+own disclosed portfolio (share-of-portfolio conviction), combined across members
+per symbol, and rebalanced daily to match — buying when Congress buys and
+trimming/exiting when Congress sells. Equities, long-only.
+
+Design spec: `quilt-trader/docs/superpowers/specs/2026-06-19-congress-copytrading-design.md`.
+
+## Tests
+
+Run with quilt-trader's venv (it has pandas, pytest, and the SDK):
+
+```bash
+cd /home/jkern/dev/congress-copytrader
+/home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/ -v
+```
+```
+
+Create `/home/jkern/dev/congress-copytrader/.gitignore`:
+
+```
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+data/
+*.parquet
+.DS_Store
+```
+
+- [ ] **Step 3: Write a minimal algorithm stub (with the SDK sys.path idiom)**
+
+Create `/home/jkern/dev/congress-copytrader/algorithm.py`:
 
 ```python
 from __future__ import annotations
 
+import os
+import sys
 from typing import Optional
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, "/home/jkern/dev/quilt-trader")
 
 from sdk.algorithm import QuiltAlgorithm
 from sdk.signals import Signal
@@ -117,9 +175,34 @@ class CongressCopyTrader(QuiltAlgorithm):
         return {}
 ```
 
-- [ ] **Step 4: Write the manifest validation test**
+- [ ] **Step 4: Write the test package marker and conftest**
 
-Create `tests/packages/congress_copytrader/test_manifest.py`:
+Create `/home/jkern/dev/congress-copytrader/tests/__init__.py` (empty file).
+
+Create `/home/jkern/dev/congress-copytrader/tests/conftest.py`:
+
+```python
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+_REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, "/home/jkern/dev/quilt-trader")
+
+
+@pytest.fixture
+def algo_mod():
+    """Import the repo's algorithm.py as a module (repo root is on sys.path)."""
+    import algorithm
+    return algorithm
+```
+
+- [ ] **Step 5: Write the manifest validation test**
+
+Create `/home/jkern/dev/congress-copytrader/tests/test_manifest.py`:
 
 ```python
 from pathlib import Path
@@ -127,7 +210,7 @@ from pathlib import Path
 from sdk.manifest import QuiltManifest
 from sdk.validation import validate_algorithm_package
 
-_PKG = Path(__file__).resolve().parents[3] / "data" / "packages" / "congress-copytrader"
+_PKG = Path(__file__).resolve().parents[1]
 
 
 def test_manifest_parses():
@@ -143,58 +226,31 @@ def test_package_validates_clean():
     assert errors == [], f"unexpected validation errors: {errors}"
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 6: Run the test to verify it passes**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_manifest.py -v`
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_manifest.py -v
+```
 Expected: PASS (2 passed). If `validate_algorithm_package` reports an error, fix the manifest/stub until clean.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit (in the standalone repo)**
 
 ```bash
-git add data/packages/congress-copytrader/quilt.yaml \
-        data/packages/congress-copytrader/requirements.txt \
-        data/packages/congress-copytrader/algorithm.py \
-        tests/packages/congress_copytrader/test_manifest.py
-git commit -m "feat(congress-copytrader): scaffold package + manifest"
+cd /home/jkern/dev/congress-copytrader && git add quilt.yaml requirements.txt README.md .gitignore algorithm.py tests/__init__.py tests/conftest.py tests/test_manifest.py && git commit -m "feat(congress-copytrader): scaffold standalone repo + manifest"
 ```
 
 ---
 
 ### Task 2: Amount and type parsing helpers
 
-**Files:**
-- Modify: `data/packages/congress-copytrader/algorithm.py`
-- Create: `tests/packages/congress_copytrader/conftest.py`
-- Create: `tests/packages/congress_copytrader/test_parsing.py`
+**Files (in `/home/jkern/dev/congress-copytrader/`):**
+- Modify: `algorithm.py`
+- Create: `tests/test_parsing.py`
 
-- [ ] **Step 1: Write the conftest that loads the algorithm module by path**
+- [ ] **Step 1: Write the failing parsing tests**
 
-Create `tests/packages/congress_copytrader/conftest.py`:
-
-```python
-import importlib.util
-import sys
-from pathlib import Path
-
-import pytest
-
-_PKG = Path(__file__).resolve().parents[3] / "data" / "packages" / "congress-copytrader"
-
-
-@pytest.fixture
-def algo_mod():
-    """Load the package's algorithm.py by file path (the package dir is not on sys.path)."""
-    path = _PKG / "algorithm.py"
-    spec = importlib.util.spec_from_file_location("congress_copytrader_algorithm", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-```
-
-- [ ] **Step 2: Write the failing parsing tests**
-
-Create `tests/packages/congress_copytrader/test_parsing.py`:
+Create `/home/jkern/dev/congress-copytrader/tests/test_parsing.py`:
 
 ```python
 import pytest
@@ -238,20 +294,28 @@ def test_parse_members_forms(algo_mod):
     ]
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_parsing.py -v`
-Expected: FAIL with `AttributeError: module ... has no attribute 'parse_amount_midpoint'`.
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_parsing.py -v
+```
+Expected: FAIL with `AttributeError: module 'algorithm' has no attribute 'parse_amount_midpoint'`.
 
-- [ ] **Step 4: Implement the parsing helpers**
+- [ ] **Step 3: Implement the parsing helpers**
 
-Replace the entire contents of `data/packages/congress-copytrader/algorithm.py` with:
+Replace the entire contents of `/home/jkern/dev/congress-copytrader/algorithm.py` with:
 
 ```python
 from __future__ import annotations
 
+import os
 import re
+import sys
 from typing import Optional
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, "/home/jkern/dev/quilt-trader")
 
 from sdk.algorithm import QuiltAlgorithm
 from sdk.signals import Signal
@@ -322,31 +386,31 @@ class CongressCopyTrader(QuiltAlgorithm):
         return {}
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_parsing.py -v`
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_parsing.py -v
+```
 Expected: PASS (6 passed).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add data/packages/congress-copytrader/algorithm.py \
-        tests/packages/congress_copytrader/conftest.py \
-        tests/packages/congress_copytrader/test_parsing.py
-git commit -m "feat(congress-copytrader): amount/type/member parsing helpers"
+cd /home/jkern/dev/congress-copytrader && git add algorithm.py tests/test_parsing.py && git commit -m "feat(congress-copytrader): amount/type/member parsing helpers"
 ```
 
 ---
 
 ### Task 3: Target-weight computation
 
-**Files:**
-- Modify: `data/packages/congress-copytrader/algorithm.py`
-- Create: `tests/packages/congress_copytrader/test_weights.py`
+**Files (in `/home/jkern/dev/congress-copytrader/`):**
+- Modify: `algorithm.py`
+- Create: `tests/test_weights.py`
 
 - [ ] **Step 1: Write the failing weight tests**
 
-Create `tests/packages/congress_copytrader/test_weights.py`:
+Create `/home/jkern/dev/congress-copytrader/tests/test_weights.py`:
 
 ```python
 import pandas as pd
@@ -434,12 +498,15 @@ def test_no_disclosures_returns_empty(algo_mod):
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_weights.py -v`
-Expected: FAIL with `AttributeError: module ... has no attribute 'compute_target_weights'`.
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_weights.py -v
+```
+Expected: FAIL with `AttributeError: module 'algorithm' has no attribute 'compute_target_weights'`.
 
 - [ ] **Step 3: Implement the weight functions**
 
-In `data/packages/congress-copytrader/algorithm.py`, add `import pandas as pd` to the imports at the top (place it after `import re`), then insert these two functions immediately **before** the `class CongressCopyTrader` line:
+In `/home/jkern/dev/congress-copytrader/algorithm.py`, add `import pandas as pd` to the imports at the top (place it after `import re`), then insert these three functions immediately **before** the `class CongressCopyTrader` line:
 
 ```python
 def compute_target_weights(
@@ -529,28 +596,29 @@ def _apply_max_weight(weights: dict[str, float], max_weight: float) -> dict[str,
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_weights.py -v`
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_weights.py -v
+```
 Expected: PASS (7 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add data/packages/congress-copytrader/algorithm.py \
-        tests/packages/congress_copytrader/test_weights.py
-git commit -m "feat(congress-copytrader): share-of-portfolio target weights"
+cd /home/jkern/dev/congress-copytrader && git add algorithm.py tests/test_weights.py && git commit -m "feat(congress-copytrader): share-of-portfolio target weights"
 ```
 
 ---
 
 ### Task 4: Order generation
 
-**Files:**
-- Modify: `data/packages/congress-copytrader/algorithm.py`
-- Create: `tests/packages/congress_copytrader/test_orders.py`
+**Files (in `/home/jkern/dev/congress-copytrader/`):**
+- Modify: `algorithm.py`
+- Create: `tests/test_orders.py`
 
 - [ ] **Step 1: Write the failing order tests**
 
-Create `tests/packages/congress_copytrader/test_orders.py`:
+Create `/home/jkern/dev/congress-copytrader/tests/test_orders.py`:
 
 ```python
 import pytest
@@ -615,12 +683,15 @@ def test_pct_invest_leaves_cash_buffer(algo_mod):
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_orders.py -v`
-Expected: FAIL with `AttributeError: module ... has no attribute 'compute_orders'`.
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_orders.py -v
+```
+Expected: FAIL with `AttributeError: module 'algorithm' has no attribute 'compute_orders'`.
 
 - [ ] **Step 3: Implement OrderDelta and compute_orders**
 
-In `data/packages/congress-copytrader/algorithm.py`, add `from dataclasses import dataclass` to the imports (after `from __future__ import annotations`), then insert this immediately **before** the `class CongressCopyTrader` line:
+In `/home/jkern/dev/congress-copytrader/algorithm.py`, add `from dataclasses import dataclass` to the imports (after `from __future__ import annotations`), then insert this immediately **before** the `class CongressCopyTrader` line:
 
 ```python
 @dataclass
@@ -668,28 +739,29 @@ def compute_orders(
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_orders.py -v`
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_orders.py -v
+```
 Expected: PASS (6 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add data/packages/congress-copytrader/algorithm.py \
-        tests/packages/congress_copytrader/test_orders.py
-git commit -m "feat(congress-copytrader): order generation with churn band + exits"
+cd /home/jkern/dev/congress-copytrader && git add algorithm.py tests/test_orders.py && git commit -m "feat(congress-copytrader): order generation with churn band + exits"
 ```
 
 ---
 
 ### Task 5: Wire the `CongressCopyTrader` orchestration
 
-**Files:**
-- Modify: `data/packages/congress-copytrader/algorithm.py`
-- Create: `tests/packages/congress_copytrader/test_algorithm.py`
+**Files (in `/home/jkern/dev/congress-copytrader/`):**
+- Modify: `algorithm.py`
+- Create: `tests/test_algorithm.py`
 
 - [ ] **Step 1: Write the failing integration test**
 
-Create `tests/packages/congress_copytrader/test_algorithm.py`:
+Create `/home/jkern/dev/congress-copytrader/tests/test_algorithm.py`:
 
 ```python
 from datetime import datetime, timezone
@@ -799,12 +871,15 @@ def test_on_stop_is_stateless(algo_mod):
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_algorithm.py -v`
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_algorithm.py -v
+```
 Expected: FAIL — `on_tick` returns `[]` (the stub), so the buy/exit assertions fail.
 
 - [ ] **Step 3: Implement the orchestration class**
 
-In `data/packages/congress-copytrader/algorithm.py`, add `import logging` and `from datetime import timedelta` to the imports, add `from sdk.signals import Signal, SignalType, OrderType` (replacing the existing `from sdk.signals import Signal`), and add a module-level logger after the imports:
+In `/home/jkern/dev/congress-copytrader/algorithm.py`, add `import logging` and `from datetime import timedelta` to the imports, change `from sdk.signals import Signal` to `from sdk.signals import OrderType, Signal, SignalType`, and add these module-level definitions after the imports (before the pure functions):
 
 ```python
 logger = logging.getLogger(__name__)
@@ -892,15 +967,16 @@ class CongressCopyTrader(QuiltAlgorithm):
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/test_algorithm.py -v`
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/test_algorithm.py -v
+```
 Expected: PASS (4 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add data/packages/congress-copytrader/algorithm.py \
-        tests/packages/congress_copytrader/test_algorithm.py
-git commit -m "feat(congress-copytrader): wire on_tick orchestration + signals"
+cd /home/jkern/dev/congress-copytrader && git add algorithm.py tests/test_algorithm.py && git commit -m "feat(congress-copytrader): wire on_tick orchestration + signals"
 ```
 
 ---
@@ -909,28 +985,36 @@ git commit -m "feat(congress-copytrader): wire on_tick orchestration + signals"
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run the full package test suite**
+- [ ] **Step 1: Run the full test suite**
 
-Run: `.venv/bin/python -m pytest tests/packages/congress_copytrader/ -v`
+Run:
+```bash
+cd /home/jkern/dev/congress-copytrader && /home/jkern/dev/quilt-trader/.venv/bin/python -m pytest tests/ -v
+```
 Expected: PASS (all tests across the 5 test files green).
 
 - [ ] **Step 2: Validate the package via the SDK**
 
-Run: `.venv/bin/quilt validate data/packages/congress-copytrader`
-Expected: exit code 0 and a success message (no validation errors). If `.venv/bin/quilt` is absent, run `.venv/bin/python -m sdk.cli.main validate data/packages/congress-copytrader`.
+Run:
+```bash
+cd /home/jkern/dev/quilt-trader && .venv/bin/quilt validate /home/jkern/dev/congress-copytrader
+```
+Expected: exit code 0 and a success message (no validation errors). If `.venv/bin/quilt` is absent, run `.venv/bin/python -m sdk.cli.main validate /home/jkern/dev/congress-copytrader`.
 
 - [ ] **Step 3: Confirm the module imports cleanly**
 
-Run: `.venv/bin/python -c "import importlib.util; s=importlib.util.spec_from_file_location('a','data/packages/congress-copytrader/algorithm.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print('OK', m.CongressCopyTrader)"`
+Run:
+```bash
+/home/jkern/dev/quilt-trader/.venv/bin/python -c "import importlib.util; s=importlib.util.spec_from_file_location('a','/home/jkern/dev/congress-copytrader/algorithm.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print('OK', m.CongressCopyTrader)"
+```
 Expected: prints `OK <class '...CongressCopyTrader'>`.
 
-- [ ] **Step 4: Commit any final fixes**
+- [ ] **Step 4: Commit any final fixes (in the standalone repo)**
 
 If Steps 1-3 required fixes, stage and commit them:
 
 ```bash
-git add data/packages/congress-copytrader tests/packages/congress_copytrader
-git commit -m "test(congress-copytrader): full-suite + package validation"
+cd /home/jkern/dev/congress-copytrader && git add -A && git commit -m "test(congress-copytrader): full-suite + package validation"
 ```
 
 If nothing changed, skip this commit.
@@ -939,6 +1023,8 @@ If nothing changed, skip this commit.
 
 ## Notes for the implementer
 
+- **Separate repo:** All algorithm code and commits live in `/home/jkern/dev/congress-copytrader/` (its own git repo). Do NOT commit algorithm code into quilt-trader. The spec/plan/backlog docs already live in quilt-trader and are out of scope here.
+- **SDK resolution:** The repo is outside quilt-trader, so `algorithm.py` and `tests/conftest.py` insert `/home/jkern/dev/quilt-trader` onto `sys.path` to import `sdk.*`. This hardcoded absolute path is the established convention (see `quilt-crypto-tsmom/algorithm.py`). Tests run with quilt-trader's venv, which already has pandas + pytest.
 - **Stateless by design:** `on_tick` recomputes the entire basket each call from the point-in-time disclosure data; `save_state`/`on_stop` intentionally return `{}`. Do not add persisted tallies — the bitemporal `dataset()` already guarantees no-lookahead.
 - **Dynamic universe:** the manifest lists only SPY as the anchor (drives the daily tick + NYSE calendar). Every traded symbol is resolved at runtime via `ctx.market_data`; a symbol with no bars is skipped and logged, never fatal.
 - **Backtest prerequisite (out of scope here):** a meaningful backtest needs the disclosure datasets downloaded and OHLCV bars present for traded symbols. Collect the "skip — no price data" logs and queue those symbols via `quilt data` / `DataGoal`. Auto-download is a backlog item.
