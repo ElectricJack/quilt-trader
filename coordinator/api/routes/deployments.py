@@ -152,13 +152,13 @@ async def list_deployments(
 
     metrics_by_instance: dict[str, dict] = {}
     for inst, _, _, _ in rows:
+        # Only trades this instance actually placed. There used to be a
+        # fallback to every trade on the account when the instance had none,
+        # which attributed broker-synced account history to an algorithm that
+        # had never placed an order — and so hid the fact that it never ticked.
         trades = (await db.execute(
             select(TradeLog).where(TradeLog.instance_id == inst.id)
         )).scalars().all()
-        if not trades:
-            trades = (await db.execute(
-                select(TradeLog).where(TradeLog.account_id == inst.account_id)
-            )).scalars().all()
 
         positions = live_positions_by_account.get(inst.account_id, [])
         unrealized_pnl = sum(p["unrealized_pnl"] for p in positions)

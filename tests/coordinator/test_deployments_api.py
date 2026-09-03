@@ -129,3 +129,34 @@ async def test_delete_deployment_cascades_runs_and_persists(client, db_session):
     assert (await db_session.execute(
         select(AlgorithmRun).where(AlgorithmRun.instance_id == inst_id)
     )).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_deployment_metrics_do_not_borrow_other_trades_on_the_account(client, db_session):
+    """A deployment that has never traded must report zero trades, even when the
+    account it runs on has plenty of broker-synced history. Falling back to an
+    account-wide query attributes someone else's trades to the algorithm and
+    hides the fact that it has never placed an order."""
+    from coordinator.database.models import TradeLog
+
+    algo = Algorithm(repo_url="x", name="NeverTraded")
+    acct = Account(name="Acc", broker_type="alpaca", credentials="{}", supported_asset_types=["equities"])
+    worker = Worker(name="W", status="online")
+    db_session.add_all([algo, acct, worker])
+    await db_session.flush()
+    inst = AlgorithmInstance(algorithm_id=algo.id, account_id=acct.id, worker_id=worker.id, status="running")
+    db_session.add(inst)
+    await db_session.flush()
+
+    # Broker-synced account history with no instance attribution.
+    for i in range(3):
+        db_session.add(TradeLog(
+            instance_id=None, account_id=acct.id, source="broker_sync",
+            symbol="AAPL", side="buy", quantity=1.0, filled_price=100.0 + i,
+        ))
+    await db_session.commit()
+
+    r = await client.get("/api/deployments")
+    assert r.status_code == 200
+    d = r.json()[0]
+    assert d["lifetime_metrics"]["trade_count"] == 0
