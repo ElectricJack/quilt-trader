@@ -145,6 +145,14 @@ class _InstanceContext:
         else:
             raise ValueError(f"Unknown trigger {self.trigger!r}")
 
+        if self.trigger.startswith("bar:") or self.trigger == "event":
+            if not self._subscriptions:
+                logger.warning(
+                    "Instance %s uses trigger %r but none of its data_dependencies "
+                    "declare a 'symbol' — no subscriptions created, it will never tick",
+                    self.instance_id, self.trigger,
+                )
+
     def _make_bar_callback(self, symbol: str, tf: str):
         async def cb(bar: dict) -> None:
             tick = _json_safe({
@@ -178,7 +186,15 @@ class _InstanceContext:
                 now = datetime.now(timezone.utc)
                 # Prefer a real symbol so registry dispatches accurately;
                 # fall back to legacy asset_type for back-compat.
-                probe = (self.symbols[0]["symbol"] if self.symbols else self.asset_type)
+                # data_dependencies may hold non-symbol entries (e.g. a custom
+                # CSV dep, which has 'source'/'file' but no 'symbol'). Probe with
+                # the first real symbol if there is one, else the asset type —
+                # indexing ["symbol"] blindly kills this task on iteration one
+                # and starves the instance of every tick, silently.
+                probe = next(
+                    (d["symbol"] for d in self.symbols if d.get("symbol")),
+                    self.asset_type,
+                )
                 if is_market_open(probe, now):
                     tick = {
                         "instance_id": self.instance_id,

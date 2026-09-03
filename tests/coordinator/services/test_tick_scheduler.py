@@ -123,3 +123,35 @@ async def test_drop_worker_cancels_subscriptions_for_that_worker():
     await sched.drop_worker("w1")
     assert "d1" not in sched._instances
     await sched.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_interval_trigger_survives_symbolless_data_dependencies(monkeypatch):
+    """An algorithm whose only data dependency is a custom CSV has no 'symbol'
+    key in its deps. The interval loop must fall back to asset_type for the
+    market-clock probe rather than dying with KeyError on the first iteration,
+    which silently starves the instance of every tick."""
+    from coordinator.services.tick_scheduler import TickScheduler
+    import coordinator.services.market_clock as market_clock
+
+    monkeypatch.setattr(market_clock, "is_market_open", lambda probe, now: True)
+
+    sched = TickScheduler(aggregator=_FakeAggregator(), ws_manager=MagicMock())
+    enqueued: list = []
+    async def _capture(worker_id, tick):
+        enqueued.append((worker_id, tick))
+    monkeypatch.setattr(sched, "_enqueue_tick", _capture)
+
+    await sched.start_instance({
+        "instance_id": "d1", "run_id": "r1", "worker_id": "w1",
+        "broker_type": "tradier", "asset_type": "equities",
+        "trigger": "interval:60s",
+        "symbols": [{"source": "custom", "file": "alpha-picks-scraper.csv"}],
+    })
+    await asyncio.sleep(0.2)
+
+    task = sched._instances["d1"]._interval_task
+    assert not task.done(), f"interval loop died: {task.exception()!r}"
+    assert enqueued, "no tick was enqueued"
+    assert enqueued[0][1]["trigger_kind"] == "interval"
+    await sched.shutdown()
