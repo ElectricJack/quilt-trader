@@ -279,6 +279,16 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Why deferred:** v1 stores only `last_success`, `last_attempt_at`, and a daily attempts counter on the existing `scrapers` row — enough to answer "did we run today, should we retry." A full per-attempt history (timestamp, status, error, duration) isn't needed until something actually consumes it (e.g. a scraper-health dashboard or alerting on N consecutive failures).
 - **What's needed:** a `scraper_runs` history table with one row per attempt and a small read API. Probably a UI surface to make it worth the schema.
 
+### Stop overriding the browser user agent in alpha-picks-scraper
+- **Deferred from:** debugging session 2026-09-03 (alpha-picks-scraper PerimeterX 403)
+- **Why deferred:** `lib/fetch.py` pins `Chrome/120.0.0.0` while the bundled patchright browser is Chromium 147, so `navigator.userAgent` and `navigator.userAgentData.brands` openly contradict each other — exactly the consistency check an anti-bot vendor runs. Removing the override was tested and did *not* clear the 403, so it was not the cause and fixing it was kept out of the fix for the actual problem. It stays a standing detection risk. The catch: the persistent profile's session is issued to whatever fingerprint logged in, so changing the UA invalidates the profile and forces a manual re-login.
+- **What's needed:** drop the `user_agent` override (and probably `--disable-blink-features=AutomationControlled`, which patchright handles itself) from both `lib/fetch.py` and `scripts/setup_profile.py` in one change, then re-run `setup_profile.py` to re-issue the session under the new fingerprint. Worth doing at a moment when a manual login is convenient.
+
+### Classify auth failures ahead of bot-block in alpha-picks-scraper
+- **Deferred from:** debugging session 2026-09-03 (alpha-picks-scraper PerimeterX 403)
+- **Why deferred:** `_run_warmup_and_fetch` checks the block-page title before it ever looks for a login wall. Seeking Alpha's edge answers a request carrying a stale session with a PerimeterX-styled 403, so a pure auth problem always surfaces as `BotBlockedError` and never as the `AuthExpiredError` the code already defines. This cost real diagnosis time — the error pointed at bot detection when the fix was "log in again." Left alone because the root cause was still open and bundling it would have muddied the fix.
+- **What's needed:** on a 403 at the landing page, retry once with the session cookies dropped; if that succeeds, the session is the problem — raise `AuthExpiredError` (whose message already says "re-run setup_profile.py") instead of `BotBlockedError`. Note the retry has to clear PerimeterX localStorage (`_px_fp`, `_px_hvd`) as well as cookies.
+
 ---
 
 ## Data acquisition
