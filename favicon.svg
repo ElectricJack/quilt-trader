@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Quilt Trader">
+  <rect width="64" height="64" rx="14" fill="#070e19"/>
+  <path d="M12 12h18v18H12z" fill="#bbbfff"/>
+  <path d="M34 12h18v18H34z" fill="#8584ff"/>
+  <path d="M12 34h18v18H12z" fill="#8584ff"/>
+  <path d="M34 34h18v18H34z" fill="#5855ef"/>
+  <path d="m35 40 5-5 17 17-5 5z" fill="#e9edf8"/>
+</svg>
