@@ -13,3 +13,4 @@ dashboard/dist/
 packages/
 .superpowers/
 .worktrees/
+/graft/
