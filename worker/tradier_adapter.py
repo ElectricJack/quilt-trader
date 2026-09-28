@@ -536,12 +536,21 @@ class _TradierStreamHandle(MarketDataStreamHandle):
                 if not self._stop.is_set():
                     logger.warning("tradier stream ended; reconnecting")
                     self._fire_on_disconnect()
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 if self._stop.is_set():
                     break
-                logger.exception(
-                    "tradier stream error; reconnecting in %.1fs", backoff
-                )
+                if isinstance(exc, (
+                    requests.exceptions.ChunkedEncodingError,
+                    requests.exceptions.ConnectionError,
+                )):
+                    logger.warning(
+                        "tradier stream disconnected (%s); reconnecting in %.1fs",
+                        exc, backoff,
+                    )
+                else:
+                    logger.exception(
+                        "tradier stream error; reconnecting in %.1fs", backoff
+                    )
                 self._fire_on_disconnect()
                 if self._stop.wait(backoff):
                     break
