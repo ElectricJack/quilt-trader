@@ -587,7 +587,21 @@ async def _reconcile_worker_instances(worker_id: str, worker_ws) -> None:
             }
             try:
                 await worker_ws.send_json(payload)
-                if getattr(container, "tick_scheduler", None) is not None:
+            except WebSocketDisconnect:
+                logger.info("Worker %s disconnected during reconcile", worker_id)
+                break
+            except RuntimeError as exc:
+                if str(exc) == 'Cannot call "send" once a close message has been sent.':
+                    logger.info("Worker %s disconnected during reconcile", worker_id)
+                    break
+                logger.exception("Reconcile send_json failed for instance %s", inst.id)
+                continue
+            except Exception:
+                logger.exception("Reconcile send_json failed for instance %s", inst.id)
+                continue
+
+            if getattr(container, "tick_scheduler", None) is not None:
+                try:
                     await container.tick_scheduler.start_instance({
                         "instance_id": inst.id,
                         "run_id": run.id,
@@ -597,8 +611,8 @@ async def _reconcile_worker_instances(worker_id: str, worker_ws) -> None:
                         "trigger": manifest_dict.get("trigger", "bar:1min"),
                         "symbols": (manifest_dict.get("requirements") or {}).get("data_dependencies") or [],
                     })
-            except Exception:
-                logger.exception("Reconcile send_json failed for instance %s", inst.id)
+                except Exception:
+                    logger.exception("Reconcile tick scheduling failed for instance %s", inst.id)
 
 
 def _load_manifest_dict_for_reconcile(algo) -> dict:
