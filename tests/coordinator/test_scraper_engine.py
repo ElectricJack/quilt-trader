@@ -113,3 +113,133 @@ def test_scraper_engine_quilt_root_autodetect(packages_dir, output_dir):
     engine = ScraperEngine(packages_dir=packages_dir, output_dir=output_dir)
     expected = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(eng_module.__file__))))
     assert engine._quilt_root == expected
+
+
+# --- Headed runs need an X display -------------------------------------------
+# A scraper configured headless=false launches a visible Chromium. When the
+# coordinator is started by cron (the watchdog), its environment has no
+# DISPLAY, so Chromium exits at launch ("Missing X server or $DISPLAY") and
+# patchright surfaces an opaque TargetClosedError. The engine now hands the
+# child the host's X server when one is listening, and otherwise fails the run
+# with a message that names the problem instead of launching a doomed browser.
+
+import socket as _socket
+import tempfile as _tempfile
+
+
+@pytest.fixture
+def x11_dir():
+    # AF_UNIX paths are capped near 108 bytes, so keep this short rather than
+    # nesting it under pytest's tmp_path.
+    with _tempfile.TemporaryDirectory(prefix="x11-") as d:
+        yield d
+
+
+@pytest.fixture
+def live_x_server(x11_dir):
+    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    sock.bind(os.path.join(x11_dir, "X3"))
+    sock.listen(1)
+    yield x11_dir
+    sock.close()
+
+
+@pytest.fixture
+def no_display(monkeypatch):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+
+def _engine(packages_dir, output_dir, x11_dir):
+    return ScraperEngine(
+        packages_dir=packages_dir, output_dir=output_dir, x11_socket_dir=x11_dir,
+    )
+
+
+@patch("coordinator.services.scraper_engine.subprocess")
+def test_headed_run_without_display_adopts_live_x_server(
+    mock_subprocess, packages_dir, output_dir, live_x_server, no_display,
+):
+    mock_subprocess.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    engine = _engine(packages_dir, output_dir, live_x_server)
+    result = engine.run_scraper("alpha-picks-scraper", "csv", config={"headless": False})
+    assert result.success is True
+    env = mock_subprocess.run.call_args.kwargs["env"]
+    assert env["DISPLAY"] == ":3"
+    assert env["HOME"] == os.environ["HOME"]  # the rest of the environment is kept
+
+
+@patch("coordinator.services.scraper_engine.subprocess")
+def test_headed_run_without_any_display_fails_fast_with_clear_error(
+    mock_subprocess, packages_dir, output_dir, x11_dir, no_display,
+):
+    engine = _engine(packages_dir, output_dir, x11_dir)
+    result = engine.run_scraper("alpha-picks-scraper", "csv", config={"headless": False})
+    assert result.success is False
+    assert "no X display" in result.error
+    assert "headless" in result.error
+    mock_subprocess.run.assert_not_called()
+
+
+@patch("coordinator.services.scraper_engine.subprocess")
+def test_headed_run_ignores_stale_x_socket(
+    mock_subprocess, packages_dir, output_dir, x11_dir, no_display,
+):
+    # A socket file left behind by a dead X server refuses connections.
+    stale = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    stale.bind(os.path.join(x11_dir, "X0"))
+    stale.close()
+    engine = _engine(packages_dir, output_dir, x11_dir)
+    result = engine.run_scraper("alpha-picks-scraper", "csv", config={"headless": False})
+    assert result.success is False
+    assert "no X display" in result.error
+    mock_subprocess.run.assert_not_called()
+
+
+@patch("coordinator.services.scraper_engine.subprocess")
+def test_headed_run_keeps_existing_display(
+    mock_subprocess, packages_dir, output_dir, live_x_server, monkeypatch,
+):
+    monkeypatch.setenv("DISPLAY", ":7")
+    mock_subprocess.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    engine = _engine(packages_dir, output_dir, live_x_server)
+    result = engine.run_scraper("alpha-picks-scraper", "csv", config={"headless": False})
+    assert result.success is True
+    env = mock_subprocess.run.call_args.kwargs.get("env")
+    assert env is None or env["DISPLAY"] == ":7"
+
+
+@patch("coordinator.services.scraper_engine.subprocess")
+def test_headless_run_does_not_touch_display(
+    mock_subprocess, packages_dir, output_dir, live_x_server, no_display,
+):
+    mock_subprocess.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    engine = _engine(packages_dir, output_dir, live_x_server)
+    for config in (None, {"headless": True}):
+        result = engine.run_scraper("alpha-picks-scraper", "csv", config=config)
+        assert result.success is True
+        env = mock_subprocess.run.call_args.kwargs.get("env")
+        assert env is None or "DISPLAY" not in env
+
+
+@patch("coordinator.services.scraper_engine.subprocess")
+def test_manifest_default_headless_false_counts_as_headed(
+    mock_subprocess, tmp_path, output_dir, x11_dir, no_display,
+):
+    pkg = tmp_path / "pkgs" / "headed-scraper"
+    pkg.mkdir(parents=True)
+    (pkg / "quilt.yaml").write_text(
+        "name: headed-scraper\ntype: scraper\nschedule: '0 14 * * *'\n"
+        "config:\n  parameters:\n"
+        "    - name: headless\n      type: bool\n      default: false\n"
+    )
+    engine = _engine(str(tmp_path / "pkgs"), output_dir, x11_dir)
+    result = engine.run_scraper("headed-scraper", "csv", config={})
+    assert result.success is False
+    assert "no X display" in result.error
+    mock_subprocess.run.assert_not_called()
+
+    # ...and an explicit override still wins over the manifest default.
+    mock_subprocess.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    result = engine.run_scraper("headed-scraper", "csv", config={"headless": True})
+    assert result.success is True
