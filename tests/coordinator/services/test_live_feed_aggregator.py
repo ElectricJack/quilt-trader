@@ -161,6 +161,48 @@ async def test_aggregator_writes_tick_parquets_and_bars(tmp_path, engine_and_fac
     assert float(row["volume"]) == pytest.approx(60 * 10.0)
 
 
+def test_tick_parquet_append_keeps_previous_file_if_write_fails(tmp_path, monkeypatch):
+    agg = LiveFeedAggregator.__new__(LiveFeedAggregator)
+    agg._market_dir = str(tmp_path)
+    ts = datetime(2026, 9, 28, 15, 46, tzinfo=timezone.utc)
+    first = {"timestamp": ts, "bid": 100.0}
+    second = {"timestamp": ts + timedelta(seconds=1), "bid": 101.0}
+    agg._append_parquet("alpaca", "SPY", "quotes", [first])
+    agg._append_parquet("alpaca", "SPY", "quotes", [second])
+
+    path = tmp_path / "alpaca_live" / "SPY" / "ticks" / "quotes-2026-09-28.parquet"
+    assert pd.read_parquet(path)["bid"].tolist() == [100.0, 101.0]
+
+    def interrupted_write(self, destination, **kwargs):
+        Path(destination).write_bytes(b"partial parquet")
+        raise OSError("simulated interrupted write")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", interrupted_write)
+    agg._append_parquet("alpaca", "SPY", "quotes", [
+        {"timestamp": ts + timedelta(seconds=2), "bid": 102.0},
+    ])
+
+    assert pd.read_parquet(path)["bid"].tolist() == [100.0, 101.0]
+    assert list(path.parent.glob(".quotes-*.tmp")) == []
+
+
+def test_tick_parquet_append_preserves_corrupt_file(tmp_path):
+    agg = LiveFeedAggregator.__new__(LiveFeedAggregator)
+    agg._market_dir = str(tmp_path)
+    path = tmp_path / "alpaca_live" / "SPY" / "ticks" / "quotes-2026-09-28.parquet"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"partial parquet")
+
+    agg._append_parquet("alpaca", "SPY", "quotes", [
+        {"timestamp": datetime(2026, 9, 28, tzinfo=timezone.utc), "bid": 100.0},
+    ])
+
+    assert pd.read_parquet(path)["bid"].tolist() == [100.0]
+    preserved = list(path.parent.glob("quotes-2026-09-28.parquet.corrupt-*"))
+    assert len(preserved) == 1
+    assert preserved[0].read_bytes() == b"partial parquet"
+
+
 def test_bar_builder_ignores_late_ticks_for_closed_minute():
     """Late ticks (timestamp earlier than current minute_start) must not reset
     the in-progress bar or rewrite the closed one.

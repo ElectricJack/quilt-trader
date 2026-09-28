@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import tempfile
 import threading
 import time
 from collections import deque
@@ -37,8 +38,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Deque, Optional
+from uuid import uuid4
 
 import pandas as pd
+from pyarrow import ArrowInvalid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -757,16 +760,39 @@ class LiveFeedAggregator:
             # Normalize timestamps to UTC tz-aware.
             if "timestamp" in df.columns:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            damaged_path: Path | None = None
             if path.exists():
                 try:
                     existing = pd.read_parquet(path)
                     df = pd.concat([existing, df], ignore_index=True)
+                except ArrowInvalid:
+                    # Keep the damaged file for recovery instead of silently
+                    # replacing it with only the newest flush.
+                    damaged_path = path.with_name(f"{path.name}.corrupt-{uuid4().hex}")
+                    logger.exception("Corrupt parquet %s; preserving as %s", path, damaged_path)
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to read existing parquet %s", path)
+                    continue
+            tmp_path: Path | None = None
             try:
-                df.to_parquet(path, index=False)
+                # A direct rewrite leaves an unreadable footer if the process
+                # stops mid-write. Readers see only complete replacements.
+                with tempfile.NamedTemporaryFile(
+                    prefix=f".{path.name}.", suffix=".tmp", dir=ticks_dir,
+                    delete=False,
+                ) as tmp:
+                    tmp_path = Path(tmp.name)
+                df.to_parquet(tmp_path, index=False)
+                if damaged_path is not None:
+                    # A hard link preserves the old inode without removing the
+                    # published path before the new file is ready.
+                    os.link(path, damaged_path)
+                os.replace(tmp_path, path)
             except Exception:  # noqa: BLE001
                 logger.exception("Failed to write parquet %s", path)
+            finally:
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
 
     async def _flush_bar(
         self, broker: str, symbol: str, bar_row: dict
