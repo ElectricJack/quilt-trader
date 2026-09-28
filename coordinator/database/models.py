@@ -164,6 +164,13 @@ class Scraper(Base):
     last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     attempts_day: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # Auth state (review rev-nimble-bridge 6.3). auth_state is NULL when ok,
+    # "needs_login" after a run hit a login wall or bot block; scheduled and
+    # catch-up runs are paused until it clears.
+    auth_state: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    auth_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    auth_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    auth_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

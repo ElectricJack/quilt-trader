@@ -19,8 +19,11 @@ from unittest.mock import MagicMock
 
 import pytest
 import yaml
+from sqlalchemy import select
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 
+from coordinator.database.connection import create_engine, create_session_factory
+from coordinator.database.models import Base, Scraper
 from coordinator.services.scheduler import SchedulerService
 from coordinator.services.scraper_engine import ScraperEngine, ScraperResult
 from coordinator.services.scraper_registry import ScraperRegistry
@@ -82,3 +85,53 @@ async def test_registered_cron_job_runs_scraper(tmp_path, register):
     assert event.exception is None, repr(event.exception)
     engine.run_scraper.assert_called_once_with("my-scraper", "csv", {})
     assert registry.get("my-scraper").last_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_cron_job_is_a_schedule_trigger_and_skips_while_needs_login(tmp_path):
+    """A cron fire while the scraper needs login spawns nothing and counts no attempt."""
+    packages_dir = tmp_path / "packages"
+    _write_manifest(str(packages_dir / "my-scraper"), name="my-scraper")
+
+    db = create_engine("sqlite+aiosqlite:///:memory:")
+    async with db.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(db)
+    async with session_factory() as session:
+        session.add(Scraper(
+            repo_url="local", name="my-scraper", attempts_today=0,
+            auth_state="needs_login", auth_reason="auth_required", auth_message="login wall",
+        ))
+        await session.commit()
+
+    engine = MagicMock(spec=ScraperEngine)
+    engine.run_scraper.return_value = ScraperResult(success=True)
+
+    scheduler = SchedulerService()
+    scheduler.start()
+    try:
+        registry = ScraperRegistry(
+            engine=engine,
+            scheduler=scheduler,
+            packages_dir=str(packages_dir),
+            configs_dir=str(tmp_path / "scraper_configs"),
+            session_factory=session_factory,
+        )
+        registry.register_scraper("my-scraper")
+        job = scheduler._scheduler.get_job("scraper:my-scraper")
+        assert job.func.keywords == {"trigger": "schedule"}
+
+        event = await _fire_now_and_wait(scheduler, "scraper:my-scraper")
+    finally:
+        scheduler.shutdown()
+
+    assert event.exception is None, repr(event.exception)
+    engine.run_scraper.assert_not_called()
+    async with session_factory() as session:
+        row = (await session.execute(
+            select(Scraper).where(Scraper.name == "my-scraper")
+        )).scalar_one()
+    assert row.attempts_today == 0
+    assert row.last_attempt_at is None
+    assert registry.get("my-scraper").last_status is None
+    await db.dispose()
