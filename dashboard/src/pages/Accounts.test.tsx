@@ -16,6 +16,7 @@ vi.mock("../api/hooks", () => ({
     data: brokerType === "alpaca" ? ["equities", "options", "crypto"] : [],
     isLoading: false,
   }),
+  useAccountSnapshotsLatest: () => ({ data: null, isLoading: false }),
 }));
 
 // Mock api client

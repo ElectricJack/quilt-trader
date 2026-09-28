@@ -29,6 +29,7 @@ vi.mock("../api/hooks", () => ({
   useStartDeployment: () => ({ mutate: vi.fn(), isPending: false }),
   useStopDeployment: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteDeployment: () => ({ mutate: vi.fn(), isPending: false }),
+  useRedeployDeployment: () => ({ mutate: vi.fn(), isPending: false }),
   useWorkerActivity: () => ({ data: null, isLoading: false }),
   useDeploymentActivity: () => ({ data: null, isLoading: false }),
 }));
