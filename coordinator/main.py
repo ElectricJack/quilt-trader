@@ -120,8 +120,18 @@ def create_app(
             broadcast=_scraper_ws_manager.broadcast_to_dashboards,
         )
         scraper_registry.discover_and_register()
-        from coordinator.api.routes.scrapers import set_registry
+        from coordinator.api.routes.scrapers import set_login_manager, set_registry
         set_registry(scraper_registry)
+
+        # Dashboard re-login sessions for scrapers (review rev-nimble-bridge 7.3)
+        from coordinator.services.scraper_login import LoginSessionManager
+        scraper_login_manager = LoginSessionManager(
+            scraper_registry,
+            quilt_root=repo_root,
+            broadcast=_scraper_ws_manager.broadcast_to_dashboards,
+        )
+        set_login_manager(scraper_login_manager)
+        app.state.scraper_login_manager = scraper_login_manager
 
         # Download manager — read provider credentials from settings and wire up
         http_client = httpx.AsyncClient(timeout=30.0)
@@ -623,6 +633,12 @@ def create_app(
         try:
             yield
         finally:
+            # Close login browsers first: a verified session still writes its
+            # auth state, and every helper must be gone before we exit.
+            try:
+                await scraper_login_manager.shutdown()
+            except Exception:  # noqa: BLE001
+                logger.warning("scraper login shutdown failed", exc_info=True)
             # Let DB-backed sweeps return their sessions before disposing the engine.
             periodic_stop.set()
             await asyncio.gather(
@@ -689,6 +705,8 @@ def create_app(
 
     from coordinator.api.routes.scrapers import router as scrapers_router
     app.include_router(scrapers_router)
+    from coordinator.api.routes.scrapers import login_ws_router as scraper_login_ws_router
+    app.include_router(scraper_login_ws_router)
 
     from coordinator.api.routes.portfolio import router as portfolio_router
     app.include_router(portfolio_router)
