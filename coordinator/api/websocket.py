@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from coordinator.api.dependencies import get_container
 
@@ -656,7 +657,9 @@ async def handle_worker_disconnect(websocket: WebSocket) -> None:
 async def worker_websocket(websocket: WebSocket):
     await manager.accept_worker(websocket)
     try:
-        while True:
+        # A send inside a message handler may fail and leave the application
+        # side disconnected even when that handler catches the send error.
+        while websocket.application_state == WebSocketState.CONNECTED:
             data = await websocket.receive_json()
             await handle_worker_message(websocket, data)
     except WebSocketDisconnect:
