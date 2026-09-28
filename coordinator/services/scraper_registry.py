@@ -12,6 +12,7 @@ database-backed scraper-instance record (Spec B+ territory).
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -117,7 +118,7 @@ class ScraperRegistry:
             job_id = f"scraper:{name}"
             self._scheduler.add_cron_job(
                 job_id=job_id,
-                func=lambda n=name: asyncio.create_task(self.run(n)),
+                func=self._cron_job_func(name),
                 cron_expr=schedule,
                 jitter=jitter_seconds,
             )
@@ -128,6 +129,16 @@ class ScraperRegistry:
             self._schedule_catch_up(name)
 
         return list(self._scrapers.values())
+
+    def _cron_job_func(self, name: str) -> Callable[[], Any]:
+        """Return the cron job callable for scraper `name`.
+
+        Must stay a coroutine function (a partial of the async `run`):
+        AsyncIOScheduler's executor awaits those on the event loop but runs
+        any sync callable in a worker thread, where scheduling onto the loop
+        fails with "no running event loop".
+        """
+        return functools.partial(self.run, name)
 
     def _schedule_catch_up(self, name: str) -> None:
         """Fire `_maybe_catch_up(name)` on the running event loop, if any.
@@ -207,7 +218,7 @@ class ScraperRegistry:
         job_id = f"scraper:{name}"
         self._scheduler.add_cron_job(
             job_id=job_id,
-            func=lambda n=name: asyncio.create_task(self.run(n)),
+            func=self._cron_job_func(name),
             cron_expr=schedule,
             jitter=jitter_seconds,
         )
