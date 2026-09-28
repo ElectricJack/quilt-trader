@@ -1,3 +1,8 @@
+import asyncio
+from datetime import datetime, timezone
+
+import pytest
+
 from coordinator.services.scheduler import SchedulerService
 
 
@@ -29,3 +34,30 @@ def test_remove_job():
 def test_list_empty():
     scheduler = SchedulerService()
     assert scheduler.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_running_job():
+    scheduler = SchedulerService()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def job():
+        started.set()
+        await release.wait()
+        finished.set()
+
+    scheduler.start()
+    scheduler.add_cron_job("running-job", job, "0 0 * * *")
+    scheduler._scheduler.modify_job(
+        "running-job", next_run_time=datetime.now(timezone.utc)
+    )
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    shutdown = asyncio.create_task(scheduler.shutdown(timeout=2))
+    await asyncio.sleep(0)
+    assert not shutdown.done()
+    release.set()
+    await asyncio.wait_for(shutdown, timeout=2)
+    assert finished.is_set()

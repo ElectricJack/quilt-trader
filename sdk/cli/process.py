@@ -115,7 +115,7 @@ def start_coord_daemon(*, host: str = "0.0.0.0", port: int = 8000,
     )
 
 
-def stop_process(timeout: float = 10.0) -> bool:
+def stop_process(timeout: float = 30.0) -> bool:
     """Stop the coord process by PID. Returns True if a process was stopped."""
     pid = read_pid()
     if pid is None:

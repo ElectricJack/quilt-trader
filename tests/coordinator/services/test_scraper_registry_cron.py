@@ -77,7 +77,7 @@ async def test_registered_cron_job_runs_scraper(tmp_path, register):
 
         event = await _fire_now_and_wait(scheduler, "scraper:my-scraper")
     finally:
-        scheduler.shutdown()
+        await scheduler.shutdown()
 
     assert event.exception is None, repr(event.exception)
     engine.run_scraper.assert_called_once_with("my-scraper", "csv", {})

@@ -617,8 +617,10 @@ def create_app(
         try:
             yield
         finally:
-            # Let DB-backed sweeps return their sessions before disposing the engine.
+            # Let scheduled jobs and DB-backed sweeps return their sessions
+            # before disposing the engine.
             periodic_stop.set()
+            await scheduler.shutdown()
             await asyncio.gather(
                 health_task, activity_retention_task, finalizer_task,
                 return_exceptions=True,
@@ -633,7 +635,6 @@ def create_app(
             with contextlib.suppress(Exception):
                 await container.research_job_manager.shutdown()
         await http_client.aclose()
-        scheduler.shutdown()
         await engine.dispose()
 
     app = FastAPI(title="QuiltTrader", version="0.1.0", lifespan=lifespan)
