@@ -194,6 +194,7 @@ class LiveFeedAggregator:
         self._streams: dict[tuple[str, str], _StreamConn] = {}
         self._retention_task: Optional[asyncio.Task] = None
         self._sweep_task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._bar_subscribers: dict[tuple[str, str, str], set[Callable]] = {}
         self._event_subscribers: dict[tuple[str, str], set[Callable]] = {}
@@ -244,6 +245,7 @@ class LiveFeedAggregator:
                 logger.exception("Event subscriber failed for %s/%s", broker, symbol)
 
     async def start(self) -> None:
+        self._stop_event = asyncio.Event()
         self._loop = asyncio.get_running_loop()
         # Resume every subscription that has at least one consumer. Consumer
         # presence is the source of truth — the unsubscribe path deletes the
@@ -275,24 +277,12 @@ class LiveFeedAggregator:
         self._sweep_task = asyncio.create_task(self._stale_stream_sweep())
 
     async def stop(self) -> None:
-        if self._sweep_task:
-            self._sweep_task.cancel()
-            try:
-                await self._sweep_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        if self._retention_task:
-            self._retention_task.cancel()
-            try:
-                await self._retention_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        for key, t in list(self._tasks.items()):
-            t.cancel()
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        # Finish in-flight DB updates before the coordinator disposes its engine.
+        self._stop_event.set()
+        tasks = [t for t in (self._sweep_task, self._retention_task) if t is not None]
+        tasks.extend(self._tasks.values())
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         # Close all shared stream connections.
         for conn in list(self._streams.values()):
             if conn.handle is not None:
@@ -657,8 +647,13 @@ class LiveFeedAggregator:
         last_rate_update: datetime = self._now()
 
         try:
-            while True:
-                await asyncio.sleep(self._flush_interval)
+            while not self._stop_event.is_set():
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=self._flush_interval)
+                except asyncio.TimeoutError:
+                    pass
+                if self._stop_event.is_set():
+                    break
                 now = self._now()
                 # Flush any closed bar that the stream thread couldn't write itself.
                 with state.lock:
@@ -840,11 +835,13 @@ class LiveFeedAggregator:
     async def _stale_stream_sweep(self) -> None:
         """Background task: every 30s, check if any stream has had no tick for
         > 60s during expected hours. If so, emit a stream_disconnect event."""
-        while True:
+        while not self._stop_event.is_set():
             try:
-                await asyncio.sleep(30.0)
-            except asyncio.CancelledError:
-                return
+                await asyncio.wait_for(self._stop_event.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                pass
+            if self._stop_event.is_set():
+                break
             now = self._now()
             for key, conn in list(self._streams.items()):
                 account_id, asset_class = key
@@ -890,12 +887,14 @@ class LiveFeedAggregator:
 
     # ------- retention sweep -------
     async def _retention_loop(self) -> None:
-        try:
-            while True:
-                await asyncio.sleep(3600)
-                await self._sweep_old_ticks()
-        except asyncio.CancelledError:
-            return
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=3600)
+            except asyncio.TimeoutError:
+                pass
+            if self._stop_event.is_set():
+                break
+            await self._sweep_old_ticks()
 
     async def _sweep_old_ticks(self) -> None:
         async with self._sf() as session:

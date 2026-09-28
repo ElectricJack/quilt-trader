@@ -424,7 +424,8 @@ def create_app(
             base_dir=Path(os.environ.get("QT_LIVE_DATA_DIR", "data/live")),
             interval_seconds=int(os.environ.get("QT_LIVE_FINALIZE_INTERVAL_SECONDS", "15")),
         )
-        finalizer_task = asyncio.create_task(container.live_finalizer.run_loop())
+        periodic_stop = asyncio.Event()
+        finalizer_task = asyncio.create_task(container.live_finalizer.run_loop(periodic_stop))
 
         from coordinator.services.tick_scheduler import TickScheduler
         from coordinator.api.websocket import manager as ws_manager_obj
@@ -599,6 +600,7 @@ def create_app(
                 container.session_factory,
                 interval_seconds=int(os.environ.get("QT_WORKER_HEALTH_INTERVAL_SECONDS", "30")),
                 offline_after_seconds=int(os.environ.get("QT_WORKER_OFFLINE_TIMEOUT_SECONDS", "60")),
+                stop_event=periodic_stop,
             )
         )
 
@@ -608,21 +610,19 @@ def create_app(
                 container.session_factory,
                 interval_seconds=int(os.environ.get("QT_WORKER_ACTIVITY_RETENTION_INTERVAL_SECONDS", "3600")),
                 retention_days=int(os.environ.get("QT_WORKER_ACTIVITY_RETENTION_DAYS", "7")),
+                stop_event=periodic_stop,
             )
         )
 
         try:
             yield
         finally:
-            health_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await health_task
-            activity_retention_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await activity_retention_task
-            finalizer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await finalizer_task
+            # Let DB-backed sweeps return their sessions before disposing the engine.
+            periodic_stop.set()
+            await asyncio.gather(
+                health_task, activity_retention_task, finalizer_task,
+                return_exceptions=True,
+            )
             if container.tick_scheduler is not None:
                 with contextlib.suppress(Exception):
                     await container.tick_scheduler.shutdown()

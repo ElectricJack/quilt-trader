@@ -68,9 +68,11 @@ async def run_worker_activity_retention_loop(
     session_factory: async_sessionmaker[AsyncSession],
     interval_seconds: int = 3600,
     retention_days: int = 7,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
     """Periodic prune loop. Runs every `interval_seconds` (default 1 hour)."""
-    while True:
+    stop_event = stop_event or asyncio.Event()
+    while not stop_event.is_set():
         try:
             deleted = await prune_worker_activity(session_factory, retention_days)
             if deleted:
@@ -81,4 +83,7 @@ async def run_worker_activity_retention_loop(
                 )
         except Exception:
             logger.exception("worker_activity retention sweep failed")
-        await asyncio.sleep(interval_seconds)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            pass
