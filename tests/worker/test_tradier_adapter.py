@@ -1,6 +1,8 @@
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from worker.tradier_adapter import TradierAdapter
 from worker.broker_adapter import MultilegLegSpec, OrderResult
@@ -470,8 +472,12 @@ class TestTradierStreamReconnect:
     """When the long-poll HTTP stream dies, the handle must reconnect with
     backoff rather than letting the worker thread exit silently."""
 
-    def test_stream_reconnects_after_disconnect(self):
-        """First GET raises ConnectionError; second GET delivers a tick."""
+    @pytest.mark.parametrize("disconnect_error", [
+        requests.exceptions.ConnectionError,
+        requests.exceptions.ChunkedEncodingError,
+    ])
+    def test_stream_reconnects_after_disconnect(self, disconnect_error, caplog):
+        """Transport disconnects warn without a traceback and reconnect."""
         import json
         import threading
         from worker.tradier_adapter import _TradierStreamHandle
@@ -481,6 +487,8 @@ class TestTradierStreamReconnect:
         get_calls = []
         received_trades: list[dict] = []
         trade_received = threading.Event()
+        release_first_stream = threading.Event()
+        disconnected = threading.Event()
 
         def fake_post(url, headers=None, timeout=None):
             post_calls.append(url)
@@ -492,6 +500,7 @@ class TestTradierStreamReconnect:
             def __init__(self, lines, raise_after=False):
                 self._lines = list(lines)
                 self._raise_after = raise_after
+                self._closed = threading.Event()
             def __enter__(self):
                 return self
             def __exit__(self, *exc):
@@ -502,18 +511,18 @@ class TestTradierStreamReconnect:
                 for ln in self._lines:
                     yield ln
                 if self._raise_after:
-                    import requests as _r
-                    raise _r.exceptions.ConnectionError("simulated drop")
+                    release_first_stream.wait(timeout=3.0)
+                    raise disconnect_error("simulated drop")
+                self._closed.wait(timeout=3.0)
             def close(self):
-                pass
+                self._closed.set()
 
         def fake_get(url, params=None, headers=None, stream=None, timeout=None):
             get_calls.append(params.get("sessionid") if params else None)
             if len(get_calls) == 1:
                 # First connection: deliver no lines, then crash.
                 return _FakeStreamResp([], raise_after=True)
-            # Second connection: deliver one trade event, then loop forever
-            # (so the test thread must close to exit).
+            # Second connection: deliver one trade event, then wait for close.
             line = json.dumps({"type": "trade", "symbol": "SPY",
                                "date": "2026-05-18T16:30:00Z",
                                "price": 521.5, "size": 100})
@@ -524,7 +533,10 @@ class TestTradierStreamReconnect:
             trade_received.set()
 
         with patch("requests.post", side_effect=fake_post), \
-             patch("requests.get", side_effect=fake_get):
+             patch("requests.get", side_effect=fake_get), \
+             patch.object(_TradierStreamHandle, "_BACKOFF_INITIAL_S", 0.05), \
+             patch.object(_TradierStreamHandle, "_BACKOFF_MAX_S", 0.05), \
+             caplog.at_level(logging.WARNING, logger="worker.tradier_adapter"):
             handle = _TradierStreamHandle(
                 stream_base="http://fake",
                 access_token="tok",
@@ -532,9 +544,8 @@ class TestTradierStreamReconnect:
                 on_trade=on_trade,
                 on_quote=lambda q: None,
             )
-            # Shrink the backoff so the test isn't slow.
-            handle._BACKOFF_INITIAL_S = 0.05
-            handle._BACKOFF_MAX_S = 0.05
+            handle.set_on_disconnect(lambda _: disconnected.set())
+            release_first_stream.set()
             # Wait for the second connection to deliver a tick.
             assert trade_received.wait(timeout=3.0), \
                 f"no trade received; post_calls={len(post_calls)}, get_calls={len(get_calls)}"
@@ -546,8 +557,16 @@ class TestTradierStreamReconnect:
         # Sessions are distinct on reconnect.
         assert get_calls[0] != get_calls[1]
         # The trade got delivered.
+        assert disconnected.is_set()
         assert received_trades[0]["symbol"] == "SPY"
         assert received_trades[0]["price"] == 521.5
+        disconnect_logs = [record for record in caplog.records
+                           if "tradier stream disconnected" in record.message]
+        assert disconnect_logs
+        assert all(record.levelno == logging.WARNING and record.exc_info is None
+                   for record in disconnect_logs)
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records
+                       if record.name == "worker.tradier_adapter")
 
 
 class TestTradierRejectsCrypto:
