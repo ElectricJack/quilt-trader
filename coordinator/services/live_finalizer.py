@@ -28,6 +28,7 @@ from coordinator.database.models import (
 )
 from coordinator.services import backtest_finalizer as bf
 from coordinator.services.live_sample_sink import LiveSampleSink
+from coordinator.services.periodic import wait_for_next_tick
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +44,13 @@ class LiveFinalizer:
         self._base = Path(base_dir)
         self._interval = interval_seconds
 
-    async def run_loop(self) -> None:
-        while True:
+    async def run_loop(self, stop_event: asyncio.Event | None = None) -> None:
+        while stop_event is None or not stop_event.is_set():
             try:
                 await self._tick()
             except Exception:
                 logger.exception("LiveFinalizer tick failed")
-            await asyncio.sleep(self._interval)
+            await wait_for_next_tick(self._interval, stop_event)
 
     async def _tick(self) -> None:
         async with self._sf() as session:

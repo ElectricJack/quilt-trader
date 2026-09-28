@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import logging
 from datetime import timezone
 from typing import Callable, Optional
@@ -11,12 +13,35 @@ logger = logging.getLogger(__name__)
 class SchedulerService:
     def __init__(self) -> None:
         self._scheduler = AsyncIOScheduler(timezone=timezone.utc)
+        self._active_jobs: set[asyncio.Task] = set()
 
     def start(self) -> None:
         self._scheduler.start()
 
     def shutdown(self) -> None:
         self._scheduler.shutdown(wait=False)
+
+    async def drain(self) -> None:
+        """Stop scheduling and let submitted jobs release their resources."""
+        self._scheduler.pause()
+        # APScheduler has already submitted any due jobs before pause returns.
+        # Let those tasks enter _run_job before inspecting the active set.
+        await asyncio.sleep(0)
+        while self._active_jobs:
+            await asyncio.gather(*tuple(self._active_jobs), return_exceptions=True)
+        self.shutdown()
+
+    async def _run_job(self, func: Callable) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        self._active_jobs.add(task)
+        try:
+            if inspect.iscoroutinefunction(func):
+                await func()
+            else:
+                await asyncio.to_thread(func)
+        finally:
+            self._active_jobs.discard(task)
 
     @staticmethod
     def _convert_dow(posix_dow: str) -> str:
@@ -55,8 +80,12 @@ class SchedulerService:
             jitter=jitter,
             timezone=timezone.utc,
         )
+
+        async def tracked_job() -> None:
+            await self._run_job(func)
+
         self._scheduler.add_job(
-            func, trigger=trigger, id=job_id, replace_existing=True,
+            tracked_job, trigger=trigger, id=job_id, name=job_id, replace_existing=True,
             misfire_grace_time=600, coalesce=True,
         )
 

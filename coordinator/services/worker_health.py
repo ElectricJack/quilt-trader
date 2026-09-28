@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from coordinator.database.models import Worker
+from coordinator.services.periodic import wait_for_next_tick
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,10 @@ async def run_worker_health_loop(
     session_factory: async_sessionmaker[AsyncSession],
     interval_seconds: int = 30,
     offline_after_seconds: int = 60,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
-    """Run the sweeper on a periodic loop. Cancellable via the task."""
-    while True:
+    """Run the sweeper until stopped, finishing the current database operation."""
+    while stop_event is None or not stop_event.is_set():
         try:
             transitioned = await sweep_stale_workers(
                 session_factory, offline_after_seconds
@@ -53,4 +55,4 @@ async def run_worker_health_loop(
                 logger.info("Marked stale worker %s offline", wid)
         except Exception:
             logger.exception("Worker health sweep failed")
-        await asyncio.sleep(interval_seconds)
+        await wait_for_next_tick(interval_seconds, stop_event)

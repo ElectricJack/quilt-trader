@@ -7,6 +7,7 @@ from typing import Optional
 import pandas as pd
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from coordinator.services.periodic import wait_for_next_tick
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,10 @@ async def run_worker_activity_retention_loop(
     session_factory: async_sessionmaker[AsyncSession],
     interval_seconds: int = 3600,
     retention_days: int = 7,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
     """Periodic prune loop. Runs every `interval_seconds` (default 1 hour)."""
-    while True:
+    while stop_event is None or not stop_event.is_set():
         try:
             deleted = await prune_worker_activity(session_factory, retention_days)
             if deleted:
@@ -81,4 +83,4 @@ async def run_worker_activity_retention_loop(
                 )
         except Exception:
             logger.exception("worker_activity retention sweep failed")
-        await asyncio.sleep(interval_seconds)
+        await wait_for_next_tick(interval_seconds, stop_event)
