@@ -15,7 +15,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 
 def _json_safe(obj):
@@ -86,6 +86,16 @@ class _WorkerOutbound:
                         "Dropping tick_batch for disconnected worker %s (code %s)",
                         self.worker_id[:8], exc.code,
                     )
+                except RuntimeError:
+                    if getattr(ws, "application_state", None) is WebSocketState.DISCONNECTED:
+                        # Later sends hit Starlette's closed-socket guard until
+                        # the receive loop drops this worker.
+                        logger.info(
+                            "Dropping tick_batch for disconnected worker %s",
+                            self.worker_id[:8],
+                        )
+                    else:
+                        logger.exception("Failed to send tick_batch to worker %s", self.worker_id[:8])
                 except Exception:
                     logger.exception("Failed to send tick_batch to worker %s", self.worker_id[:8])
         except asyncio.CancelledError:

@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 from fastapi import WebSocketDisconnect
 from sqlalchemy import select
+from starlette.websockets import WebSocket, WebSocketState
 
 from coordinator.main import create_app
 from coordinator.api.dependencies import get_container
@@ -369,6 +370,23 @@ async def test_worker_marked_offline_on_disconnect(running_app, db_session):
     async with container.session_factory() as session:
         w = (await session.execute(select(Worker).where(Worker.id == wid))).scalar_one()
         assert w.status == "offline"
+
+
+@pytest.mark.asyncio
+async def test_worker_receive_after_failed_send_runs_disconnect_cleanup(monkeypatch):
+    import coordinator.api.websocket as ws_module
+
+    ws = WebSocket({"type": "websocket"}, receive=AsyncMock(), send=AsyncMock())
+    ws.application_state = WebSocketState.DISCONNECTED
+    accept = AsyncMock()
+    cleanup = AsyncMock()
+    monkeypatch.setattr(ws_module.manager, "accept_worker", accept)
+    monkeypatch.setattr(ws_module, "handle_worker_disconnect", cleanup)
+
+    await ws_module.worker_websocket(ws)
+
+    accept.assert_awaited_once_with(ws)
+    cleanup.assert_awaited_once_with(ws)
 
 
 # ---------------------------------------------------------------------------

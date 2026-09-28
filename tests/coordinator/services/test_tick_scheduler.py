@@ -3,7 +3,7 @@ import logging
 from unittest.mock import MagicMock
 
 import pytest
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 
 class _FakeAggregator:
@@ -152,6 +152,50 @@ async def test_outbound_send_failure_logging(
     assert send_logs[0].levelno == expected_level
     assert expected_message in send_logs[0].message
     assert (send_logs[0].exc_info is not None) == (expected_level == logging.ERROR)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_error", [
+    WebSocketDisconnect(code=1006),
+    RuntimeError('Cannot call "send" once a close message has been sent.'),
+])
+async def test_disconnected_worker_send_is_quiet_and_reconnect_receives_ticks(send_error, caplog):
+    from coordinator.services.tick_scheduler import TickScheduler
+
+    first_send = asyncio.Event()
+    next_send = asyncio.Event()
+    dead_ws = MagicMock()
+    dead_ws.application_state = WebSocketState.DISCONNECTED
+
+    async def dead_send(message):
+        first_send.set()
+        raise send_error
+
+    dead_ws.send_json = dead_send
+    ws_manager = MagicMock()
+    ws_manager.worker_connections = {"w1": dead_ws}
+    sched = TickScheduler(aggregator=_FakeAggregator(), ws_manager=ws_manager, coalesce_ms=0)
+    try:
+        with caplog.at_level(logging.ERROR, logger="coordinator.services.tick_scheduler"):
+            await sched._enqueue_tick("w1", {"instance_id": "d1"})
+            await asyncio.wait_for(first_send.wait(), timeout=1)
+
+            live_ws = MagicMock()
+            sent = []
+
+            async def live_send(message):
+                sent.append(message)
+                next_send.set()
+
+            live_ws.send_json = live_send
+            ws_manager.worker_connections["w1"] = live_ws
+            await sched._enqueue_tick("w1", {"instance_id": "d2"})
+            await asyncio.wait_for(next_send.wait(), timeout=1)
+
+        assert sent == [{"type": "tick_batch", "ticks": [{"instance_id": "d2"}]}]
+        assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+    finally:
+        await sched.shutdown()
 
 
 @pytest.mark.asyncio
