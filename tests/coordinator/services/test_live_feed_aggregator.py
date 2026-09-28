@@ -239,6 +239,56 @@ def test_bar_builder_ignores_late_ticks_for_closed_minute():
     assert b.volume == 0.5
 
 
+def test_tick_parquet_preserves_corrupt_file_and_resumes_appending(tmp_path):
+    agg = LiveFeedAggregator(session_factory=None, encryption=None, market_dir=str(tmp_path))
+    ts = datetime(2026, 9, 28, 17, 0, tzinfo=timezone.utc)
+    path = agg._ticks_dir("coinbase", "BTCUSD") / f"quotes-{ts.date()}.parquet"
+    path.parent.mkdir(parents=True)
+    damaged = b"PAR1missing footer"
+    path.write_bytes(damaged)
+
+    for offset in (0, 1):
+        agg._append_parquet("coinbase", "BTCUSD", "quotes", [{
+            "symbol": "BTCUSD", "timestamp": ts + timedelta(seconds=offset),
+            "bid": 100.0 + offset,
+        }])
+
+    backups = list(path.parent.glob(f"{path.name}.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == damaged
+    assert pd.read_parquet(path)["bid"].tolist() == [100.0, 101.0]
+
+
+@pytest.mark.asyncio
+async def test_tick_retention_removes_old_corrupt_and_tmp_files(tmp_path, engine_and_factory):
+    _, sf = engine_and_factory
+    async with sf() as session:
+        session.add(LiveSubscription(
+            provider_type="coinbase", broker="coinbase", symbol="BTCUSD",
+            tick_retention_hours=24,
+        ))
+        await session.commit()
+
+    now = datetime(2026, 9, 28, 17, 0, tzinfo=timezone.utc)
+    agg = LiveFeedAggregator(
+        session_factory=sf, encryption=None, market_dir=str(tmp_path),
+        now_fn=lambda: now,
+    )
+    ticks_dir = agg._ticks_dir("coinbase", "BTCUSD")
+    ticks_dir.mkdir(parents=True)
+    old = ticks_dir / "quotes-2026-09-26.parquet.corrupt-abc123"
+    old_tmp = ticks_dir / ".quotes-2026-09-26.parquet.xyz789.tmp"
+    current = ticks_dir / "quotes-2026-09-28.parquet.corrupt-def456"
+    for f in (old, old_tmp, current):
+        f.write_bytes(b"damaged")
+
+    await agg._sweep_old_ticks()
+
+    assert not old.exists()
+    assert not old_tmp.exists()
+    assert current.exists()
+
+
 @pytest.mark.asyncio
 async def test_aggregator_drops_zero_size_trades(tmp_path, engine_and_factory):
     """size=0 'trade' events (Tradier synthetic echoes) must not feed the bar
