@@ -5,8 +5,11 @@ We test handle_worker_message() directly by:
   - Creating a real in-memory DB session via the app lifespan
   - Providing a mock WebSocket that captures sent messages
 """
+from unittest.mock import AsyncMock
+
 import pytest
 import pytest_asyncio
+from fastapi import WebSocketDisconnect
 from sqlalchemy import select
 
 from coordinator.main import create_app
@@ -666,3 +669,57 @@ async def test_worker_reconnect_resends_start_instance_for_running_instances_ful
     assert start_msg["algorithm_id"] == algo.id
     assert start_msg["credentials"]["api_key"] == "k"
     assert start_msg["manifest"]["entry_point"] == "a.b"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "disconnect",
+    [
+        WebSocketDisconnect(code=1006),
+        RuntimeError('Cannot call "send" once a close message has been sent.'),
+    ],
+    ids=["transport-disconnect", "already-closed"],
+)
+async def test_reconcile_stops_sending_after_worker_disconnect(
+    running_app, db_session, monkeypatch, caplog, disconnect,
+):
+    from coordinator.api import websocket as websocket_api
+    from coordinator.database.models import AlgorithmRun
+
+    container = get_container()
+    algo = Algorithm(repo_url="https://github.com/x/reconcile-close", name="A")
+    account = Account(
+        name="A", broker_type="alpaca", environment="paper",
+        credentials=container.encryption.encrypt("{}"),
+        supported_asset_types=["equities"],
+    )
+    worker = Worker(name="W", status="online")
+    db_session.add_all([algo, account, worker])
+    await db_session.flush()
+    for _ in range(2):
+        instance = AlgorithmInstance(
+            algorithm_id=algo.id, account_id=account.id,
+            worker_id=worker.id, status="running",
+        )
+        db_session.add(instance)
+        await db_session.flush()
+        run = AlgorithmRun(instance_id=instance.id, run_number=1, status="running")
+        db_session.add(run)
+        await db_session.flush()
+        instance.active_run_id = run.id
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        websocket_api, "_load_manifest_dict_for_reconcile",
+        lambda algo: {"trigger": "bar:1min"},
+    )
+    worker_ws = FakeWebSocket()
+    worker_ws.send_json = AsyncMock(side_effect=disconnect)
+    tick_start = AsyncMock()
+    monkeypatch.setattr(container.tick_scheduler, "start_instance", tick_start)
+
+    await websocket_api._reconcile_worker_instances(worker.id, worker_ws)
+
+    assert worker_ws.send_json.await_count == 1
+    tick_start.assert_not_awaited()
+    assert "Reconcile send_json failed" not in caplog.text
