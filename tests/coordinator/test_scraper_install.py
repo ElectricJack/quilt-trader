@@ -11,17 +11,24 @@ from coordinator.services.scraper_registry import ScraperRegistry
 
 
 def _write_manifest(pkg_dir: str, *, name="my-scraper", schedule="0 14 * * 1-5",
-                    type_="scraper", entry_point="scraper.py", description="A test scraper") -> None:
+                    type_="scraper", entry_point="scraper.py", description="A test scraper",
+                    auth=None) -> None:
     os.makedirs(pkg_dir, exist_ok=True)
+    manifest = {
+        "type": type_,
+        "name": name,
+        "schedule": schedule,
+        "entry_point": entry_point,
+        "description": description,
+        "version": "0.1.0",
+    }
+    if auth is not None:
+        manifest["config"] = {"parameters": [
+            {"name": "profile_dir", "type": "string", "default": "~/.cache/my-profile"},
+        ]}
+        manifest["auth"] = auth
     with open(os.path.join(pkg_dir, "quilt.yaml"), "w") as f:
-        yaml.safe_dump({
-            "type": type_,
-            "name": name,
-            "schedule": schedule,
-            "entry_point": entry_point,
-            "description": description,
-            "version": "0.1.0",
-        }, f)
+        yaml.safe_dump(manifest, f)
     # An empty entry_point file so manifest validation passes.
     with open(os.path.join(pkg_dir, entry_point), "w") as f:
         f.write("# entry point\n")
@@ -115,6 +122,104 @@ class TestInstallScraper:
         with patch.object(sr_mod.PackageManager, "clone_repo", new=lambda *a, **kw: None):
             with pytest.raises(Exception, match="already exists"):
                 reg.install_scraper("https://github.com/owner/my-scraper.git")
+
+
+GOOD_AUTH = {
+    "kind": "browser_profile",
+    "engine": "patchright",
+    "profile_dir_param": "profile_dir",
+    "login_url": "https://example.com/login",
+    "verify": {"url": "https://example.com/picks", "selector": "table.picks"},
+}
+BAD_AUTH = {**GOOD_AUTH, "kind": "oauth"}
+
+
+class TestAuthBlockParsing:
+    """ScraperRecord.auth (review rev-nimble-bridge, section 5)."""
+
+    def test_register_without_auth_block(self, tmp_path):
+        reg, _, packages_dir, _ = _make_registry(tmp_path)
+        _write_manifest(str(packages_dir / "my-scraper"))
+        assert reg.register_scraper("my-scraper").auth is None
+
+    def test_register_parses_auth_block(self, tmp_path):
+        reg, _, packages_dir, _ = _make_registry(tmp_path)
+        _write_manifest(str(packages_dir / "my-scraper"), auth=GOOD_AUTH)
+        record = reg.register_scraper("my-scraper")
+        assert record.auth is not None
+        assert record.auth.kind == "browser_profile"
+        assert record.auth.engine == "patchright"
+        assert record.auth.verify.selectors == ("table.picks",)
+
+    def test_register_bad_auth_block_warns_and_registers_without_auth(self, tmp_path, caplog):
+        reg, scheduler, packages_dir, _ = _make_registry(tmp_path)
+        _write_manifest(str(packages_dir / "my-scraper"), auth=BAD_AUTH)
+        with caplog.at_level("WARNING", logger="coordinator.services.scraper_registry"):
+            record = reg.register_scraper("my-scraper")
+        assert record.auth is None
+        scheduler.add_cron_job.assert_called_once()  # the scrape itself still runs
+        assert "invalid auth: block" in caplog.text
+        assert "auth.kind" in caplog.text
+
+    def test_discover_parses_and_tolerates_auth_blocks(self, tmp_path, caplog):
+        reg, scheduler, packages_dir, _ = _make_registry(tmp_path)
+        _write_manifest(str(packages_dir / "good"), name="good", auth=GOOD_AUTH)
+        _write_manifest(str(packages_dir / "bad"), name="bad", auth=BAD_AUTH)
+        _write_manifest(str(packages_dir / "plain"), name="plain")
+        with caplog.at_level("WARNING", logger="coordinator.services.scraper_registry"):
+            records = {r.name: r for r in reg.discover_and_register()}
+        assert set(records) == {"good", "bad", "plain"}
+        assert records["good"].auth.login_url == "https://example.com/login"
+        assert records["bad"].auth is None
+        assert records["plain"].auth is None
+        assert scheduler.add_cron_job.call_count == 3
+        assert "scraper bad has an invalid auth: block" in caplog.text
+
+    def _install(self, reg, packages_dir, auth):
+        from coordinator.services import scraper_registry as sr_mod
+
+        def fake_clone(_self, _url, name):
+            _write_manifest(str(packages_dir / name), auth=auth)
+
+        with patch.object(sr_mod.PackageManager, "clone_repo", new=fake_clone), \
+             patch.object(sr_mod.PackageManager, "create_venv", new=lambda *a, **kw: None), \
+             patch.object(sr_mod.PackageManager, "install_requirements", new=lambda *a, **kw: None):
+            return reg.install_scraper("https://github.com/owner/my-scraper.git")
+
+    def test_install_with_good_auth_block(self, tmp_path):
+        reg, _, packages_dir, _ = _make_registry(tmp_path)
+        record = self._install(reg, packages_dir, GOOD_AUTH)
+        assert record.auth is not None and record.auth.profile_dir_param == "profile_dir"
+
+    def test_install_refuses_bad_auth_block(self, tmp_path):
+        from coordinator.services.package_manager import PackageError
+
+        reg, scheduler, packages_dir, _ = _make_registry(tmp_path)
+        with pytest.raises(PackageError, match="invalid auth: block in quilt.yaml: auth.kind"):
+            self._install(reg, packages_dir, BAD_AUTH)
+        assert not (packages_dir / "my-scraper").exists()  # rolled back
+        assert reg.get("my-scraper") is None
+        scheduler.add_cron_job.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_install_route_answers_422_for_bad_auth_block(self, client, tmp_path):
+        from coordinator.api.routes import scrapers as routes
+
+        reg, _, packages_dir, _ = _make_registry(tmp_path)
+        from coordinator.services import scraper_registry as sr_mod
+
+        def fake_clone(_self, _url, name):
+            _write_manifest(str(packages_dir / name), auth=BAD_AUTH)
+
+        with patch.object(routes, "_require_registry", return_value=reg), \
+             patch.object(sr_mod.PackageManager, "clone_repo", new=fake_clone), \
+             patch.object(sr_mod.PackageManager, "create_venv", new=lambda *a, **kw: None), \
+             patch.object(sr_mod.PackageManager, "install_requirements", new=lambda *a, **kw: None):
+            resp = await client.post(
+                "/api/scrapers", json={"repo_url": "https://github.com/owner/my-scraper.git"},
+            )
+        assert resp.status_code == 422
+        assert "auth.kind" in resp.json()["detail"]
 
 
 class TestUninstallScraper:

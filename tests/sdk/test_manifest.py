@@ -458,3 +458,77 @@ class TestMarketTimezone:
     def test_market_timezone_rejects_invalid_string(self):
         with pytest.raises(ManifestError, match="invalid market_timezone"):
             QuiltManifest._parse(self._make(["equities"], market_timezone="Not/A/Real/Zone"))
+
+
+_SCRAPER_WITH_AUTH = """
+name: alpha-picks-scraper
+type: scraper
+schedule: "0 14 * * 1-5"
+config:
+  parameters:
+    - name: profile_dir
+      type: string
+      default: /var/lib/quilt/alpha-picks-profile
+    - name: headless
+      type: bool
+      default: true
+auth:
+  kind: browser_profile
+  engine: patchright
+  profile_dir_param: profile_dir
+  login_url: https://seekingalpha.com/alpha-picks/picks/current
+  verify:
+    url: https://seekingalpha.com/alpha-picks/picks/current
+    selector:
+      - "table[data-test-id='alpha-picks-table']"
+      - "table:has(thead th:has-text('Symbol'))"
+      - "[data-test-id='current-picks']"
+    timeout_s: 30
+  session_timeout_s: 1200
+"""
+
+
+class TestAuthBlock:
+    """The scraper auth: block (review rev-nimble-bridge, section 5)."""
+
+    def test_parsed_with_all_fields(self):
+        m = QuiltManifest.from_string(_SCRAPER_WITH_AUTH)
+        assert m.auth is not None
+        assert m.auth.kind == "browser_profile"
+        assert m.auth.engine == "patchright"
+        assert m.auth.profile_dir_param == "profile_dir"
+        assert m.auth.login_url == "https://seekingalpha.com/alpha-picks/picks/current"
+        assert m.auth.verify.url == "https://seekingalpha.com/alpha-picks/picks/current"
+        assert len(m.auth.verify.selectors) == 3
+        assert m.auth.verify.timeout_s == 30
+        assert m.auth.session_timeout_s == 1200
+
+    def test_absent_is_none(self):
+        m = QuiltManifest.from_file(FIXTURES / "valid_scraper.yaml")
+        assert m.auth is None
+
+    def test_algorithm_has_no_auth(self):
+        m = QuiltManifest.from_file(FIXTURES / "valid_algorithm.yaml")
+        assert m.auth is None
+
+    def test_rejected_on_algorithm(self):
+        data = {
+            "name": "algo", "type": "algorithm",
+            "entry_point": "algorithm.py", "class_name": "Algo",
+            "requirements": {"asset_types": ["equities"]},
+            "auth": {"kind": "browser_profile"},
+        }
+        with pytest.raises(ManifestError, match="only allowed when type is 'scraper'"):
+            QuiltManifest._parse(data)
+
+    @pytest.mark.parametrize("old, new, match", [
+        ("kind: browser_profile", "kind: api_key", "auth.kind"),
+        ("profile_dir_param: profile_dir", "profile_dir_param: headless", "of type string"),
+        ("  session_timeout_s: 1200", "  session_timeout_s: 5", "session_timeout_s"),
+        ("  engine: patchright", "  engine: patchright\n  engnie: x", "unknown keys"),
+        ("    timeout_s: 30", "    timeout_s: 30\n    wait: 3", "unknown keys"),
+    ])
+    def test_bad_block_is_a_manifest_error(self, old, new, match):
+        assert old in _SCRAPER_WITH_AUTH
+        with pytest.raises(ManifestError, match=match):
+            QuiltManifest.from_string(_SCRAPER_WITH_AUTH.replace(old, new))

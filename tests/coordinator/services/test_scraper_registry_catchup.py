@@ -10,6 +10,7 @@ guardrail so a failing scraper doesn't burn the API forever.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -203,6 +204,8 @@ class TestCatchUp:
         fired = await reg._maybe_catch_up("dummy-scraper", now_utc=tue_after)
 
         assert fired is True
+        await asyncio.gather(*reg._background)
+        engine.run_scraper.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_skipped_before_base_time(self, session_factory):
@@ -289,6 +292,45 @@ class TestCatchUp:
         fired = await reg._maybe_catch_up("dummy-scraper", now_utc=tue_after)
 
         assert fired is True
+        await asyncio.gather(*reg._background)
+
+    @pytest.mark.asyncio
+    async def test_fired_catch_up_runs_with_catch_up_trigger(self, session_factory):
+        reg, _ = _make_registry(session_factory,
+                                engine_result=ScraperResult(success=True))
+        _add_record(reg)
+        reg.run = AsyncMock(return_value=ScraperResult(success=True))
+        async with session_factory() as session:
+            session.add(Scraper(id=str(uuid4()), repo_url="x", name="dummy-scraper"))
+            await session.commit()
+
+        tue_after = datetime(2026, 6, 2, 16, 0, tzinfo=timezone.utc)
+        assert await reg._maybe_catch_up("dummy-scraper", now_utc=tue_after) is True
+        await asyncio.gather(*reg._background)
+
+        reg.run.assert_awaited_once_with("dummy-scraper", trigger="catch_up")
+
+    @pytest.mark.asyncio
+    async def test_skipped_while_needs_login(self, session_factory):
+        # Otherwise eligible (after base time, no success today, no attempts),
+        # but the last run hit a login wall: catch-up must not fire at all.
+        reg, engine = _make_registry(session_factory,
+                                     engine_result=ScraperResult(success=True))
+        _add_record(reg)
+        async with session_factory() as session:
+            session.add(Scraper(
+                id=str(uuid4()), repo_url="x", name="dummy-scraper",
+                auth_state="needs_login", auth_reason="auth_required",
+                auth_message="login wall",
+            ))
+            await session.commit()
+
+        tue_after = datetime(2026, 6, 2, 16, 0, tzinfo=timezone.utc)
+        fired = await reg._maybe_catch_up("dummy-scraper", now_utc=tue_after)
+
+        assert fired is False
+        assert not reg._background
+        engine.run_scraper.assert_not_called()
 
 
 class TestPersistentState:

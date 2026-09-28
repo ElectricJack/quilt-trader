@@ -8,6 +8,8 @@ from zoneinfo import available_timezones
 
 import yaml
 
+from sdk.scraper_auth import AuthConfigError, ScraperAuth, parse_auth
+
 TRIGGER_REGEX = re.compile(r"^(bar:[a-z0-9]+|event|interval:\d+[smh])$")
 
 # Canonical asset_type values. Mirrors coordinator AssetType enum — kept
@@ -73,6 +75,8 @@ class QuiltManifest:
     trigger: str = "bar:1min"
     data: list[dict] = field(default_factory=list)
     market_timezone: str = "UTC"
+    # Scraper `auth:` block (sdk/scraper_auth.py); None when absent.
+    auth: Optional[ScraperAuth] = None
 
     @staticmethod
     def from_file(path: Path) -> QuiltManifest:
@@ -108,6 +112,11 @@ class QuiltManifest:
         if pkg_type == "scraper":
             if not data.get("schedule"):
                 raise ManifestError("Scraper manifest must have a 'schedule' field")
+
+        try:
+            auth = parse_auth(data)
+        except AuthConfigError as e:
+            raise ManifestError(str(e)) from e
 
         reqs_data = data.get("requirements", {})
         asset_types = _validate_asset_type_list(
@@ -251,4 +260,5 @@ class QuiltManifest:
             trigger=trigger,
             data=data_deps,
             market_timezone=market_timezone,
+            auth=auth,
         )
