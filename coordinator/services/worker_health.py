@@ -42,9 +42,11 @@ async def run_worker_health_loop(
     session_factory: async_sessionmaker[AsyncSession],
     interval_seconds: int = 30,
     offline_after_seconds: int = 60,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
-    """Run the sweeper on a periodic loop. Cancellable via the task."""
-    while True:
+    """Run sweeps until stopped, finishing the current DB operation first."""
+    stop_event = stop_event or asyncio.Event()
+    while not stop_event.is_set():
         try:
             transitioned = await sweep_stale_workers(
                 session_factory, offline_after_seconds
@@ -53,4 +55,7 @@ async def run_worker_health_loop(
                 logger.info("Marked stale worker %s offline", wid)
         except Exception:
             logger.exception("Worker health sweep failed")
-        await asyncio.sleep(interval_seconds)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            pass

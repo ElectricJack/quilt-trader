@@ -43,13 +43,17 @@ class LiveFinalizer:
         self._base = Path(base_dir)
         self._interval = interval_seconds
 
-    async def run_loop(self) -> None:
-        while True:
+    async def run_loop(self, stop_event: asyncio.Event | None = None) -> None:
+        stop_event = stop_event or asyncio.Event()
+        while not stop_event.is_set():
             try:
                 await self._tick()
             except Exception:
                 logger.exception("LiveFinalizer tick failed")
-            await asyncio.sleep(self._interval)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=self._interval)
+            except asyncio.TimeoutError:
+                pass
 
     async def _tick(self) -> None:
         async with self._sf() as session:
