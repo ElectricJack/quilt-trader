@@ -1,6 +1,9 @@
 import asyncio
+import logging
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from starlette.websockets import WebSocketDisconnect
 
 
 class _FakeAggregator:
@@ -106,6 +109,49 @@ async def test_multiple_ticks_for_same_worker_coalesce_into_one_batch():
     assert len(sent) == 1
     assert len(sent[0]["ticks"]) == 2
     await sched.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("send_error", "expected_level", "expected_message"),
+    [
+        (WebSocketDisconnect(code=1006), logging.INFO, "Dropping tick_batch"),
+        (RuntimeError("send failed"), logging.ERROR, "Failed to send tick_batch"),
+    ],
+)
+async def test_outbound_send_failure_logging(
+    send_error, expected_level, expected_message, caplog,
+):
+    from coordinator.services.tick_scheduler import _WorkerOutbound
+
+    attempted = asyncio.Event()
+    async def fail_send(_message):
+        attempted.set()
+        raise send_error
+
+    ws = MagicMock()
+    ws.send_json = fail_send
+    ws_manager = MagicMock()
+    ws_manager.worker_connections = {"worker-1": ws}
+    outbound = _WorkerOutbound("worker-1", ws_manager, coalesce_ms=0)
+
+    with caplog.at_level(logging.INFO, logger="coordinator.services.tick_scheduler"):
+        try:
+            await outbound.enqueue({"instance_id": "d1"})
+            await asyncio.wait_for(attempted.wait(), timeout=1)
+            await asyncio.sleep(0)
+        finally:
+            await outbound.shutdown()
+
+    send_logs = [
+        record for record in caplog.records
+        if record.name == "coordinator.services.tick_scheduler"
+        and "tick_batch" in record.message
+    ]
+    assert len(send_logs) == 1
+    assert send_logs[0].levelno == expected_level
+    assert expected_message in send_logs[0].message
+    assert (send_logs[0].exc_info is not None) == (expected_level == logging.ERROR)
 
 
 @pytest.mark.asyncio

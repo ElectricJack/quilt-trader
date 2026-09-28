@@ -13,6 +13,9 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from typing import Any, Optional
+
+from starlette.websockets import WebSocketDisconnect
 
 
 def _json_safe(obj):
@@ -24,7 +27,6 @@ def _json_safe(obj):
     if isinstance(obj, list):
         return [_json_safe(v) for v in obj]
     return obj
-from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,11 @@ class _WorkerOutbound:
                     continue
                 try:
                     await ws.send_json({"type": "tick_batch", "ticks": batch})
+                except WebSocketDisconnect as exc:
+                    logger.info(
+                        "Dropping tick_batch for disconnected worker %s (code %s)",
+                        self.worker_id[:8], exc.code,
+                    )
                 except Exception:
                     logger.exception("Failed to send tick_batch to worker %s", self.worker_id[:8])
         except asyncio.CancelledError:
