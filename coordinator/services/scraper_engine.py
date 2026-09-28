@@ -5,8 +5,10 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
+
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -41,11 +43,83 @@ def find_x_display(socket_dir: str = X11_SOCKET_DIR) -> Optional[str]:
     return None
 
 
+def runs_headed(manifest: Optional[dict], config: dict) -> bool:
+    """Whether a scraper launches a visible browser: `headless` resolves false.
+
+    The override in `config` wins; otherwise the manifest's declared default
+    applies. Truthiness mirrors the scraper side, which reads
+    bool(config["headless"]). Shared by scrape runs and login sessions, which
+    must launch the browser the same way.
+    """
+    if "headless" in config:
+        return not bool(config["headless"])
+    try:
+        params = ((manifest or {}).get("config") or {}).get("parameters") or []
+    except AttributeError:
+        return False
+    for param in params:
+        if isinstance(param, dict) and param.get("name") == "headless" and "default" in param:
+            return not bool(param["default"])
+    return False
+
+
+def child_env(
+    name: str,
+    manifest: Optional[dict],
+    config: dict,
+    *,
+    x11_socket_dir: str = X11_SOCKET_DIR,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Environment for a scraper's browser process, or an error when it can't run.
+
+    Returns (None, None) to inherit the coordinator's environment unchanged.
+    A headed browser needs an X display, but a coordinator started by cron
+    has no DISPLAY; Chromium then exits at launch and patchright reports an
+    opaque TargetClosedError. So hand the child the host's X server when
+    one is listening (WSLg's :0), and otherwise refuse with a message that
+    says what is missing.
+    """
+    if not runs_headed(manifest, config) or os.environ.get("DISPLAY"):
+        return None, None
+    display = find_x_display(x11_socket_dir)
+    if display is None:
+        return None, (
+            f"scraper {name} runs a headed browser (headless=false) but there is "
+            f"no X display: DISPLAY is unset in the coordinator's environment "
+            f"(e.g. it was started by cron) and no X server answers under "
+            f"{x11_socket_dir}. Start the coordinator with DISPLAY set or "
+            f"under xvfb-run, or set headless=true for this scraper."
+        )
+    logger.info(
+        "scraper %s runs headed and the coordinator has no DISPLAY; using X server %s",
+        name, display,
+    )
+    return {**os.environ, "DISPLAY": display}, None
+
+
 @dataclass
 class ScraperResult:
     success: bool
     output_path: Optional[str] = None
     error: Optional[str] = None
+    # None on success; otherwise one of auth_required, bot_blocked,
+    # profile_busy, error (set by the engine from the runner's result file),
+    # or paused, login_in_progress (set by the registry, never by the runner).
+    error_kind: Optional[str] = None
+
+
+# Result-file statuses that carry their own message instead of a traceback.
+_RUNNER_MESSAGE_KINDS = ("auth_required", "bot_blocked", "profile_busy")
+
+
+def _read_runner_result(path: str) -> Optional[dict]:
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
 
 class ScraperEngine:
     def __init__(
@@ -70,49 +144,35 @@ class ScraperEngine:
     def output_path(self, name: str, fmt: str) -> str:
         return os.path.join(self._output_dir, f"{name}.{fmt}")
 
-    def _runs_headed(self, name: str, config: dict) -> bool:
-        """Whether this run launches a visible browser: `headless` resolves false.
-
-        The override wins; otherwise the manifest's declared default applies.
-        Truthiness mirrors the scraper side, which reads bool(config["headless"]).
-        """
-        if "headless" in config:
-            return not bool(config["headless"])
+    def _manifest_or_none(self, name: str) -> Optional[dict]:
         try:
-            params = (self.parse_manifest(name).get("config") or {}).get("parameters") or []
+            return self.parse_manifest(name)
         except Exception:
-            return False
-        for param in params:
-            if isinstance(param, dict) and param.get("name") == "headless" and "default" in param:
-                return not bool(param["default"])
-        return False
+            return None
+
+    def _runs_headed(self, name: str, config: dict) -> bool:
+        return runs_headed(self._manifest_or_none(name), config)
 
     def _child_env(self, name: str, config: dict) -> tuple[Optional[dict], Optional[str]]:
-        """Environment for the scraper subprocess, or an error when it can't run.
-
-        Returns (None, None) to inherit the coordinator's environment unchanged.
-        A headed browser needs an X display, but a coordinator started by cron
-        has no DISPLAY; Chromium then exits at launch and patchright reports an
-        opaque TargetClosedError. So hand the child the host's X server when
-        one is listening (WSLg's :0), and otherwise refuse with a message that
-        says what is missing.
-        """
-        if not self._runs_headed(name, config) or os.environ.get("DISPLAY"):
-            return None, None
-        display = find_x_display(self._x11_socket_dir)
-        if display is None:
-            return None, (
-                f"scraper {name} runs a headed browser (headless=false) but there is "
-                f"no X display: DISPLAY is unset in the coordinator's environment "
-                f"(e.g. it was started by cron) and no X server answers under "
-                f"{self._x11_socket_dir}. Start the coordinator with DISPLAY set or "
-                f"under xvfb-run, or set headless=true for this scraper."
-            )
-        logger.info(
-            "scraper %s runs headed and the coordinator has no DISPLAY; using X server %s",
-            name, display,
+        return child_env(
+            name, self._manifest_or_none(name), config, x11_socket_dir=self._x11_socket_dir,
         )
-        return {**os.environ, "DISPLAY": display}, None
+
+    def runner_command(
+        self, python: str, pkg_dir: str, config: dict, out_path: str, result_path: str,
+    ) -> list[str]:
+        """argv that runs sdk.scraper_runner in the package's interpreter."""
+        bootstrap = (
+            f"import sys; sys.path.insert(0, {pkg_dir!r}); sys.path.append({self._quilt_root!r}); "
+            f"from sdk.scraper_runner import main; sys.exit(main())"
+        )
+        return [
+            python, "-c", bootstrap,
+            "--pkg-dir", pkg_dir,
+            "--config-json", json.dumps(config),
+            "--out", out_path,
+            "--result", result_path,
+        ]
 
     def run_scraper(self, name: str, output_format: str, config: Optional[dict] = None) -> ScraperResult:
         pkg_dir = os.path.join(self._packages_dir, name)
@@ -122,29 +182,40 @@ class ScraperEngine:
         python = venv_python if os.path.exists(venv_python) else sys.executable
         env, env_error = self._child_env(name, config or {})
         if env_error is not None:
-            return ScraperResult(success=False, error=env_error)
+            return ScraperResult(success=False, error=env_error, error_kind="error")
         out_path = self.output_path(name, output_format)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        config_json = json.dumps(config or {})
-        runner_script = (
-            f"import sys, json; sys.path.insert(0, '{pkg_dir}'); sys.path.append('{self._quilt_root}'); "
-            f"import yaml; "
-            f"manifest = yaml.safe_load(open('{pkg_dir}/quilt.yaml')); "
-            f"entry = manifest.get('entry_point', 'scraper.py'); "
-            f"class_name = manifest.get('class_name', 'Scraper'); "
-            f"import importlib.util; "
-            f"spec = importlib.util.spec_from_file_location('mod', '{pkg_dir}/' + entry); "
-            f"mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); "
-            f"scraper = getattr(mod, class_name)(); "
-            f"scraper.on_start(json.loads({config_json!r})); "
-            f"df = scraper.on_run(); "
-            f"df.to_csv('{out_path}', index=False); "
-            f"scraper.on_stop(); "
-        )
-        result = subprocess.run(
-            [python, "-c", runner_script], capture_output=True, text=True, cwd=pkg_dir, env=env,
-        )
-        if result.returncode == 0:
+
+        fd, result_path = tempfile.mkstemp(prefix=f"quilt-scraper-{name}-", suffix=".json")
+        os.close(fd)
+        try:
+            proc = subprocess.run(
+                self.runner_command(python, pkg_dir, config or {}, out_path, result_path),
+                capture_output=True, text=True, cwd=pkg_dir, env=env,
+            )
+            outcome = _read_runner_result(result_path)
+        finally:
+            try:
+                os.unlink(result_path)
+            except OSError:
+                pass
+        return self._to_result(proc, outcome, out_path)
+
+    @staticmethod
+    def _to_result(proc: Any, outcome: Optional[dict], out_path: str) -> ScraperResult:
+        status = (outcome or {}).get("status")
+        if status == "ok" and proc.returncode == 0:
             return ScraperResult(success=True, output_path=out_path)
-        else:
-            return ScraperResult(success=False, error=result.stderr)
+        if status in _RUNNER_MESSAGE_KINDS:
+            message = outcome.get("message") or status
+            return ScraperResult(success=False, error=str(message), error_kind=status)
+        # A runner-reported error, or no readable result at all (segfault,
+        # OOM kill, the scraper calling sys.exit): the stderr tail is the
+        # most useful thing to show, as it always was.
+        error = proc.stderr
+        if not error:
+            if outcome and outcome.get("message"):
+                error = f"{outcome.get('error_type', 'Error')}: {outcome['message']}"
+            else:
+                error = f"scraper runner exited with code {proc.returncode} and no result"
+        return ScraperResult(success=False, error=error, error_kind="error")

@@ -26,6 +26,7 @@ from apscheduler.triggers.cron import CronTrigger
 from coordinator.services.package_manager import PackageError, PackageManager
 from coordinator.services.scheduler import SchedulerService
 from coordinator.services.scraper_engine import ScraperEngine, ScraperResult
+from sdk.scraper_auth import AuthConfigError, ScraperAuth, parse_auth
 
 MAX_ATTEMPTS_PER_DAY = 3
 
@@ -43,6 +44,8 @@ class ScraperRecord:
     last_run_at: Optional[str] = None
     last_output_path: Optional[str] = None
     last_error: Optional[str] = None
+    # Parsed `auth:` block; None when absent or invalid (see _parse_auth_lenient).
+    auth: Optional[ScraperAuth] = None
 
 
 class ScraperRegistry:
@@ -112,6 +115,7 @@ class ScraperRegistry:
                 manifest=manifest,
                 config=config,
                 jitter_seconds=jitter_seconds,
+                auth=self._parse_auth_lenient(name, manifest),
             )
             self._scrapers[name] = record
 
@@ -158,6 +162,22 @@ class ScraperRegistry:
         except RuntimeError:
             return
         loop.create_task(self._maybe_catch_up(name))
+
+    @staticmethod
+    def _parse_auth_lenient(name: str, manifest: dict) -> Optional[ScraperAuth]:
+        """The manifest's auth block, or None with a warning when it is invalid.
+
+        Registration never fails over the auth block: a typo in it must not
+        stop the scrape itself. install_scraper is the strict gate.
+        """
+        try:
+            return parse_auth(manifest)
+        except AuthConfigError as e:
+            logger.warning(
+                "scraper %s has an invalid auth: block (%s); registering it without auth",
+                name, e,
+            )
+            return None
 
     def _load_overrides(self, name: str) -> dict:
         path = os.path.join(self._configs_dir, f"{name}.json")
@@ -212,6 +232,7 @@ class ScraperRegistry:
             manifest=manifest,
             config=config,
             jitter_seconds=jitter_seconds,
+            auth=self._parse_auth_lenient(name, manifest),
         )
         self._scrapers[name] = record
 
@@ -263,6 +284,12 @@ class ScraperRegistry:
                 raise PackageError(
                     f"package manifest type is {manifest.get('type')!r}, expected 'scraper'"
                 )
+            # validate_package checks only the entry point, so the auth block
+            # gets its own strict check here (registration itself is lenient).
+            try:
+                parse_auth(manifest)
+            except AuthConfigError as e:
+                raise PackageError(f"invalid auth: block in quilt.yaml: {e}") from e
             return self.register_scraper(name)
         except Exception:
             # Roll back the clone so retries don't fail with "directory already exists".
