@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { wsManager } from "../api/websocket";
 import { keys } from "../api/hooks";
-import type { ResearchJob } from "../api/client";
+import type { ResearchJob, ScraperLoginState, ScraperRecord } from "../api/client";
 
 export function useWebSocketSync(): void {
   const queryClient = useQueryClient();
@@ -103,7 +103,44 @@ export function useWebSocketSync(): void {
       },
     );
 
+    // ── Scraper re-login (review rev-nimble-bridge 6.3, 7.3) ──
+    // Patch the cached list so the banner reacts at once, then refetch for
+    // the full record (auth_reason, message, login_session).
+    const patchScraper = (name: unknown, patch: (s: ScraperRecord) => ScraperRecord) => {
+      if (typeof name !== "string") return;
+      queryClient.setQueryData<ScraperRecord[] | undefined>(keys.scrapers(), (old) =>
+        old?.map((s) => (s.name === name ? patch(s) : s)),
+      );
+      void queryClient.invalidateQueries({ queryKey: keys.scrapers() });
+    };
+
+    const unsubscribeScraperAuth = wsManager.subscribe(
+      "scraper_auth_changed",
+      (data) => {
+        const msg = data as { name?: unknown; auth_state?: unknown };
+        patchScraper(msg.name, (s) =>
+          msg.auth_state === "ok" || msg.auth_state === "needs_login"
+            ? { ...s, auth_state: msg.auth_state, schedule_paused: msg.auth_state === "needs_login" }
+            : s,
+        );
+      },
+    );
+
+    const unsubscribeScraperLogin = wsManager.subscribe(
+      "scraper_login_state",
+      (data) => {
+        const msg = data as { name?: unknown; state?: unknown };
+        patchScraper(msg.name, (s) =>
+          s.login_session && typeof msg.state === "string"
+            ? { ...s, login_session: { ...s.login_session, state: msg.state as ScraperLoginState } }
+            : s,
+        );
+      },
+    );
+
     return () => {
+      unsubscribeScraperAuth();
+      unsubscribeScraperLogin();
       unsubscribeInstanceStarted();
       unsubscribeInstanceStopped();
       unsubscribeInstanceError();
