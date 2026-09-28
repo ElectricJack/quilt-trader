@@ -285,8 +285,12 @@ async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
                     # every status='running' AlgorithmInstance on this worker.
                     try:
                         await _reconcile_worker_instances(worker_id, websocket)
+                    except WebSocketDisconnect:
+                        raise
                     except Exception:
                         logger.exception("Worker reconcile failed for %s", worker_id)
+        except WebSocketDisconnect:
+            raise
         except Exception:
             logger.exception("Failed to update heartbeat for worker %s", worker_id)
 
@@ -586,7 +590,21 @@ async def _reconcile_worker_instances(worker_id: str, worker_ws) -> None:
             }
             try:
                 await worker_ws.send_json(payload)
-                if getattr(container, "tick_scheduler", None) is not None:
+            except WebSocketDisconnect:
+                raise
+            except RuntimeError as exc:
+                if str(exc) in {
+                    'Cannot call "send" once a close message has been sent.',
+                    'WebSocket is not connected. Need to call "accept" first.',
+                }:
+                    raise WebSocketDisconnect(code=1006) from exc
+                logger.exception("Reconcile send_json failed for instance %s", inst.id)
+                continue
+            except Exception:
+                logger.exception("Reconcile send_json failed for instance %s", inst.id)
+                continue
+            if getattr(container, "tick_scheduler", None) is not None:
+                try:
                     await container.tick_scheduler.start_instance({
                         "instance_id": inst.id,
                         "run_id": run.id,
@@ -596,8 +614,8 @@ async def _reconcile_worker_instances(worker_id: str, worker_ws) -> None:
                         "trigger": manifest_dict.get("trigger", "bar:1min"),
                         "symbols": (manifest_dict.get("requirements") or {}).get("data_dependencies") or [],
                     })
-            except Exception:
-                logger.exception("Reconcile send_json failed for instance %s", inst.id)
+                except Exception:
+                    logger.exception("Reconcile scheduler start failed for instance %s", inst.id)
 
 
 def _load_manifest_dict_for_reconcile(algo) -> dict:

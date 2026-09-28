@@ -666,3 +666,83 @@ async def test_worker_reconnect_resends_start_instance_for_running_instances_ful
     assert start_msg["algorithm_id"] == algo.id
     assert start_msg["credentials"]["api_key"] == "k"
     assert start_msg["manifest"]["entry_point"] == "a.b"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_error", [
+    RuntimeError('Cannot call "send" once a close message has been sent.'),
+    RuntimeError('WebSocket is not connected. Need to call "accept" first.'),
+    pytest.param("disconnect", id="websocket-disconnect"),
+])
+async def test_worker_disconnect_during_reconcile_stops_sending_and_cleans_up(
+    running_app, db_session, monkeypatch, caplog, send_error,
+):
+    from fastapi import WebSocketDisconnect
+    from coordinator.api import websocket as websocket_api
+    from coordinator.database.models import AlgorithmRun
+
+    container = get_container()
+    algo = Algorithm(repo_url="https://github.com/x/reconnect", name="A")
+    acct = Account(
+        name="A", broker_type="alpaca", environment="paper",
+        credentials=container.encryption.encrypt("{}"),
+        supported_asset_types=["equities"],
+    )
+    worker = Worker(name="W", status="offline")
+    db_session.add_all([algo, acct, worker])
+    await db_session.flush()
+    for _ in range(2):
+        inst = AlgorithmInstance(
+            algorithm_id=algo.id, account_id=acct.id,
+            worker_id=worker.id, status="running",
+        )
+        db_session.add(inst)
+        await db_session.flush()
+        run = AlgorithmRun(instance_id=inst.id, run_number=1, status="running")
+        db_session.add(run)
+        await db_session.flush()
+        inst.active_run_id = run.id
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        websocket_api, "_load_manifest_dict_for_reconcile", lambda algo: {},
+    )
+
+    class ClosingWebSocket(FakeWebSocket):
+        def __init__(self):
+            super().__init__()
+            self.send_attempts = 0
+            self.received = False
+
+        async def accept(self):
+            pass
+
+        async def receive_json(self):
+            if self.received:
+                raise WebSocketDisconnect()
+            self.received = True
+            return {"type": "heartbeat", "worker_id": worker.id}
+
+        async def send_json(self, data):
+            if data["type"] == "start_instance":
+                self.send_attempts += 1
+                if send_error == "disconnect":
+                    raise WebSocketDisconnect()
+                raise send_error
+            await super().send_json(data)
+
+    ws = ClosingWebSocket()
+    await websocket_api.worker_websocket(ws)
+
+    assert ws.sent == [{"type": "heartbeat_ack"}]
+    assert ws.send_attempts == 1
+    assert worker.id not in websocket_api.manager.worker_connections
+    async with container.session_factory() as session:
+        updated_worker = (await session.execute(
+            select(Worker).where(Worker.id == worker.id)
+        )).scalar_one()
+        assert updated_worker.status == "offline"
+    assert not any(
+        record.levelname == "ERROR" and record.name == websocket_api.__name__
+        for record in caplog.records
+    )
