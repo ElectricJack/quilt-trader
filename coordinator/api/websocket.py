@@ -10,6 +10,24 @@ from coordinator.api.dependencies import get_container
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_ACCEPT_AFTER_DISCONNECT_ERROR = (
+    "Expected ASGI message 'websocket.send' or 'websocket.close', "
+    "but got 'websocket.accept'."
+)
+
+
+async def _accept_websocket(websocket: WebSocket) -> bool:
+    try:
+        await websocket.accept()
+    except RuntimeError as exc:
+        # Uvicorn can mark a pending handshake complete when the connection
+        # closes, then reject the application's accept for that connection.
+        if str(exc) != _ACCEPT_AFTER_DISCONNECT_ERROR:
+            raise
+        logger.debug("WebSocket closed before accept")
+        return False
+    return True
+
 
 class ConnectionManager:
     def __init__(self) -> None:
@@ -17,9 +35,11 @@ class ConnectionManager:
         self.worker_connections: dict[str, WebSocket] = {}
         self.subscriptions: dict[str, set[WebSocket]] = {}
 
-    async def connect_dashboard(self, websocket: WebSocket) -> None:
-        await websocket.accept()
+    async def connect_dashboard(self, websocket: WebSocket) -> bool:
+        if not await _accept_websocket(websocket):
+            return False
         self.dashboard_connections.append(websocket)
+        return True
 
     async def disconnect_dashboard(self, websocket: WebSocket) -> None:
         self.unsubscribe_all(websocket)
@@ -46,10 +66,10 @@ class ConnectionManager:
             except Exception:
                 self.unsubscribe(ws, target)
 
-    async def accept_worker(self, websocket: WebSocket) -> None:
+    async def accept_worker(self, websocket: WebSocket) -> bool:
         # The worker_id is not known until the first heartbeat, so we
         # only accept here. `register_worker` adds it to the lookup map.
-        await websocket.accept()
+        return await _accept_websocket(websocket)
 
     def register_worker(self, worker_id: str, websocket: WebSocket) -> None:
         self.worker_connections[worker_id] = websocket
@@ -233,7 +253,8 @@ async def _init_account_tracking(account_id: str, tracker) -> None:
 
 @router.websocket("/ws/dashboard")
 async def dashboard_websocket(websocket: WebSocket):
-    await manager.connect_dashboard(websocket)
+    if not await manager.connect_dashboard(websocket):
+        return
     try:
         while True:
             data = await websocket.receive_json()
@@ -245,7 +266,7 @@ async def dashboard_websocket(websocket: WebSocket):
 async def handle_worker_message(websocket: WebSocket, data: dict) -> None:
     """Handle a single worker WebSocket message. Separated for testability."""
     from sqlalchemy import select
-    from coordinator.database.models import AlgorithmInstance, DecisionLog, Worker, Event
+    from coordinator.database.models import AlgorithmInstance, DecisionLog, Worker
 
     msg_type = data.get("type")
 
@@ -669,7 +690,8 @@ async def handle_worker_disconnect(websocket: WebSocket) -> None:
 
 @router.websocket("/ws/worker")
 async def worker_websocket(websocket: WebSocket):
-    await manager.accept_worker(websocket)
+    if not await manager.accept_worker(websocket):
+        return
     try:
         # A send inside a message handler may fail and leave the application
         # side disconnected even when that handler catches the send error.
