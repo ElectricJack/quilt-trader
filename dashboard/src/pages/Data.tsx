@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { z } from "zod";
-import { Trash2, Play, Eye, RotateCcw } from "lucide-react";
+import { Trash2, Play, Eye, RotateCcw, KeyRound } from "lucide-react";
 import {
   useDownloads,
   useCreateDownload,
@@ -28,7 +28,7 @@ import { DataGoalsTab } from "../components/DataGoalsTab";
 import { useUIStore } from "../stores/ui";
 import type { MarketDataDownload } from "../types";
 import { SymbolSearch } from "../components/SymbolSearch";
-import type { DataSourceRow } from "../api/client";
+import { isLoginSessionActive, type DataSourceRow } from "../api/client";
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -335,6 +335,7 @@ export function Data() {
   const deleteScraper = useDeleteScraper();
   const runScraper = useRunScraper();
   const addAlert = useUIStore((s) => s.addAlert);
+  const openScraperLogin = useUIStore((s) => s.openScraperLogin);
 
   // Index sources by scraper name so we can join with the scraper list cleanly.
   const sourceBySrc = useMemo(() => {
@@ -566,6 +567,7 @@ export function Data() {
                 {scrapers.map((s) => {
                   const source = sourceBySrc.get(s.name);
                   const rowCount = (source?.metadata as { row_count?: number } | null)?.row_count ?? null;
+                  const loginOpen = isLoginSessionActive(s.login_session);
                   return (
                     <div
                       key={s.name}
@@ -590,11 +592,25 @@ export function Data() {
                               {s.last_status}
                             </span>
                           )}
+                          {loginOpen ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-900/40 text-blue-300 border-blue-800">
+                              login open
+                            </span>
+                          ) : s.auth_state === "needs_login" ? (
+                            <span
+                              className="text-[10px] px-1.5 py-0.5 rounded border bg-amber-900/40 text-amber-300 border-amber-800"
+                              title={s.auth_message ?? undefined}
+                            >
+                              needs login
+                            </span>
+                          ) : null}
                         </div>
                         <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-4 gap-y-0.5">
                           {s.description && <span className="truncate max-w-md">{s.description}</span>}
                           <span>schedule: <span className="font-mono text-gray-400">{s.schedule}</span></span>
-                          {s.next_run_at && s.next_run_at !== "None" && (
+                          {s.schedule_paused ? (
+                            <span className="text-amber-400">scheduled runs paused until you sign in again</span>
+                          ) : s.next_run_at && s.next_run_at !== "None" && (
                             <span>next: <span className="text-gray-400">{s.next_run_at}</span></span>
                           )}
                           {source?.last_updated && (
@@ -620,11 +636,30 @@ export function Data() {
                             <Eye size={14} />
                           </button>
                         )}
+                        {s.auth?.login_supported && (
+                          <button
+                            onClick={() => openScraperLogin(s.name)}
+                            className="p-1.5 text-gray-400 hover:text-amber-400 hover:bg-gray-800 rounded transition-colors"
+                            title={loginOpen ? "Login open… (reopen the viewer)" : "Re-login: sign in again in the scraper's browser"}
+                            aria-label={`Re-login ${s.name}`}
+                          >
+                            <KeyRound size={14} />
+                          </button>
+                        )}
                         <button
                           onClick={() => handleRunScraper(s.name)}
                           disabled={runScraper.isPending}
                           className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-gray-800 rounded transition-colors disabled:opacity-60"
-                          title="Run now"
+                          title={
+                            s.schedule_paused
+                              ? "Run now. Scheduled runs are paused until you sign in again" +
+                                (s.auth_reason === "bot_blocked"
+                                  ? " (the site's bot check blocked the browser)."
+                                  : s.auth_reason === "auth_required"
+                                  ? " (the site showed a login wall)."
+                                  : ".")
+                              : "Run now"
+                          }
                         >
                           <Play size={14} />
                         </button>

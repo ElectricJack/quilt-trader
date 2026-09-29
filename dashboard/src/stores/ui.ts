@@ -11,14 +11,19 @@ export interface Alert {
 interface UIState {
   sidebarOpen: boolean;
   alerts: Alert[];
+  /** The scraper whose login modal is open (banner or Data page Re-login), if any. */
+  scraperLoginName: string | null;
   toggleSidebar: () => void;
   addAlert: (alert: Omit<Alert, "id">) => void;
   dismissAlert: (id: string) => void;
+  openScraperLogin: (name: string) => void;
+  closeScraperLogin: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
   sidebarOpen: true,
   alerts: [],
+  scraperLoginName: null,
 
   toggleSidebar: () =>
     set((state) => ({ sidebarOpen: !state.sidebarOpen })),
@@ -37,4 +42,8 @@ export const useUIStore = create<UIState>((set) => ({
     set((state) => ({
       alerts: state.alerts.filter((a) => a.id !== id),
     })),
+
+  openScraperLogin: (name) => set({ scraperLoginName: name }),
+
+  closeScraperLogin: () => set({ scraperLoginName: null }),
 }));

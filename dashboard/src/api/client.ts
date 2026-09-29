@@ -128,6 +128,129 @@ export interface ScraperRecord {
   last_run_at: string | null;
   data_url: string;
   last_error: string | null;
+  /** The quilt.yaml `auth:` block as the dashboard needs it; null without one. */
+  auth: ScraperAuthInfo | null;
+  auth_state: ScraperAuthState;
+  /** Why the scraper needs a login; null while auth_state is "ok". */
+  auth_reason: ScraperAuthReason | null;
+  auth_message: string | null;
+  /** ISO-8601 UTC time of the last auth_state transition. */
+  auth_changed_at: string | null;
+  /** Scheduled and catch-up runs are skipped until someone signs in again. */
+  schedule_paused: boolean;
+  /** The active login session, or one that ended less than 10 minutes ago. */
+  login_session: ScraperLoginSession | null;
+}
+
+export type ScraperAuthState = "ok" | "needs_login";
+export type ScraperAuthReason = "auth_required" | "bot_blocked";
+
+export interface ScraperAuthInfo {
+  kind: string;
+  /** True for browser_profile: the dashboard can open a login session. */
+  login_supported: boolean;
+  /** The login browser also opens a window on the coordinator's display. */
+  headed: boolean;
+}
+
+export const SCRAPER_LOGIN_ACTIVE_STATES = [
+  "starting",
+  "waiting_for_user",
+  "checking",
+  "verified",
+  "browser_closed",
+  "confirming",
+] as const;
+export const SCRAPER_LOGIN_TERMINAL_STATES = [
+  "succeeded",
+  "confirm_failed",
+  "cancelled",
+  "timed_out",
+  "failed",
+] as const;
+export type ScraperLoginState =
+  | (typeof SCRAPER_LOGIN_ACTIVE_STATES)[number]
+  | (typeof SCRAPER_LOGIN_TERMINAL_STATES)[number];
+
+export function isLoginSessionActive(
+  session: Pick<ScraperLoginSession, "state"> | null | undefined,
+): boolean {
+  return (
+    session != null &&
+    (SCRAPER_LOGIN_ACTIVE_STATES as readonly string[]).includes(session.state)
+  );
+}
+
+export interface ScraperLoginSession {
+  id: string;
+  state: ScraperLoginState;
+  message: string | null;
+  started_at: string | null;
+  expires_at: string | null;
+  /** The scraper's auth block has verify.url, so "Check now" can navigate there. */
+  can_check: boolean;
+}
+
+/** Page.screencastFrame metadata, as the login helper forwards it. */
+export interface ScraperLoginFrameMetadata {
+  deviceWidth?: number;
+  deviceHeight?: number;
+  pageScaleFactor?: number;
+  offsetTop?: number;
+  scrollOffsetX?: number;
+  scrollOffsetY?: number;
+  timestamp?: number;
+}
+
+export interface ScraperLoginFrame {
+  /** Base64 JPEG. */
+  data: string;
+  metadata: ScraperLoginFrameMetadata;
+}
+
+export interface ScraperLoginPage {
+  id: string;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
+/** Server → viewer messages on /ws/scrapers/{name}/login. */
+export type ScraperLoginServerMessage =
+  | { type: "session"; session: ScraperLoginSession }
+  | ({ type: "frame" } & ScraperLoginFrame)
+  | { type: "pages"; pages: ScraperLoginPage[] }
+  | { type: "ended"; session: ScraperLoginSession };
+
+export type ScraperLoginMouseButton = "left" | "middle" | "right";
+
+/** Viewer → server commands; the coordinator validates and relays them to the helper. */
+export type ScraperLoginCommand =
+  | {
+      cmd: "mouse";
+      action: "move" | "down" | "up";
+      x: number;
+      y: number;
+      button?: ScraperLoginMouseButton;
+      click_count?: number;
+    }
+  | { cmd: "wheel"; x: number; y: number; dx: number; dy: number }
+  | { cmd: "key"; action: "down" | "up"; key: string; code?: string }
+  | { cmd: "text"; text: string }
+  | { cmd: "switch_page"; id: string }
+  | { cmd: "history"; action: "back" | "forward" | "reload" }
+  | { cmd: "navigate"; target: "login" | "verify" }
+  | { cmd: "check" }
+  | { cmd: "cancel" };
+
+/** The helper accepts at most this many characters per text command. */
+export const SCRAPER_LOGIN_MAX_TEXT_CHARS = 256;
+
+export interface ScraperRunResult {
+  success: boolean;
+  error: string | null;
+  error_kind?: string | null;
+  record: ScraperRecord;
 }
 
 export interface ScraperInstall {
@@ -373,7 +496,14 @@ async function request<T>(
     let detail = res.statusText;
     try {
       const body = await res.json();
-      if (body.detail) detail = body.detail;
+      if (typeof body.detail === "string") {
+        detail = body.detail;
+      } else if (body.detail && typeof body.detail.message === "string") {
+        // Structured details, e.g. a 409 {message, holder} from the scraper login routes.
+        detail = body.detail.message;
+      } else if (body.detail) {
+        detail = JSON.stringify(body.detail);
+      }
     } catch {
       // ignore
     }
@@ -643,8 +773,32 @@ export const api = {
   deleteScraper(name: string): Promise<void> {
     return request<void>(`/api/scrapers/${encodeURIComponent(name)}`, { method: "DELETE" });
   },
-  runScraper(name: string): Promise<{ success: boolean; error: string | null; record: ScraperRecord }> {
+  runScraper(name: string): Promise<ScraperRunResult> {
     return request(`/api/scrapers/${encodeURIComponent(name)}/run`, { method: "POST" });
+  },
+  /** Open a login session (201), or get the one already active (200). */
+  startScraperLogin(name: string): Promise<ScraperLoginSession> {
+    return request<ScraperLoginSession>(
+      `/api/scrapers/${encodeURIComponent(name)}/login`,
+      { method: "POST" },
+    );
+  },
+  getScraperLogin(name: string): Promise<ScraperLoginSession> {
+    return request<ScraperLoginSession>(`/api/scrapers/${encodeURIComponent(name)}/login`);
+  },
+  /** "Check now": the helper navigates to verify.url and looks for the selector. */
+  checkScraperLogin(name: string): Promise<ScraperLoginSession> {
+    return request<ScraperLoginSession>(
+      `/api/scrapers/${encodeURIComponent(name)}/login/check`,
+      { method: "POST" },
+    );
+  },
+  /** Start the stop sequence; the session ends as cancelled once the browser is gone. */
+  cancelScraperLogin(name: string): Promise<ScraperLoginSession> {
+    return request<ScraperLoginSession>(
+      `/api/scrapers/${encodeURIComponent(name)}/login/cancel`,
+      { method: "POST" },
+    );
   },
   listDataSources(type?: string): Promise<DataSourceRow[]> {
     const qs = type ? `?type=${encodeURIComponent(type)}` : "";
