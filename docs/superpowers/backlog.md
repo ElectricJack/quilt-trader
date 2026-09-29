@@ -283,11 +283,38 @@ Items intentionally cut from a shipped spec. Consult this file before starting a
 - **Deferred from:** debugging session 2026-09-03 (alpha-picks-scraper PerimeterX 403)
 - **Why deferred:** `lib/fetch.py` pins `Chrome/120.0.0.0` while the bundled patchright browser is Chromium 147, so `navigator.userAgent` and `navigator.userAgentData.brands` openly contradict each other — exactly the consistency check an anti-bot vendor runs. Removing the override was tested and did *not* clear the 403, so it was not the cause and fixing it was kept out of the fix for the actual problem. It stays a standing detection risk. The catch: the persistent profile's session is issued to whatever fingerprint logged in, so changing the UA invalidates the profile and forces a manual re-login.
 - **What's needed:** drop the `user_agent` override (and probably `--disable-blink-features=AutomationControlled`, which patchright handles itself) from both `lib/fetch.py` and `scripts/setup_profile.py` in one change, then re-run `setup_profile.py` to re-issue the session under the new fingerprint. Worth doing at a moment when a manual login is convenient.
+- **Update (review rev-nimble-bridge, 2026-09-28):** still open, but cheaper to do. Changing the fingerprint still invalidates the session; once the dashboard Re-login ships, re-issuing the session is a button press instead of `setup_profile.py` in a terminal on the box. Keep `LAUNCH_OPTIONS` / `browser_launch_options()` as the single place the UA and args live, so the login browser changes with the scrape browser.
 
 ### Classify auth failures ahead of bot-block in alpha-picks-scraper
 - **Deferred from:** debugging session 2026-09-03 (alpha-picks-scraper PerimeterX 403)
 - **Why deferred:** `_run_warmup_and_fetch` checks the block-page title before it ever looks for a login wall. Seeking Alpha's edge answers a request carrying a stale session with a PerimeterX-styled 403, so a pure auth problem always surfaces as `BotBlockedError` and never as the `AuthExpiredError` the code already defines. This cost real diagnosis time — the error pointed at bot detection when the fix was "log in again." Left alone because the root cause was still open and bundling it would have muddied the fix.
 - **What's needed:** on a 403 at the landing page, retry once with the session cookies dropped; if that succeeds, the session is the problem — raise `AuthExpiredError` (whose message already says "re-run setup_profile.py") instead of `BotBlockedError`. Note the retry has to clear PerimeterX localStorage (`_px_fp`, `_px_hvd`) as well as cookies.
+- **Update (review rev-nimble-bridge, 2026-09-28):** still open, but less urgent. With the typed errors (`AuthRequired` / `BotBlocked`) both reasons put the scraper in `needs_login` and lead to the same Re-login, so the misclassification now only changes the banner's wording ("login wall" vs "bot check"), not what Jack has to do.
+
+### Dashboard and API authentication
+- **Deferred from:** review rev-nimble-bridge (Scraper re-login from the dashboard, 2026-09-28), sections 9 and 14
+- **Why deferred:** the coordinator API and dashboard have no authentication and listen on 0.0.0.0:8000, reachable over the Tailnet through the Windows portproxy. Anyone who can reach it can already place orders. The re-login feature adds a live view of a signed-in page while a session is open (mitigated by a 128-bit session id, a 20-minute default timeout, no CDP port, and frames kept in memory only). Real auth covers far more than this feature.
+- **What's needed:** an auth layer for the REST API and the websockets (at minimum a shared secret or Tailscale identity headers), plus a dashboard login.
+
+### Slow auto-probe for bot_blocked scrapers
+- **Deferred from:** review rev-nimble-bridge (Scraper re-login from the dashboard, 2026-09-28), sections 3 and 14
+- **Why deferred:** v1 pauses scheduled and catch-up runs while a scraper is `needs_login` until a person acts (Re-login, or a manual Run now that succeeds). A PerimeterX block sometimes clears on its own, so pausing may leave data stale longer than needed, but every probe also hits the site with a profile it just rejected. Not worth building until pausing is shown to leave data stale too often.
+- **What's needed:** for `auth_reason == bot_blocked` only, one automatic run after a long quiet period (e.g. 72 h), counted as an attempt; success clears `needs_login` through the existing any-run-succeeds transition.
+
+### Copy from the remote login page to the local clipboard
+- **Deferred from:** review rev-nimble-bridge (Scraper re-login from the dashboard, 2026-09-28), section 14
+- **Why deferred:** the login modal forwards paste (a `text` command into the remote page) but not copy. Signing in needs paste (passwords, one-time codes); copying out of the page has no current use.
+- **What's needed:** a helper command that reads the active page's selection (`window.getSelection()`) and a viewer message that writes it with `navigator.clipboard.writeText`, which needs a secure context (HTTPS or localhost) in the browser.
+
+### Scraper auth kinds beyond browser_profile
+- **Deferred from:** review rev-nimble-bridge (Scraper re-login from the dashboard, 2026-09-28), sections 3 and 14
+- **Why deferred:** the `auth:` manifest block accepts only `kind: browser_profile`, the one kind a live scraper needs (alpha-picks). API keys and OAuth refresh tokens need credential storage, which the design deliberately avoids (Quilt never stores or types credentials).
+- **What's needed:** new `kind` values in `sdk/scraper_auth.parse_auth` with their own fields, encrypted storage for the secret (the existing broker-credential encryption is the model), and a dashboard form to set or rotate it.
+
+### Notify outside the dashboard when a scraper needs login
+- **Deferred from:** review rev-nimble-bridge (Scraper re-login from the dashboard, 2026-09-28), section 14
+- **Why deferred:** v1 surfaces `needs_login` as a banner on every dashboard page and an Overview alert. A scraper that stays paused while nobody opens the dashboard leaves its data going stale silently.
+- **What's needed:** a notifier (Discord bot, which already exists, or push) subscribed to the `scraper_needs_login` Event row the registry writes on that transition (section 6.3).
 
 ---
 
