@@ -936,9 +936,11 @@ class LiveFeedAggregator:
             cutoff = (
                 self._now() - timedelta(hours=sub.tick_retention_hours)
             ).date()
-            for f in ticks_dir.glob("*.parquet"):
+            for f in ticks_dir.glob("*.parquet*"):
                 try:
-                    name = f.stem  # e.g. "trades-2026-05-14"
+                    # Preserved .corrupt-* copies and .tmp files orphaned by an
+                    # interrupted write carry the same date and age out too.
+                    name = f.name.split(".parquet", 1)[0]
                     _, datestr = name.split("-", 1)
                     d = date.fromisoformat(datestr)
                     if d < cutoff:
