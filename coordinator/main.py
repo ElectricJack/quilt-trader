@@ -77,6 +77,10 @@ def create_app(
                 ("last_attempt_at", "TIMESTAMP"),
                 ("attempts_today", "INTEGER NOT NULL DEFAULT 0"),
                 ("attempts_day", "DATE"),
+                ("auth_state", "TEXT"),
+                ("auth_reason", "TEXT"),
+                ("auth_message", "TEXT"),
+                ("auth_changed_at", "TIMESTAMP"),
             ]:
                 try:
                     await conn.execute(text(f"ALTER TABLE scrapers ADD COLUMN {col} {dtype}"))
@@ -101,6 +105,7 @@ def create_app(
         import os
         from coordinator.services.scraper_engine import ScraperEngine
         from coordinator.services.scraper_registry import ScraperRegistry
+        from coordinator.api.websocket import manager as _scraper_ws_manager
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         scraper_engine = ScraperEngine(
             packages_dir=os.path.join(repo_root, "packages"),
@@ -112,6 +117,7 @@ def create_app(
             packages_dir=os.path.join(repo_root, "packages"),
             configs_dir=os.path.join(repo_root, "data", "scraper_configs"),
             session_factory=session_factory,
+            broadcast=_scraper_ws_manager.broadcast_to_dashboards,
         )
         scraper_registry.discover_and_register()
         from coordinator.api.routes.scrapers import set_registry

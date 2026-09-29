@@ -7,7 +7,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from coordinator.services.package_manager import PackageError
-from coordinator.services.scraper_registry import ScraperRegistry
+from coordinator.services.scraper_engine import runs_headed
+from coordinator.services.scraper_registry import ScraperRecord, ScraperRegistry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scrapers", tags=["scrapers"])
@@ -38,6 +39,17 @@ def _next_run_for(reg: ScraperRegistry, name: str) -> Optional[str]:
     return None
 
 
+def _auth_to_dict(record: ScraperRecord) -> Optional[dict]:
+    """The scraper's `auth:` block as the dashboard needs it; None without one."""
+    if record.auth is None:
+        return None
+    return {
+        "kind": record.auth.kind,
+        "login_supported": record.auth.kind == "browser_profile",
+        "headed": runs_headed(record.manifest, record.config),
+    }
+
+
 async def _record_to_dict(record, reg: ScraperRegistry) -> dict:
     state = await reg.get_persistent_state(record.name)
     return {
@@ -53,6 +65,15 @@ async def _record_to_dict(record, reg: ScraperRegistry) -> dict:
         "last_error": state["last_error"],
         "attempts_today": state["attempts_today"],
         "data_url": f"/api/data/custom/{record.name}",
+        "auth": _auth_to_dict(record),
+        "auth_state": state["auth_state"],
+        "auth_reason": state["auth_reason"],
+        "auth_message": state["auth_message"],
+        "auth_changed_at": state["auth_changed_at"],
+        "schedule_paused": state["auth_state"] == "needs_login",
+        # {id, state, message, started_at, expires_at} once the login session
+        # manager exists (review rev-nimble-bridge 7.3); null until then.
+        "login_session": None,
     }
 
 
@@ -77,10 +98,11 @@ async def run_scraper_now(name: str):
     record = reg.get(name)
     if record is None:
         raise HTTPException(status_code=404, detail=f"scraper {name!r} not found")
-    result = await reg.run(name)
+    result = await reg.run(name, trigger="manual")
     return {
         "success": result.success,
         "error": result.error,
+        "error_kind": result.error_kind,
         "record": await _record_to_dict(record, reg),
     }
 

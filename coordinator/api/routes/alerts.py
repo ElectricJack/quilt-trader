@@ -29,6 +29,9 @@ async def _resolve_event(event: Event, db: AsyncSession) -> tuple[str, str | Non
         )).scalar_one_or_none()
         name = worker.name if worker else event.source_id
         return name, f"/workers/{event.source_id}"
+    if event.source_type == "scraper":
+        # source_id is the scraper's name; its status and Run now live on the Data page.
+        return event.source_id or "scraper", "/data?tab=acquisition"
     return event.source_id or "system", None
 
 

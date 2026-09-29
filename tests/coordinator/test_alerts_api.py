@@ -57,3 +57,22 @@ async def test_alerts_combines_events_and_backtests(client, db_session):
     assert "pi-alpha" in sources
     for item in body["items"]:
         assert item["link_path"] is not None
+
+
+@pytest.mark.asyncio
+async def test_alerts_link_scraper_events_to_data_acquisition(client, db_session):
+    from coordinator.database.models import Event
+
+    db_session.add(Event(
+        source_type="scraper", source_id="alpha-picks-scraper",
+        event_type="scraper_needs_login", severity="warning",
+        payload={"reason": "auth_required", "message": "login wall"},
+        timestamp=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    items = (await client.get("/api/alerts")).json()["items"]
+    assert len(items) == 1
+    assert items[0]["source_name"] == "alpha-picks-scraper"
+    assert items[0]["link_path"] == "/data?tab=acquisition"
+    assert items[0]["label"] == "Scraper Needs Login"

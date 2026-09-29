@@ -18,7 +18,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 import yaml
 from apscheduler.triggers.cron import CronTrigger
@@ -30,7 +30,35 @@ from sdk.scraper_auth import AuthConfigError, ScraperAuth, parse_auth
 
 MAX_ATTEMPTS_PER_DAY = 3
 
+# Auth state (review rev-nimble-bridge 6.3/6.4). A run that ends in one of
+# AUTH_ERROR_KINDS marks the scraper needs_login, which pauses the triggers in
+# PAUSABLE_TRIGGERS until a login is verified or any run succeeds.
+AUTH_NEEDS_LOGIN = "needs_login"
+AUTH_ERROR_KINDS = ("auth_required", "bot_blocked")
+PAUSABLE_TRIGGERS = ("schedule", "catch_up")
+AUTH_MESSAGE_MAX_CHARS = 500
+
+Trigger = Literal["schedule", "catch_up", "manual", "login_confirm"]
+Broadcast = Callable[[dict], Awaitable[None]]
+
 logger = logging.getLogger(__name__)
+
+
+class ScrapeRunning(RuntimeError):
+    """begin_login refused: a scrape of this scraper is in flight."""
+
+
+@dataclass
+class AuthState:
+    """A scraper's persisted auth state; `state` None means ok."""
+    state: Optional[str] = None
+    reason: Optional[str] = None
+    message: Optional[str] = None
+    changed_at: Optional[datetime] = None
+
+    @property
+    def needs_login(self) -> bool:
+        return self.state == AUTH_NEEDS_LOGIN
 
 
 @dataclass
@@ -57,6 +85,7 @@ class ScraperRegistry:
         packages_dir: str,
         configs_dir: str,
         session_factory: Optional[Callable[[], Any]] = None,
+        broadcast: Optional[Broadcast] = None,
     ) -> None:
         self._engine = engine
         self._scheduler = scheduler
@@ -64,6 +93,14 @@ class ScraperRegistry:
         self._configs_dir = configs_dir
         self._scrapers: dict[str, ScraperRecord] = {}
         self._session_factory = session_factory
+        # Sends a message to every dashboard websocket (auth state changes).
+        self._broadcast = broadcast
+        # Scrapers with an active login session (begin_login .. end_login).
+        self._logins: set[str] = set()
+        # Auth state when there is no DB (test contexts); the DB is the record otherwise.
+        self._auth_memory: dict[str, AuthState] = {}
+        # Catch-up tasks in flight; the loop keeps only weak references to tasks.
+        self._background: set[asyncio.Task] = set()
 
     @property
     def packages_dir(self) -> str:
@@ -142,7 +179,7 @@ class ScraperRegistry:
         any sync callable in a worker thread, where scheduling onto the loop
         fails with "no running event loop".
         """
-        return functools.partial(self.run, name)
+        return functools.partial(self.run, name, trigger="schedule")
 
     def _schedule_catch_up(self, name: str) -> None:
         """Fire `_maybe_catch_up(name)` on the running event loop, if any.
@@ -161,7 +198,11 @@ class ScraperRegistry:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._maybe_catch_up(name))
+        self._track(loop.create_task(self._maybe_catch_up(name)))
+
+    def _track(self, task: asyncio.Task) -> None:
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     @staticmethod
     def _parse_auth_lenient(name: str, manifest: dict) -> Optional[ScraperAuth]:
@@ -355,18 +396,56 @@ class ScraperRegistry:
         except Exception as e:  # noqa: BLE001 — never let DB issues kill a scrape result
             logger.warning("failed to upsert DataSource for %s: %s", record.name, e)
 
-    async def run(self, name: str) -> ScraperResult:
-        """Trigger a scrape immediately. Returns the ScraperResult."""
+    async def run(self, name: str, trigger: Trigger = "manual") -> ScraperResult:
+        """Trigger a scrape immediately. Returns the ScraperResult.
+
+        `trigger` says who asked: the cron job ("schedule"), catch-up
+        ("catch_up"), the API ("manual") or the login manager's confirmation
+        scrape ("login_confirm"). While the scraper needs login, schedule and
+        catch-up runs return error_kind="paused" without spawning a process or
+        counting an attempt; manual and login_confirm runs go ahead.
+
+        The order below is race-free on the event loop (review 6.4): the
+        synchronous checks and the slot claim happen before the first await,
+        so neither a second run nor begin_login can slip in between.
+        """
         record = self._scrapers.get(name)
         if record is None:
             return ScraperResult(success=False, error=f"scraper {name!r} not registered")
+        # 1. Synchronous checks. The login manager's own confirmation scrape
+        # runs while it still holds the login flag, so nothing else can claim
+        # the slot between the helper exiting and that scrape starting.
+        if name in self._logins and trigger != "login_confirm":
+            logger.info("scraper %s %s run skipped: login session in progress", name, trigger)
+            return ScraperResult(
+                success=False, error="login session in progress", error_kind="login_in_progress",
+            )
         if record.last_status == "running":
             logger.info("scraper %s is already running; skipping duplicate invocation", name)
             return ScraperResult(success=False, error="already running")
 
-        now = datetime.now(timezone.utc)
-        logger.info("running scraper %s", name)
+        # 2. Claim the slot.
+        previous_status = record.last_status
         record.last_status = "running"
+
+        # 3. Read the auth state; a paused scraper gives the slot back untouched.
+        auth = await self.get_auth_state(name)
+        if auth.needs_login and trigger in PAUSABLE_TRIGGERS:
+            record.last_status = previous_status
+            logger.info(
+                "scraper %s %s run skipped: needs login (%s); scheduled runs stay "
+                "paused until it is signed in again or a manual run succeeds",
+                name, trigger, auth.reason,
+            )
+            return ScraperResult(
+                success=False,
+                error=f"scheduled runs are paused: {name} needs login ({auth.reason})",
+                error_kind="paused",
+            )
+
+        # 4. Record the attempt, spawn and finish.
+        now = datetime.now(timezone.utc)
+        logger.info("running scraper %s (trigger %s)", name, trigger)
         record.last_run_at = now.isoformat()
 
         await self._record_attempt_start(name, now)
@@ -396,11 +475,177 @@ class ScraperRegistry:
                 # Container not initialized (e.g. CLI / test contexts) — skip.
                 pass
         else:
+            # profile_busy lands here too: its error names the holder, and the
+            # auth state is left alone (another process had the profile).
             record.last_status = "failed"
             record.last_error = result.error
             logger.warning("scraper %s failed: %s", name, result.error)
         await self._record_attempt_finish(name, finished, result)
+
+        if result.error_kind in AUTH_ERROR_KINDS:
+            await self._mark_needs_login(name, result.error_kind, result.error)
+        elif result.success:
+            await self._mark_login_ok(name, via=trigger)
         return result
+
+    # --- Auth state (review rev-nimble-bridge 6.3) and login-session hooks (7.3/7.5)
+
+    def login_active(self, name: str) -> bool:
+        return name in self._logins
+
+    def begin_login(self, name: str) -> None:
+        """Mark a login session active for `name`; the login manager calls it before spawning.
+
+        Synchronous, like run()'s checks, so a run and a login session can
+        never both start. Raises KeyError for an unknown scraper and
+        ScrapeRunning while a scrape is in flight. While the flag is set,
+        every run except trigger="login_confirm" returns login_in_progress.
+        """
+        record = self._scrapers.get(name)
+        if record is None:
+            raise KeyError(name)
+        if record.last_status == "running":
+            raise ScrapeRunning("a scrape is running; try again when it finishes")
+        self._logins.add(name)
+
+    def end_login(self, name: str) -> None:
+        """Clear the login flag. Call it once the session is over, after its confirmation scrape."""
+        self._logins.discard(name)
+
+    async def mark_login_verified(self, name: str) -> None:
+        """needs_login -> ok after a login session verified; a no-op when already ok."""
+        await self._mark_login_ok(name, via="login")
+
+    async def get_auth_state(self, name: str) -> AuthState:
+        """The scraper's auth state from the DB (in memory without one).
+
+        A DB failure reads as ok: a broken read must not stop a scrape.
+        """
+        if self._session_factory is None:
+            return self._auth_memory.get(name) or AuthState()
+        from sqlalchemy import select as _select
+        from coordinator.database.models import Scraper as _Scraper
+        try:
+            async with self._session_factory() as session:
+                row = (await session.execute(
+                    _select(_Scraper).where(_Scraper.name == name)
+                )).scalar_one_or_none()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("failed to read auth state for %s: %s", name, e)
+            return AuthState()
+        return _auth_state_of(row)
+
+    async def _mark_needs_login(self, name: str, reason: str, message: Optional[str]) -> None:
+        """ok -> needs_login (warning Event + broadcast), or refresh the message if already there."""
+        message = (message or reason)[:AUTH_MESSAGE_MAX_CHARS]
+        now = datetime.now(timezone.utc)
+
+        def apply(auth: AuthState) -> bool:
+            if auth.needs_login:
+                auth.message = message
+                auth.changed_at = now
+                return False
+            auth.state = AUTH_NEEDS_LOGIN
+            auth.reason = reason
+            auth.message = message
+            auth.changed_at = now
+            return True
+
+        changed = await self._update_auth(
+            name, apply,
+            event_type="scraper_needs_login", severity="warning",
+            payload={"reason": reason, "message": message},
+        )
+        if changed:
+            logger.warning(
+                "scraper %s needs login (%s): %s; scheduled and catch-up runs are paused",
+                name, reason, message,
+            )
+
+    async def _mark_login_ok(self, name: str, *, via: str) -> None:
+        """needs_login -> ok (info Event + broadcast); a no-op when already ok."""
+        now = datetime.now(timezone.utc)
+
+        def apply(auth: AuthState) -> bool:
+            if not auth.needs_login:
+                return False
+            auth.state = None
+            auth.reason = None
+            auth.message = None
+            auth.changed_at = now
+            return True
+
+        changed = await self._update_auth(
+            name, apply,
+            event_type="scraper_login_restored", severity="info",
+            payload={"via": via},
+        )
+        if changed:
+            logger.info("scraper %s login restored (via %s); scheduled runs resume", name, via)
+
+    async def _update_auth(
+        self,
+        name: str,
+        apply: Callable[[AuthState], bool],
+        *,
+        event_type: str,
+        severity: str,
+        payload: dict,
+    ) -> bool:
+        """Apply a transition to the stored auth state; True when auth_state changed.
+
+        A change writes one Event row in the same commit as the new state and
+        is then broadcast to dashboards. DB failures are logged, never raised.
+        """
+        if self._session_factory is None:
+            auth = self._auth_memory.setdefault(name, AuthState())
+            changed = apply(auth)
+        else:
+            from sqlalchemy import select as _select
+            from coordinator.database.models import Event as _Event, Scraper as _Scraper
+            try:
+                async with self._session_factory() as session:
+                    row = (await session.execute(
+                        _select(_Scraper).where(_Scraper.name == name)
+                    )).scalar_one_or_none()
+                    auth = _auth_state_of(row)
+                    changed = apply(auth)
+                    if row is None:
+                        if not changed:
+                            return False
+                        row = _Scraper(repo_url="local", name=name, attempts_today=0)
+                        session.add(row)
+                    row.auth_state = auth.state
+                    row.auth_reason = auth.reason
+                    row.auth_message = auth.message
+                    row.auth_changed_at = auth.changed_at
+                    if changed:
+                        session.add(_Event(
+                            source_type="scraper",
+                            source_id=name,
+                            event_type=event_type,
+                            severity=severity,
+                            payload=payload,
+                        ))
+                    await session.commit()
+            except Exception as e:  # noqa: BLE001 — DB issues must not break a run
+                logger.warning("failed to record auth state for %s: %s", name, e)
+                return False
+        if changed:
+            await self._broadcast_auth(name, auth)
+        return changed
+
+    async def _broadcast_auth(self, name: str, auth: AuthState) -> None:
+        if self._broadcast is None:
+            return
+        try:
+            await self._broadcast({
+                "type": "scraper_auth_changed",
+                "name": name,
+                "auth_state": auth.state or "ok",
+            })
+        except Exception as e:  # noqa: BLE001 — the DB row is the record; this is a courtesy
+            logger.warning("failed to broadcast auth state for %s: %s", name, e)
 
     async def _maybe_catch_up(self, name: str, *, now_utc: Optional[datetime] = None) -> bool:
         """If today's scheduled window was missed without a successful run, fire now.
@@ -429,6 +674,7 @@ class ScraperRegistry:
             )).scalar_one_or_none()
             attempts = 0
             last_success = None
+            auth = _auth_state_of(row)
             if row is not None:
                 if row.attempts_day == now_utc.date():
                     attempts = row.attempts_today or 0
@@ -438,6 +684,11 @@ class ScraperRegistry:
                 if last_success is not None and last_success.tzinfo is None:
                     last_success = last_success.replace(tzinfo=timezone.utc)
 
+        if auth.needs_login:
+            logger.info(
+                "scraper %s catch-up skipped: needs login (%s)", name, auth.reason,
+            )
+            return False
         if attempts >= MAX_ATTEMPTS_PER_DAY:
             logger.info(
                 "scraper %s catch-up skipped: %d attempts already today",
@@ -451,7 +702,7 @@ class ScraperRegistry:
             "scraper %s catch-up fired (today's base %s missed, no success since)",
             name, base_fire.isoformat(),
         )
-        asyncio.create_task(self.run(name))
+        self._track(asyncio.create_task(self.run(name, trigger="catch_up")))
         return True
 
     async def get_persistent_state(self, name: str) -> dict:
@@ -460,7 +711,9 @@ class ScraperRegistry:
         Used by the API so values survive coordinator restart. Fields:
         `last_run_at` (ISO-8601 UTC string of most recent attempt),
         `last_status` ("ok" / "failed" / "running" / None),
-        `last_error`, `attempts_today` (reset to 0 if attempts_day is stale).
+        `last_error`, `attempts_today` (reset to 0 if attempts_day is stale),
+        and the auth state: `auth_state` ("ok" / "needs_login"),
+        `auth_reason`, `auth_message`, `auth_changed_at` (ISO-8601 UTC).
 
         Falls back to in-memory ScraperRecord fields when no session
         factory is configured (test contexts).
@@ -472,6 +725,7 @@ class ScraperRegistry:
                 "last_status": record.last_status if record else None,
                 "last_error": record.last_error if record else None,
                 "attempts_today": 0,
+                **_auth_fields(self._auth_memory.get(name) or AuthState()),
             }
 
         from sqlalchemy import select as _select
@@ -512,6 +766,7 @@ class ScraperRegistry:
             "last_status": derived_status,
             "last_error": last_error,
             "attempts_today": attempts_today,
+            **_auth_fields(_auth_state_of(row)),
         }
 
     @staticmethod
@@ -581,3 +836,32 @@ class ScraperRegistry:
                 await session.commit()
         except Exception as e:  # noqa: BLE001
             logger.warning("failed to record attempt finish for %s: %s", name, e)
+
+
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    # SQLite's DateTime returns naive values even for DateTime(timezone=True);
+    # everything is written in UTC.
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _auth_state_of(row: Any) -> AuthState:
+    """AuthState from a scrapers row (ok when there is no row)."""
+    if row is None:
+        return AuthState()
+    return AuthState(
+        state=row.auth_state,
+        reason=row.auth_reason,
+        message=row.auth_message,
+        changed_at=_as_utc(row.auth_changed_at),
+    )
+
+
+def _auth_fields(auth: AuthState) -> dict:
+    return {
+        "auth_state": auth.state or "ok",
+        "auth_reason": auth.reason,
+        "auth_message": auth.message,
+        "auth_changed_at": auth.changed_at.isoformat() if auth.changed_at else None,
+    }
