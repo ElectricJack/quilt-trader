@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { useUIStore } from "../stores/ui";
+import { ScraperAuthBanner } from "./ScraperAuthBanner";
+import { ScraperLoginHost } from "./ScraperLoginModal";
 
 const NAV_ITEMS = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
@@ -81,7 +83,13 @@ export function Layout({ children }: LayoutProps) {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      <main className="flex-1 overflow-y-auto p-6">
+        <ScraperAuthBanner />
+        {children}
+      </main>
+
+      {/* Scraper re-login viewer, opened from the banner or the Data page */}
+      <ScraperLoginHost />
     </div>
   );
 }

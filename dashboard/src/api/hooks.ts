@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useQuery,
   useMutation,
@@ -9,6 +9,11 @@ import { api } from "./client";
 import type { Deployment, CPCVRequest } from "../types";
 import { wsManager } from "./websocket";
 import type {
+  ScraperLoginCommand,
+  ScraperLoginFrame,
+  ScraperLoginPage,
+  ScraperLoginServerMessage,
+  ScraperLoginSession,
   AccountCreate,
   AccountUpdate,
   WorkerCreate,
@@ -51,6 +56,7 @@ export const keys = {
     ["research", "sessions", sessionId, "jobs"] as const,
   researchJob: (sessionId: number, jobId: string) =>
     ["research", "sessions", sessionId, "jobs", jobId] as const,
+  scrapers: () => ["scrapers"] as const,
 };
 
 // ─── Accounts ─────────────────────────────────────────────────────────────────
@@ -594,9 +600,12 @@ export function useDeleteDatasets() {
 
 export function useScrapers() {
   return useQuery({
-    queryKey: ["scrapers"] as const,
+    queryKey: keys.scrapers(),
     queryFn: api.listScrapers,
     staleTime: 30_000,
+    // scraper_auth_changed / scraper_login_state websocket events refresh this
+    // list; the interval is the fallback when an event is missed.
+    refetchInterval: 60_000,
   });
 }
 
@@ -631,6 +640,173 @@ export function useRunScraper() {
       void qc.invalidateQueries({ queryKey: ["data-sources"] });
     },
   });
+}
+
+// ─── Scraper login sessions (review rev-nimble-bridge 7.3-7.6, 10) ────────────
+
+export function useStartScraperLogin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.startScraperLogin(name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.scrapers() });
+    },
+  });
+}
+
+export function useCheckScraperLogin() {
+  return useMutation({
+    mutationFn: (name: string) => api.checkScraperLogin(name),
+  });
+}
+
+export function useCancelScraperLogin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.cancelScraperLogin(name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.scrapers() });
+    },
+  });
+}
+
+/** The viewer socket closes with this code for an unknown or already-ended session. */
+export const WS_CLOSE_UNKNOWN_SESSION = 4404;
+const LOGIN_SOCKET_RECONNECT_MS = 1_000;
+
+export function scraperLoginSocketUrl(name: string, sessionId: string): string {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return (
+    `${proto}://${window.location.host}/ws/scrapers/${encodeURIComponent(name)}` +
+    `/login?session=${encodeURIComponent(sessionId)}`
+  );
+}
+
+export interface ScraperLoginSocket {
+  /** The latest session snapshot the server pushed; null until the first one. */
+  session: ScraperLoginSession | null;
+  frame: ScraperLoginFrame | null;
+  pages: ScraperLoginPage[];
+  /** The server sent `ended`; `session` holds the final state. */
+  ended: boolean;
+  /** The server closed with 4404: the session is unknown or ended before we attached. */
+  gone: boolean;
+  connected: boolean;
+  /** Send one command; false when the socket isn't open (the command is dropped). */
+  send: (command: ScraperLoginCommand) => boolean;
+}
+
+interface LoginSocketState {
+  key: string | null;
+  session: ScraperLoginSession | null;
+  frame: ScraperLoginFrame | null;
+  pages: ScraperLoginPage[];
+  ended: boolean;
+  gone: boolean;
+  connected: boolean;
+}
+
+function emptyLoginSocketState(key: string | null): LoginSocketState {
+  return { key, session: null, frame: null, pages: [], ended: false, gone: false, connected: false };
+}
+
+/**
+ * Viewer socket for one login session. Reconnects while the session is
+ * active and stops once the server sends `ended` or closes with 4404.
+ */
+export function useScraperLoginSocket(
+  name: string | null,
+  sessionId: string | null,
+): ScraperLoginSocket {
+  const key = name && sessionId ? `${name}:${sessionId}` : null;
+  const [state, setState] = useState<LoginSocketState>(() => emptyLoginSocketState(key));
+  const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    setState(emptyLoginSocketState(key));
+    if (!name || !sessionId) return;
+    let disposed = false;
+    let finished = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const update = (patch: Partial<LoginSocketState>) =>
+      setState((s) => (s.key === key ? { ...s, ...patch } : s));
+
+    const open = () => {
+      timer = null;
+      if (disposed || finished) return;
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(scraperLoginSocketUrl(name, sessionId));
+      } catch {
+        timer = setTimeout(open, LOGIN_SOCKET_RECONNECT_MS);
+        return;
+      }
+      wsRef.current = ws;
+      ws.onopen = () => update({ connected: true });
+      ws.onmessage = (event: MessageEvent) => {
+        let msg: ScraperLoginServerMessage;
+        try {
+          msg = JSON.parse(event.data as string) as ScraperLoginServerMessage;
+        } catch {
+          return;
+        }
+        switch (msg.type) {
+          case "session":
+            update({ session: msg.session });
+            break;
+          case "frame":
+            update({ frame: { data: msg.data, metadata: msg.metadata ?? {} } });
+            break;
+          case "pages":
+            update({ pages: Array.isArray(msg.pages) ? msg.pages : [] });
+            break;
+          case "ended":
+            finished = true;
+            update({ session: msg.session, ended: true });
+            break;
+        }
+      };
+      ws.onclose = (event: CloseEvent) => {
+        if (wsRef.current === ws) wsRef.current = null;
+        if (event.code === WS_CLOSE_UNKNOWN_SESSION) finished = true;
+        update({
+          connected: false,
+          ...(event.code === WS_CLOSE_UNKNOWN_SESSION ? { gone: true } : {}),
+        });
+        if (!disposed && !finished && timer === null) {
+          timer = setTimeout(open, LOGIN_SOCKET_RECONNECT_MS);
+        }
+      };
+    };
+    open();
+
+    return () => {
+      disposed = true;
+      if (timer !== null) clearTimeout(timer);
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
+    };
+  }, [key, name, sessionId]);
+
+  const send = useCallback((command: ScraperLoginCommand): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(command));
+    return true;
+  }, []);
+
+  // Until the effect resets state for a new session, don't leak the old one's.
+  const current = state.key === key ? state : emptyLoginSocketState(key);
+  return {
+    session: current.session,
+    frame: current.frame,
+    pages: current.pages,
+    ended: current.ended,
+    gone: current.gone,
+    connected: current.connected,
+    send,
+  };
 }
 
 export function useDataSources(type?: string) {

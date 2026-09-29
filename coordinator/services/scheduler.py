@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import timezone
 from typing import Callable, Optional
@@ -15,8 +16,25 @@ class SchedulerService:
     def start(self) -> None:
         self._scheduler.start()
 
-    def shutdown(self) -> None:
-        self._scheduler.shutdown(wait=False)
+    async def shutdown(self, timeout: float = 15.0) -> None:
+        # AsyncIOExecutor.shutdown() cancels in-flight coroutine jobs even when
+        # wait=True. Give them time to finish before the database engine is
+        # disposed, so session cleanup is not interrupted mid-rollback/close.
+        self._scheduler.pause()
+        executor = self._scheduler._executors.get("default")
+        pending = tuple(getattr(executor, "_pending_futures", ()))
+        try:
+            if pending:
+                _, unfinished = await asyncio.wait(pending, timeout=timeout)
+                if unfinished:
+                    logger.warning(
+                        "Scheduler shutdown timed out with %d job(s) still running",
+                        len(unfinished),
+                    )
+        finally:
+            self._scheduler.shutdown(wait=False)
+            # AsyncIOScheduler posts shutdown onto the event loop.
+            await asyncio.sleep(0)
 
     @staticmethod
     def _convert_dow(posix_dow: str) -> str:

@@ -50,6 +50,7 @@ vi.mock("../api/hooks", () => ({
   useSyncAccount: () => ({ mutate: vi.fn(), isPending: false }),
   useUpdateAccount: () => ({ mutate: vi.fn(), isPending: false }),
   useOpenPosition: () => ({ mutate: vi.fn(), isPending: false }),
+  useWebSocketTopic: () => null,
 }));
 
 vi.mock("../stores/ui", () => ({
